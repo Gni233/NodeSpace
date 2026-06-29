@@ -1,0 +1,22 @@
+{
+  "name": "nodespace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && node fix-build.cjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "d3": "^7.9.0",
+    "pixi-filters": "^6.1.5",
+    "pixi-viewport": "^6.0.3",
+    "pixi.js": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/d3": "^7.4.3",
+    "typescript": "^5.9.3",
+    "vite": "^6.3.5"
+  }
+}
