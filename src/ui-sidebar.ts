@@ -103,10 +103,11 @@ export function createSidebar(
   let sidebarLongPressTimer: ReturnType<typeof setTimeout> | null = null;
   const clearSidebarLongPress = () => { if (sidebarLongPressTimer) { clearTimeout(sidebarLongPressTimer); sidebarLongPressTimer = null; } };
 
-  function addLongPress(el: HTMLElement, buildItems: () => { text: string; action: () => void }[]) {
+  function addLongPress(el: HTMLElement, buildItems: () => { text: string; action: () => void }[], stopBubble = false) {
     let sx = 0, sy = 0;
     let elTarget: EventTarget | null = null;
     el.addEventListener('touchstart', (e: TouchEvent) => {
+      if (stopBubble) e.stopPropagation();
       clearSidebarLongPress();
       elTarget = e.target;
       sx = e.touches[0]?.clientX ?? 0; sy = e.touches[0]?.clientY ?? 0;
@@ -181,7 +182,7 @@ export function createSidebar(
           { text: '删除文件夹', action: async () => {
             if (await confirmAction(`确定删除文件夹 "${item.name}" 及其内容？`)) onDeleteFile(fullPath);
           }},
-        ]);
+        ], true);
 
         // 拖放目标
         dirItem.addEventListener('dragover', (ev) => { ev.preventDefault(); dirItem.style.background = V('--fg-button-hover', '#444'); });
@@ -279,7 +280,7 @@ export function createSidebar(
             }
           }
           return items;
-        });
+        }, true);
 
         container.appendChild(fileItem);
       }

@@ -33,6 +33,7 @@ import { computeRadialLayout } from './layouts/radial';
 import { BlurFilter, Container, Graphics, Text } from 'pixi.js';
 import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia } from './media-nodes';
 import { createSettingsPanel } from './settings-panel';
+import { createMobileToolbar } from './ui-mobile-toolbar';
 import { UndoManager } from './undo-redo';
 import { showToast, confirmAction } from './toast';
 import { startNodeAnimation } from './utils/animate-nodes';
@@ -40,7 +41,7 @@ import { EASING, DURATION } from './utils/easing';
 import { createPaneState, PANE_LEFT, PANE_RIGHT, PaneState } from './pane-state';
 import { PaneManager, PaneExternals } from './pane-manager';
 import { createMultiPaneLayout, MultiPaneDOM } from './dual-pane-layout';
-import { SIDEBAR_LEFT, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH, sidebarExpandedLeft, sidebarCollapsedLeft, getResponsiveSidebarWidth, Z_CANVAS, Z_LOADING, Z_FLOATING_UI, Z_MEDIA_OVERLAY, Z_EDIT_PANEL, Z_SELECTION_BOX, Z_SETTINGS_PANEL, Z_DROPDOWN, Z_CONTEXT_MENU, Z_WINDOW_CONTROLS, Z_STATS, Z_TOAST, WIN_CONTROLS_WIDTH, LAYOUT_ANIM_DURATION, SEARCH_MOVE_DURATION, FIT_ALL_DURATION } from './layout-constants';
+import { SIDEBAR_LEFT, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH, sidebarExpandedLeft, sidebarCollapsedLeft, getResponsiveSidebarWidth, Z_CANVAS, Z_LOADING, Z_FLOATING_UI, Z_MOBILE_TOOLBAR, Z_MEDIA_OVERLAY, Z_EDIT_PANEL, Z_SELECTION_BOX, Z_SETTINGS_PANEL, Z_DROPDOWN, Z_CONTEXT_MENU, Z_WINDOW_CONTROLS, Z_STATS, Z_TOAST, WIN_CONTROLS_WIDTH, LAYOUT_ANIM_DURATION, SEARCH_MOVE_DURATION, FIT_ALL_DURATION } from './layout-constants';
 const ANIM_DURATION = 500;
 (window as any).__triggerSave = () => {};
 import { createPixiApp, PixiLayers } from './pixi-app';
@@ -1679,6 +1680,7 @@ async function main() {
   let selNode: string | null = null, selEdge: number | null = null, selGroup: string | null = null;
   let draggingNode: any = null, wasDragged = false;
   let linkMode = false, linkSrc: string | null = null;
+  let boxSelectMode = false;
   let _lastDragNodeId: string | null = null;
   let defArrow = false;
   let linkCursorX = 0, linkCursorY = 0;
@@ -3055,6 +3057,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getSelGroup: () => $.selGroup, setSelGroup: v => { $.selGroup = v; },
     getLinkMode: () => $.linkMode, setLinkMode: v => { $.linkMode = v; },
     setLinkSrc: v => { $.linkSrc = v; },
+    getBoxSelectMode: () => boxSelectMode, setBoxSelectMode: v => { boxSelectMode = v; },
     getSaveData: () => saveNow,
     getInitSim: () => $.simManager.initSim.bind($.simManager),
     getUpdateInfo: () => updateInfoRef.current,
@@ -3538,9 +3541,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           ep.openTabs = ep.openTabs.filter((t: string) => !BUILTIN_NAMES_SET.has(t));
           ep.activeTab = ep.openTabs[0] || '';
         }
-        // 清除演示图数据
+        // 清除演示图数据（localStorage + 文件系统）
         for (const name of BUILTIN_NAMES) {
           localStorage.removeItem('fg-data-' + name);
+          adapter.deleteFile(name).catch(() => {});
         }
       } else {
         // 恢复演示标签
@@ -3564,6 +3568,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       if (!await confirmAction('重置三个内置演示图到初始状态？你的修改将被清除。')) return;
       for (const name of BUILTIN_NAMES) {
         localStorage.removeItem('fg-data-' + name);
+        adapter.deleteFile(name).catch(() => {});
       }
       const currentFile = focusedPaneIndex === PANE_LEFT ? activeTab
         : (extraPanes[focusedPaneIndex - 1]?.activeTab ?? activeTab);
@@ -4223,6 +4228,50 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
   };
   primaryRow.appendChild(linkBtn);
+
+  // --- 移动端浮动工具栏 ---
+  const mobileToolbar = createMobileToolbar({
+    undo: () => {
+      if (focusedPaneIndex === PANE_RIGHT) {
+        if (pane1.undoManager.undo(pane1.graph)) {
+          pane1.selNode = null; pane1.selEdge = null; pane1.selGroup = null;
+          simManager1.initSim(); draw();
+        }
+      } else {
+        if (undoManager.undo(graph)) { clearEd(); simManager.initSim(); draw(); }
+      }
+    },
+    redo: () => {
+      if (focusedPaneIndex === PANE_RIGHT) {
+        if (pane1.undoManager.redo(pane1.graph)) {
+          pane1.selNode = null; pane1.selEdge = null; pane1.selGroup = null;
+          simManager1.initSim(); draw();
+        }
+      } else {
+        if (undoManager.redo(graph)) { clearEd(); simManager.initSim(); draw(); }
+      }
+    },
+    toggleLinkMode: () => {
+      if (focusedPaneIndex === PANE_RIGHT) {
+        pane1.linkMode = !pane1.linkMode;
+        linkBtn.style.background = pane1.linkMode ? '#5B8FF9' : '';
+        linkBtn.style.color = pane1.linkMode ? '#fff' : '';
+        if (pane1.linkMode) { pane1.linkSrc = null; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
+        else { showToast('已退出连线模式', 'info'); }
+        return pane1.linkMode;
+      } else {
+        linkMode = !linkMode; linkBtn.style.background = linkMode ? '#5B8FF9' : ''; linkBtn.style.color = linkMode ? '#fff' : '';
+        if (linkMode) { linkSrc = null; linkCursorX = 0; linkCursorY = 0; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
+        else { showToast('已退出连线模式', 'info'); }
+        return linkMode;
+      }
+    },
+    toggleBoxSelectMode: () => { boxSelectMode = !boxSelectMode; return boxSelectMode; },
+    getLinkActive: () => focusedPaneIndex === PANE_RIGHT ? pane1.linkMode : linkMode,
+    getBoxSelectActive: () => boxSelectMode,
+  });
+  appShell.appendChild(mobileToolbar);
+
   const refreshBtn = document.createElement('button');
   refreshBtn.textContent = '刷新'; refreshBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   refreshBtn.onclick = async () => {

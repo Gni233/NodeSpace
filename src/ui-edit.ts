@@ -11,6 +11,7 @@ export interface EditPanelContext {
   getSelGroup: () => string | null; setSelGroup: (v: string | null) => void;
   getLinkMode: () => boolean;      setLinkMode: (v: boolean) => void;
   setLinkSrc: (v: string | null) => void;
+  getBoxSelectMode?: () => boolean; setBoxSelectMode?: (v: boolean) => void;
   getSaveData: () => () => Promise<void>;
   getInitSim: () => () => void;
   getUpdateInfo: () => () => void;

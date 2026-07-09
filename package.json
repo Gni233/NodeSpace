@@ -38,6 +38,7 @@
   "build": {
     "appId": "com.nodespace.app",
     "productName": "NodeSpace",
+    "icon": "public/icon.svg",
     "files": [
       "dist/**/*",
       "electron/**/*"

@@ -62,10 +62,13 @@ exit /b 1
 echo [JDK] %JAVA_HOME%
 set "PATH=%JAVA_HOME%\bin;%PATH%"
 
-echo [1/3] Clearing old APK...
+echo [1/4] Clearing old build artifacts...
 del /q "android\app\build\outputs\apk\debug\app-debug.apk" 2>nul
+del /q "NodeSpace.apk" 2>nul
+del /q "NodeSpace.exe" 2>nul
+if exist "release\" rmdir /s /q "release" 2>nul
 
-echo [2/3] Building frontend + Android APK...
+echo [2/4] Building frontend + Android APK...
 set "JAVA_HOME=%JAVA_HOME%"
 call npm run android:build
 if %errorlevel% neq 0 (
@@ -74,18 +77,42 @@ if %errorlevel% neq 0 (
     exit /b %errorlevel%
 )
 
-echo [2.5/3] Copying APK to repo...
+echo [2.5/4] Copying APK to repo...
 copy /y "android\app\build\outputs\apk\debug\app-debug.apk" "NodeSpace.apk" >nul
 if %errorlevel% neq 0 (
     echo APK copy failed! APK not found at expected path.
     pause
     exit /b %errorlevel%
 )
-echo   Copied to NodeSpace.apk
+echo   APK: NodeSpace.apk
 
-echo [2.6/3] Creating GitHub Release...
+echo [3/4] Building Electron EXE...
+:: Use mirror for Electron downloads (GitHub is often unreachable)
+set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+call npx electron-builder --win
+if %errorlevel% neq 0 (
+    echo EXE build failed! Check errors above.
+    pause
+    exit /b %errorlevel%
+)
+:: Find the built EXE and copy to repo root
+for %%f in ("release\*.exe") do (
+    copy /y "%%f" "NodeSpace.exe" >nul
+    echo   EXE: NodeSpace.exe
+)
+if not exist "NodeSpace.exe" (
+    echo EXE not found in release folder!
+    pause
+    exit /b 1
+)
+
+echo [4/4] Creating GitHub Release...
 :: Read version from package.json
 for /f "tokens=2 delims=: " %%v in ('findstr /c:"\"version\"" package.json') do set VERSION=%%~v
+:: Strip trailing quote and comma (JSON artifact)
+set VERSION=%VERSION:"=%
+set VERSION=%VERSION:,=%
 set TAG=v%VERSION%
 echo   Version: %VERSION%  Tag: %TAG%
 
@@ -93,17 +120,17 @@ echo   Version: %VERSION%  Tag: %TAG%
 git push origin --delete %TAG% 2>nul
 gh release delete %TAG% --yes 2>nul
 
-:: Create release with APK attached
-gh release create %TAG% NodeSpace.apk --title "NodeSpace" --notes "Automated build" --latest --target main
+:: Create release with both APK and EXE attached
+gh release create %TAG% NodeSpace.apk NodeSpace.exe --title "NodeSpace" --notes "Automated build" --latest --target main
 if %errorlevel% neq 0 (
     echo Release creation failed! Check gh auth and network.
     pause
     exit /b %errorlevel%
 )
-echo   Release %TAG% created with NodeSpace.apk
+echo   Release %TAG% created with NodeSpace.apk + NodeSpace.exe
 
 echo.
-echo [3/3] Waiting for stable GitHub connection...
+echo [PUSH] Waiting for stable GitHub connection...
 echo.
 set cons=0
 
@@ -144,7 +171,7 @@ echo Sending WeChat notification...
 powershell -NoProfile -Command ^
   "$body = @{^
     msgtype='text';^
-    text=@{content='[NodeSpace] Build & Push completed! APK ready.'};^
+    text=@{content='[NodeSpace] Build & Push completed! APK + EXE ready.'};^
     chatid='o9cq808aOUf2kWKYh1QeigFUY8fI@im.wechat'^
   } | ConvertTo-Json -Compress; ^
   try { ^
@@ -160,7 +187,7 @@ echo.
 powershell -NoProfile -Command ^
   "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; ^
    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null; ^
-   $template = '<toast><visual><binding template=\"ToastGeneric\"><text>NodeSpace</text><text>Build and push completed!</text></binding></visual></toast>'; ^
+   $template = '<toast><visual><binding template=\"ToastGeneric\"><text>NodeSpace</text><text>Build and push completed! APK + EXE ready.</text></binding></visual></toast>'; ^
    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument; $xml.LoadXml($template); ^
    $toast = New-Object Windows.UI.Notifications.ToastNotification($xml); ^
    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('NodeSpace').Show($toast)" 2>nul
@@ -169,6 +196,7 @@ powershell -NoProfile -Command ^
 echo.
 echo ========================================
 echo   Done!
-echo   APK: android\app\build\outputs\apk\debug\app-debug.apk
+echo   APK: NodeSpace.apk
+echo   EXE: NodeSpace.exe
 echo ========================================
 pause

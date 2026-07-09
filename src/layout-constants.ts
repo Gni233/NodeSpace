@@ -21,6 +21,7 @@ export const sidebarCollapsedLeft = () => SIDEBAR_LEFT + SIDEBAR_COLLAPSED_WIDTH
 export const Z_CANVAS = 0;
 export const Z_LOADING = 5;
 export const Z_FLOATING_UI = 10; // 顶栏、侧边栏、底部设置面板
+export const Z_MOBILE_TOOLBAR = 11; // 移动端浮动工具栏
 export const Z_MEDIA_OVERLAY = 8; // 多媒体覆盖层容器
 export const Z_EDIT_PANEL = 21; // 浮动编辑面板
 export const Z_SELECTION_BOX = 20; // 框选矩形

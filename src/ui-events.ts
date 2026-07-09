@@ -51,6 +51,9 @@ export interface EventsContext {
   getGridSnapEnabled?: () => boolean;
   getGridSp?: () => number;
   getHiddenNodeIds?: () => Set<string>;
+  /** 移动端工具栏框选模式 */
+  getBoxSelectMode?: () => boolean;
+  setBoxSelectMode?: (v: boolean) => void;
 }
 
 export function setupCanvasEvents(
@@ -129,6 +132,9 @@ export function setupCanvasEvents(
   let boxStart: [number, number] | null = null;
   let lastBoxUpTime = 0;
   let selectedNodeIds: string[] = [];
+  // 移动端触屏框选
+  let touchBoxStart: [number, number] | null = null;
+  let touchBoxSelecting = false;
 
   // 框选：节点 + 边的命中测试
   const getSelectionInRect = (x1: number, y1: number, x2: number, y2: number) => {
@@ -437,6 +443,27 @@ export function setupCanvasEvents(
       ctx.onMediaHover?.(null);
     }
     if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
+    // 移动端触屏框选：boxSelectMode 开启 + 非拖拽节点 + 已有起点 → 画选区
+    if (ctx.getBoxSelectMode?.() && !getDraggingNode() && !pendingTouchNode && downPoint) {
+      if (!touchBoxSelecting && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= TOUCH_DRAG_THRESHOLD) {
+        touchBoxSelecting = true;
+        touchBoxStart = [downPoint[0], downPoint[1]];
+        clearLongPress();
+        if (ctx.viewport) ctx.viewport.pause = true;
+      }
+      if (touchBoxSelecting && touchBoxStart && ctx.selectionBox) {
+        const [sx, sy] = touchBoxStart;
+        const minX = Math.min(sx, mx), minY = Math.min(sy, my);
+        const w = Math.max(sx, mx) - minX, h = Math.max(sy, my) - minY;
+        const canvasRect = canvas.getBoundingClientRect();
+        ctx.selectionBox.style.display = 'block';
+        ctx.selectionBox.style.left = `${canvasRect.left - canvasRect.left + minX}px`;
+        ctx.selectionBox.style.top = `${canvasRect.top - canvasRect.top + minY}px`;
+        ctx.selectionBox.style.width = `${w}px`;
+        ctx.selectionBox.style.height = `${h}px`;
+      }
+      return; // 框选模式不下传其他 touch 逻辑
+    }
     // 超过阈值 → 触节点就抓来拖，空白区域就取消长按（正在平移画布）
     if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= TOUCH_DRAG_THRESHOLD) {
       if (!getDraggingNode() && pendingTouchNode) {
@@ -462,6 +489,30 @@ export function setupCanvasEvents(
   canvas.addEventListener("touchend", (e: TouchEvent) => {
     clearLongPress();
     pendingTouchNode = null;
+    // 移动端触屏框选结束
+    if (touchBoxSelecting && touchBoxStart && ctx.selectionBox) {
+      touchBoxSelecting = false;
+      ctx.selectionBox.style.display = 'none';
+      const touch = e.changedTouches[0];
+      if (touch && downPoint) {
+        const [mx, my] = toWorldPos({ clientX: touch.clientX, clientY: touch.clientY });
+        const [sx, sy] = touchBoxStart;
+        const { nodes, edges } = getSelectionInRect(sx, sy, mx, my);
+        if (nodes.length > 0 || edges.length > 0) {
+          selectedNodeIds = nodes.map((n: any) => n.id);
+          sharedState.boxSelectedEdgeIndices = new Set(edges.map(e => e.idx));
+          draw();
+          showBoxMenu(nodes, edges, touch.clientX, touch.clientY);
+        }
+      }
+      touchBoxStart = null;
+      if (ctx.viewport) ctx.viewport.pause = false;
+      downPoint = null;
+      ctx.setBoxSelectMode?.(false);
+      return;
+    }
+    touchBoxStart = null;
+    touchBoxSelecting = false;
     // 先处理拖拽结束
     if (getDraggingNode()) {
       const node = getDraggingNode();
