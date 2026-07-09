@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+*.exe
+*.dll
+*.pdb
+*.pak
+*.dat
+*.bin
+.DS_Store

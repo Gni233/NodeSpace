@@ -1,0 +1,10 @@
+{
+  "name": "nodespace-mcp",
+  "version": "0.1.0",
+  "description": "MCP Server for NodeSpace - AI-assisted graph creation",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "nodespace-mcp": "./server.js"
+  }
+}

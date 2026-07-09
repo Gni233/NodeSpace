@@ -1,0 +1,754 @@
+{
+  "nodes": [
+    {
+      "id": "act-67a4aa",
+      "label": "act",
+      "x": 400,
+      "y": -359,
+      "headingLevel": 1,
+      "tags": [
+        "词根",
+        "动作"
+      ],
+      "note": "词根: 做, 行动",
+      "color": "",
+      "radius": 20,
+      "hyperlink": "",
+      "fixed": true,
+      "fx": 400,
+      "fy": 300,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "action-59b557",
+      "label": "action",
+      "x": 578,
+      "y": -334,
+      "headingLevel": 2,
+      "tags": [
+        "名词",
+        "动作"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "active-f4a5c5",
+      "label": "active",
+      "x": 742,
+      "y": -263,
+      "headingLevel": 2,
+      "tags": [
+        "形容词",
+        "动作"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "activity-015a40",
+      "label": "activity",
+      "x": 882,
+      "y": -150,
+      "headingLevel": 2,
+      "tags": [
+        "名词",
+        "动作"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "actor-b0985a",
+      "label": "actor",
+      "x": 985,
+      "y": -3,
+      "headingLevel": 2,
+      "tags": [
+        "名词",
+        "动作"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "react-a79d5a",
+      "label": "react",
+      "x": 1045,
+      "y": 166,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "动作"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "interact-5cd79e",
+      "label": "interact",
+      "x": 1057,
+      "y": 345,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "动作"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "transaction-26bebd",
+      "label": "transaction",
+      "x": 1021,
+      "y": 521,
+      "headingLevel": 2,
+      "tags": [
+        "名词",
+        "动作"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "form-a9a01f",
+      "label": "form",
+      "x": 938,
+      "y": 680,
+      "headingLevel": 1,
+      "tags": [
+        "词根",
+        "形状"
+      ],
+      "note": "词根: 形状, 形式",
+      "color": "",
+      "radius": 20,
+      "hyperlink": "",
+      "fixed": true,
+      "fx": 800,
+      "fy": 300,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "formal-713c0f",
+      "label": "formal",
+      "x": 816,
+      "y": 811,
+      "headingLevel": 2,
+      "tags": [
+        "形容词",
+        "形状"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "format-adbb42",
+      "label": "format",
+      "x": 663,
+      "y": 904,
+      "headingLevel": 2,
+      "tags": [
+        "名词",
+        "形状"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "reform-85aef9",
+      "label": "reform",
+      "x": 490,
+      "y": 953,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "形状"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "transform-8040b3",
+      "label": "transform",
+      "x": 310,
+      "y": 953,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "形状"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "uniform-cb05cf",
+      "label": "uniform",
+      "x": 137,
+      "y": 904,
+      "headingLevel": 2,
+      "tags": [
+        "形容词",
+        "形状"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "inform-3423bd",
+      "label": "inform",
+      "x": -16,
+      "y": 811,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "形状"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "perform-ffac6c",
+      "label": "perform",
+      "x": -138,
+      "y": 680,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "形状"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "struct-eca0e2",
+      "label": "struct",
+      "x": -221,
+      "y": 521,
+      "headingLevel": 1,
+      "tags": [
+        "词根",
+        "建造"
+      ],
+      "note": "词根: 建造, 结构",
+      "color": "",
+      "radius": 20,
+      "hyperlink": "",
+      "fixed": true,
+      "fx": 1200,
+      "fy": 300,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "structure-d8e94a",
+      "label": "structure",
+      "x": -257,
+      "y": 345,
+      "headingLevel": 2,
+      "tags": [
+        "名词",
+        "建造"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "construct-57cd10",
+      "label": "construct",
+      "x": -245,
+      "y": 166,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "建造"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "destruct-c3943e",
+      "label": "destruct",
+      "x": -185,
+      "y": -3,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "建造"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "instruct-4f253b",
+      "label": "instruct",
+      "x": -82,
+      "y": -150,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "建造"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "obstruct-aad327",
+      "label": "obstruct",
+      "x": 58,
+      "y": -263,
+      "headingLevel": 2,
+      "tags": [
+        "动词",
+        "建造"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    },
+    {
+      "id": "infrastructure-056e9c",
+      "label": "infrastructure",
+      "x": 222,
+      "y": -334,
+      "headingLevel": 2,
+      "tags": [
+        "名词",
+        "建造"
+      ],
+      "note": "",
+      "color": "",
+      "radius": 17,
+      "hyperlink": "",
+      "fixed": false,
+      "fx": null,
+      "fy": null,
+      "collapsed": false,
+      "_isNew": false,
+      "mediaType": null,
+      "mediaUrl": null,
+      "radiusMode": "level"
+    }
+  ],
+  "edges": [
+    {
+      "source": "act-67a4aa",
+      "target": "action-59b557",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "act-67a4aa",
+      "target": "active-f4a5c5",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "act-67a4aa",
+      "target": "activity-015a40",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "act-67a4aa",
+      "target": "actor-b0985a",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "act-67a4aa",
+      "target": "react-a79d5a",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "act-67a4aa",
+      "target": "interact-5cd79e",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "act-67a4aa",
+      "target": "transaction-26bebd",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "form-a9a01f",
+      "target": "formal-713c0f",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "form-a9a01f",
+      "target": "format-adbb42",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "form-a9a01f",
+      "target": "reform-85aef9",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "form-a9a01f",
+      "target": "transform-8040b3",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "form-a9a01f",
+      "target": "uniform-cb05cf",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "form-a9a01f",
+      "target": "inform-3423bd",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "form-a9a01f",
+      "target": "perform-ffac6c",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "struct-eca0e2",
+      "target": "structure-d8e94a",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "struct-eca0e2",
+      "target": "construct-57cd10",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "struct-eca0e2",
+      "target": "destruct-c3943e",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "struct-eca0e2",
+      "target": "instruct-4f253b",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "struct-eca0e2",
+      "target": "obstruct-aad327",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    },
+    {
+      "source": "struct-eca0e2",
+      "target": "infrastructure-056e9c",
+      "label": "",
+      "color": "#BFBFBF",
+      "lineStyle": "solid",
+      "arrow": false
+    }
+  ],
+  "groups": [
+    {
+      "id": "group-59035747",
+      "label": "词根",
+      "displayMode": "outline",
+      "color": "#F59E0B",
+      "opacity": 0.15,
+      "fluidRadius": 3
+    },
+    {
+      "id": "group-39d8e248",
+      "label": "名词",
+      "displayMode": "fluid",
+      "color": "#4CAF50",
+      "opacity": 0.15,
+      "fluidRadius": 3
+    },
+    {
+      "id": "group-ad28c0e5",
+      "label": "动词",
+      "displayMode": "fluid",
+      "color": "#5B8FF9",
+      "opacity": 0.15,
+      "fluidRadius": 3
+    },
+    {
+      "id": "group-e7c3d300",
+      "label": "形容词",
+      "displayMode": "fluid",
+      "color": "#E040FB",
+      "opacity": 0.15,
+      "fluidRadius": 3
+    },
+    {
+      "id": "group-bd8872be",
+      "label": "动作",
+      "displayMode": "outline",
+      "color": "#FF8A65",
+      "opacity": 0.15,
+      "fluidRadius": 3
+    },
+    {
+      "id": "group-bf67f00c",
+      "label": "形状",
+      "displayMode": "outline",
+      "color": "#66BB6A",
+      "opacity": 0.15,
+      "fluidRadius": 3
+    },
+    {
+      "id": "group-de546aa2",
+      "label": "建造",
+      "displayMode": "outline",
+      "color": "#42A5F5",
+      "opacity": 0.15,
+      "fluidRadius": 3
+    }
+  ],
+  "settings": {}
+}
