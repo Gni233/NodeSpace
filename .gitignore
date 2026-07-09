@@ -1,4 +1,5 @@
 node_modules/
+NodeSpace.apk
 dist/
 release/
 *.exe
