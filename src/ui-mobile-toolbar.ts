@@ -1,21 +1,26 @@
 /**
- * 移动端浮动工具栏 — 小屏幕设备上提供常用操作按钮
- * window.innerWidth < 700 时显示
+ * 移动端浮动工具栏 — 触摸设备/小屏幕上提供常用操作按钮
+ * 显示条件：原生 Android / 触摸屏 / 小窗口 (<700px)
  */
 import { Z_MOBILE_TOOLBAR, V } from './layout-constants';
+import { isCapacitor } from './fs-mobile';
+
+const isTouchDevice = (): boolean => {
+  if (isCapacitor()) return true;
+  if (window.innerWidth < 700) return true;
+  return matchMedia('(any-pointer: coarse)').matches;
+};
 
 export interface MobileToolbarCallbacks {
   undo: () => void;
   redo: () => void;
   toggleLinkMode: () => boolean;
   toggleBoxSelectMode: () => boolean;
-  /** 外部查询当前状态，用于工具栏高亮同步 */
   getLinkActive?: () => boolean;
   getBoxSelectActive?: () => boolean;
 }
 
 export function createMobileToolbar(callbacks: MobileToolbarCallbacks): HTMLElement {
-  const BREAKPOINT = 700;
 
   const bar = document.createElement('div');
   bar.className = 'fg-mobile-toolbar';
@@ -82,7 +87,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): HTMLElem
   bar.appendChild(boxBtn);
 
   const updateVisibility = () => {
-    const visible = window.innerWidth < BREAKPOINT;
+    const visible = isTouchDevice();
     bar.style.display = visible ? 'flex' : 'none';
     if (visible) syncActive();
   };
