@@ -38,6 +38,7 @@ export interface GraphSettings {
   edgeColorGradient?: boolean;
   edgeWidthByLevel?: boolean;
   fixedHollow?: boolean;
+  cardBorderStyle?: 'straight' | 'rounded';
   expandedMedia?: string[];
 }
 

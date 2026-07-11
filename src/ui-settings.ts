@@ -130,6 +130,7 @@ export function buildSettings(
     getEdgeColorGradient?: () => boolean; setEdgeColorGradient?: (v: boolean) => void;
     getEdgeWidthByLevel?: () => boolean; setEdgeWidthByLevel?: (v: boolean) => void;
     getSelectedTooltip?: () => boolean; setSelectedTooltip?: (v: boolean) => void;
+    getCardBorderStyle?: () => string; setCardBorderStyle?: (v: string) => void;
     onApplyPreset?: () => void;
     onResetPresets?: () => void;
   }
@@ -153,7 +154,8 @@ export function buildSettings(
     getGlowAppearance, setGlowAppearance, getGridWidth, setGridWidth, getDefaultValues,
     getEdgeColorGradient, setEdgeColorGradient, getEdgeWidthByLevel, setEdgeWidthByLevel,
     getNodeColorStyle, setNodeColorStyle, getFontFamily, setFontFamily,
-    getSelectedTooltip, setSelectedTooltip
+    getSelectedTooltip, setSelectedTooltip,
+    getCardBorderStyle, setCardBorderStyle,
   } = params;
 
   const themeRow = document.createElement("div");
@@ -208,6 +210,7 @@ export function buildSettings(
     setGridSp(defs.defaultGridSpacing as number);
     setAr(defs.defaultAr as number);
     setGraphTheme(defs.defaultGraphTheme as string);
+    setCardBorderStyle?.((defs.defaultCardBorderStyle as string) ?? 'straight');
     getInitSim()(); getSaveData()(); draw();
     rebuild();
   };
@@ -318,6 +321,23 @@ export function buildSettings(
     }
     if (getEdgeColorGradient) makeCheckbox(appearBody, "连线渐变颜色", getEdgeColorGradient(), v => { setEdgeColorGradient?.(v); draw(); getSaveData()(); });
     if (getEdgeWidthByLevel) makeCheckbox(appearBody, "连线等级粗细", getEdgeWidthByLevel(), v => { setEdgeWidthByLevel?.(v); draw(); getSaveData()(); });
+    if (getCardBorderStyle) {
+      const cbRow = document.createElement("div");
+      cbRow.style.cssText = "display:flex;gap:6px;align-items:center;margin:3px 0;";
+      const cbLb = document.createElement("span");
+      cbLb.textContent = "卡片边框风格";
+      cbLb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
+      cbRow.appendChild(cbLb);
+      const cbSel = document.createElement("select");
+      cbSel.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
+      const opt1 = document.createElement("option"); opt1.value = 'straight'; opt1.textContent = '直线';
+      const opt2 = document.createElement("option"); opt2.value = 'rounded'; opt2.textContent = '圆角';
+      cbSel.appendChild(opt1); cbSel.appendChild(opt2);
+      cbSel.value = getCardBorderStyle();
+      cbSel.addEventListener('change', () => { setCardBorderStyle!(cbSel.value); draw(); getSaveData()(); });
+      cbRow.appendChild(cbSel);
+      appearBody.appendChild(cbRow);
+    }
     appearDet.appendChild(appearBody);
     advancedBody.appendChild(appearDet);
 

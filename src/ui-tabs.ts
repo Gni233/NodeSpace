@@ -15,7 +15,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
     'display:flex;align-items:center;gap:2px;padding:2px 4px;' +
     'background:transparent;' +
     `border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};` +
-    'overflow:hidden;flex-shrink:0;min-height:32px;position:relative;-webkit-app-region:no-drag;';
+    'overflow:hidden;flex-shrink:0;min-height:32px;position:relative;';
 
   const tabsContainer = document.createElement('div');
   tabsContainer.style.cssText =
@@ -48,6 +48,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       if (paneIdx != null) tab.dataset.paneIdx = String(paneIdx);
       tab.style.cssText =
         'display:flex;align-items:center;gap:4px;padding:3px 10px;' +
+        '-webkit-app-region:no-drag;' +
         'cursor:grab;border-radius:' + V('--fg-radius-md', '10px') + ';' +
         'font-size:' + V('--fg-font-sm', '0.8em') + ';' +
         'white-space:nowrap;flex:1 1 auto;min-width:56px;max-width:200px;user-select:none;' +

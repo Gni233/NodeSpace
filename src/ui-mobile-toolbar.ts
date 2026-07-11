@@ -24,6 +24,17 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): HTMLElem
 
   const bar = document.createElement('div');
   bar.className = 'fg-mobile-toolbar';
+  // 使用 left/top 定位支持拖拽，初始用 CSS 居中
+  let barLeft: number | null = null;
+  let barTop: number | null = null;
+  const applyPos = () => {
+    if (barLeft !== null && barTop !== null) {
+      bar.style.left = `${barLeft}px`;
+      bar.style.top = `${barTop}px`;
+      bar.style.bottom = 'auto';
+      bar.style.transform = 'none';
+    }
+  };
   bar.style.cssText = [
     `position:fixed; bottom:12px; left:50%; transform:translateX(-50%)`,
     `z-index:${Z_MOBILE_TOOLBAR}`,
@@ -94,6 +105,61 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): HTMLElem
 
   updateVisibility();
   window.addEventListener('resize', updateVisibility);
+
+  // --- 拖拽工具栏（按钮区域也可拖，移动 >5px 才算拖拽）---
+  let dragInfo: { cx: number; cy: number; elX: number; elY: number; moved: boolean } | null = null;
+  let _draggedThisGesture = false;
+
+  const startDrag = (ex: number, ey: number) => {
+    const rect = bar.getBoundingClientRect();
+    barLeft = rect.left;
+    barTop = rect.top;
+    applyPos();
+    dragInfo = { cx: ex, cy: ey, elX: barLeft, elY: barTop, moved: false };
+    bar.style.transition = 'none';
+  };
+
+  const moveDrag = (ex: number, ey: number) => {
+    if (!dragInfo) return;
+    if (!dragInfo.moved && Math.hypot(ex - dragInfo.cx, ey - dragInfo.cy) < 5) return;
+    dragInfo.moved = true;
+    _draggedThisGesture = true;
+    barLeft = Math.max(0, Math.min(window.innerWidth - bar.offsetWidth, dragInfo.elX + (ex - dragInfo.cx)));
+    barTop = Math.max(0, Math.min(window.innerHeight - bar.offsetHeight, dragInfo.elY + (ey - dragInfo.cy)));
+    applyPos();
+  };
+
+  const endDrag = () => {
+    dragInfo = null;
+    bar.style.transition = '';
+  };
+
+  bar.addEventListener('pointerdown', (e: PointerEvent) => {
+    _draggedThisGesture = false;
+    startDrag(e.clientX, e.clientY);
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove', (e: PointerEvent) => {
+    if (dragInfo) moveDrag(e.clientX, e.clientY);
+  });
+  window.addEventListener('pointerup', () => { endDrag(); });
+  // 拖动后阻止按钮 click
+  bar.addEventListener('click', (e) => {
+    if (_draggedThisGesture) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
+
+  bar.addEventListener('touchstart', (e: TouchEvent) => {
+    _draggedThisGesture = false;
+    const t = e.touches[0];
+    if (t) startDrag(t.clientX, t.clientY);
+  }, { passive: false });
+  window.addEventListener('touchmove', (e: TouchEvent) => {
+    if (!dragInfo) return;
+    const t = e.touches[0];
+    if (t) moveDrag(t.clientX, t.clientY);
+  }, { passive: false });
+  window.addEventListener('touchend', () => { endDrag(); });
+  window.addEventListener('touchcancel', () => { if (dragInfo) endDrag(); });
 
   return bar;
 }

@@ -30,6 +30,8 @@ import { checkUpdate, UpdateInfo } from './update-checker';
 import { showUpdateDialog } from './update-dialog';
 import { BUILTIN_GRAPHS, BUILTIN_NAMES, BUILTIN_NAMES_SET, isBuiltin } from './demo-data';
 import { computeRadialLayout } from './layouts/radial';
+import { CardGridController } from './cardgrid';
+import { clearCards } from './cardgrid/render';
 import { BlurFilter, Container, Graphics, Text } from 'pixi.js';
 import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia } from './media-nodes';
 import { createSettingsPanel } from './settings-panel';
@@ -57,6 +59,7 @@ const DEFAULT_SETTINGS: GraphSettings = {
   useRAFL: true, nodeExpand: 8, lineExpand: 6,
   showGLabels: true, glMin: 10, glMax: 28,
   gridVis: true, gridMode: 'dot' as 'line' | 'dot', axisVis: false, axisTicks: false, gridSp: 30, layoutMode: 'default', gridSnap: false, partialGridSnap: false, nodeColorStyle: 'spectrum-narrow', fontFamily: '"SiYuan Songti", serif',
+  cardBorderStyle: 'straight' as 'straight' | 'rounded',
   ar: 0.75, graphTheme: 'nord-dark', focusMode: false, centerMode: false, glowAppearance: true, selectedTooltip: false, gridWidth: 0.5, categoryLayout: false,
   edgeColorGradient: false, edgeWidthByLevel: false,
 };
@@ -126,7 +129,7 @@ async function main() {
   const floatingTop = document.createElement('div');
   floatingTop.className = 'fg-glass';
   floatingTop.className = 'fg-glass' + (isElectron ? ' fg-drag-region' : '');
-  floatingTop.style.cssText = `position:absolute;left:${sidebarExpandedLeft()}px;top:6px;right:${floatingRight};z-index:${Z_FLOATING_UI};display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;transition:left 0.25s ease;`;
+  floatingTop.style.cssText = `position:absolute;left:${sidebarCollapsedLeft()}px;top:6px;right:${floatingRight};z-index:${Z_FLOATING_UI};display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;transition:left 0.25s ease;`;
   appShell.appendChild(floatingTop);
 
   // --- 标签栏 ---
@@ -349,9 +352,9 @@ async function main() {
   const setDiv = document.createElement('div');
   setDiv.style.cssText = 'padding:2px 0 6px 0;';
   settingsDet.appendChild(setDiv);
-  settingsDet.className = 'fg-glass';
+  settingsDet.className = 'fg-glass' + (isElectron ? ' fg-drag-region' : '');
   const CONSOLE_BTN_SIZE = 30;
-  settingsDet.style.cssText = `position:absolute;left:${sidebarExpandedLeft()}px;right:${CONSOLE_BTN_SIZE + MINIMAP_BTN_SIZE + 20}px;bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:${Z_FLOATING_UI};max-height:40vh;overflow-y:auto;padding:6px 12px;`;
+  settingsDet.style.cssText = `position:absolute;left:${sidebarCollapsedLeft()}px;right:${CONSOLE_BTN_SIZE + MINIMAP_BTN_SIZE + 20}px;bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:${Z_FLOATING_UI};max-height:40vh;overflow-y:auto;padding:6px 12px;`;
   appShell.appendChild(settingsDet);
 
   // --- 全局视图按钮（右下角，与图区自定义同行） ---
@@ -866,7 +869,7 @@ async function main() {
   });
 
   // 侧边栏玻璃效果
-  sidebar.sidebar.className = 'fg-glass';
+  sidebar.sidebar.className = 'fg-glass' + (isElectron ? ' fg-drag-region' : '');
   sidebar.sidebar.style.cssText = `position:absolute;left:${SIDEBAR_LEFT}px;top:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:${Z_FLOATING_UI};width:${getResponsiveSidebarWidth()}px;min-width:${SIDEBAR_MIN_WIDTH}px;display:flex;flex-direction:column;font-size:${V('--fg-font-md', '0.85em')};overflow:hidden;`;
 
   const buildFileTree = (files: { name: string; kind: 'file' | 'directory'; children: any[] }[]): any[] => {
@@ -1663,7 +1666,9 @@ async function main() {
       focusMode = DEFAULT_SETTINGS.focusMode, centerMode = DEFAULT_SETTINGS.centerMode, starRotateMode = DEFAULT_SETTINGS.starRotateMode || false, glowAppearance = DEFAULT_SETTINGS.glowAppearance, selectedTooltip = DEFAULT_SETTINGS.selectedTooltip || false, categoryLayout = DEFAULT_SETTINGS.categoryLayout,
     layoutMode = DEFAULT_SETTINGS.layoutMode || 'default', gridSnapEnabled = DEFAULT_SETTINGS.gridSnap || false, partialGridSnap = DEFAULT_SETTINGS.partialGridSnap || false, nodeColorStyle = (DEFAULT_SETTINGS.nodeColorStyle as 'uniform' | 'hierarchical' | 'spectrum' | 'spectrum-narrow') || 'spectrum-narrow', fixedHollow = true,
     edgeColorGradient = DEFAULT_SETTINGS.edgeColorGradient || false, edgeWidthByLevel = DEFAULT_SETTINGS.edgeWidthByLevel || false,
-    fontFamily = (DEFAULT_SETTINGS as any).fontFamily || '"SiYuan Songti", serif';
+    fontFamily = (DEFAULT_SETTINGS as any).fontFamily || '"SiYuan Songti", serif',
+    cardBorderStyle = (DEFAULT_SETTINGS as any).cardBorderStyle || 'straight';
+  let cardGridCtrl: CardGridController | null = null;
 
   let gw = 800, gh = 600;
   const getViewportTransform = () => {
@@ -2094,13 +2099,20 @@ async function main() {
     heatingTime, alphaTarget, editPanelOpacity, useRAFL,
     nodeExpand, lineExpand, showGLabels, glMin, glMax,
     gridVis, gridMode, axisVis, axisTicks, gridSp, gridWidth, ar, graphTheme, focusMode, centerMode, starRotateMode, glowAppearance, selectedTooltip, categoryLayout,
-    layoutMode: activeMode, gridSnap: gridSnapEnabled, partialGridSnap, nodeColorStyle, fontFamily, fixedHollow,
+    layoutMode: activeMode, gridSnap: gridSnapEnabled, partialGridSnap, nodeColorStyle, fontFamily, fixedHollow, cardBorderStyle,
     edgeColorGradient, edgeWidthByLevel, expandedMedia: [...manuallyOpenedMediaIds],
   });
 
+  let _cardGridRecalcTimer: any = null;
   const scheduleSave = () => {
     // 外部变更冷却期内跳过自动保存（防止覆盖 MCP Server 等外部工具的修改）
     if (externalChangeCooldown) return;
+
+    // 卡片网格模式下，数据变更触发重算（跳过 recalcAndAnimate/savePositionOnly 自身触发的 save）
+    if (cardGridCtrl && !cardGridCtrl._saving) {
+      clearTimeout(_cardGridRecalcTimer);
+      _cardGridRecalcTimer = setTimeout(() => cardGridCtrl!.recalcAndAnimate(), 200);
+    }
 
     if (focusedPaneIndex > PANE_LEFT) {
       const ep = extraPanes[focusedPaneIndex - 1];
@@ -2209,10 +2221,10 @@ async function main() {
   let focusedPaneIndex = PANE_LEFT;
 
   // 配置同步：singletons ↔ PaneState
-  const configKeys = ['linkDist','labelSize','charge','linkStr','collideR','centerS','groupBound','heatingTime','alphaTarget','editPanelOpacity','useRAFL','nodeExpand','lineExpand','showGLabels','glMin','glMax','gridVis','gridMode','axisVis','axisTicks','gridSp','gridWidth','ar','graphTheme','focusMode','selectedTooltip','glowAppearance','layoutMode','gridSnapEnabled','partialGridSnap','nodeColorStyle','fixedHollow','fontFamily','gw','gh'] as const;
+  const configKeys = ['linkDist','labelSize','charge','linkStr','collideR','centerS','groupBound','heatingTime','alphaTarget','editPanelOpacity','useRAFL','nodeExpand','lineExpand','showGLabels','glMin','glMax','gridVis','gridMode','axisVis','axisTicks','gridSp','gridWidth','ar','graphTheme','focusMode','selectedTooltip','glowAppearance','layoutMode','gridSnapEnabled','partialGridSnap','nodeColorStyle','fixedHollow','fontFamily','cardBorderStyle','gw','gh'] as const;
 
   function saveConfigTo(to: PaneState) {
-    const all: any = { linkDist, labelSize, charge, linkStr, collideR, centerS, groupBound, heatingTime, alphaTarget, editPanelOpacity, useRAFL, nodeExpand, lineExpand, showGLabels, glMin, glMax, gridVis, gridMode, axisVis, axisTicks, gridSp, gridWidth, ar, graphTheme, focusMode, centerMode, selectedTooltip, glowAppearance, layoutMode: activeMode, gridSnapEnabled, partialGridSnap, nodeColorStyle, fixedHollow, fontFamily, gw, gh };
+    const all: any = { linkDist, labelSize, charge, linkStr, collideR, centerS, groupBound, heatingTime, alphaTarget, editPanelOpacity, useRAFL, nodeExpand, lineExpand, showGLabels, glMin, glMax, gridVis, gridMode, axisVis, axisTicks, gridSp, gridWidth, ar, graphTheme, focusMode, centerMode, selectedTooltip, glowAppearance, layoutMode: activeMode, gridSnapEnabled, partialGridSnap, nodeColorStyle, fixedHollow, fontFamily, cardBorderStyle, gw, gh };
     for (const k of Object.keys(all)) (to as any)[k] = all[k];
     to.activeMode = activeMode; to.treeMode = treeMode;
     to.categoryMode = categoryMode; to.fullCatMode = fullCatMode;
@@ -2232,7 +2244,7 @@ async function main() {
     glowAppearance = from.glowAppearance; layoutMode = from.layoutMode || 'default';
     gridSnapEnabled = from.gridSnapEnabled; partialGridSnap = from.partialGridSnap;
     nodeColorStyle = from.nodeColorStyle; fixedHollow = from.fixedHollow;
-    fontFamily = from.fontFamily; gw = from.gw; gh = from.gh;
+    fontFamily = from.fontFamily; cardBorderStyle = from.cardBorderStyle || 'straight'; gw = from.gw; gh = from.gh;
     activeMode = from.activeMode; treeMode = from.treeMode;
     categoryMode = from.categoryMode; fullCatMode = from.fullCatMode;
     applyUIToFocusedPane(graphTheme);
@@ -2851,7 +2863,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       if (cg) { if (!cg.destroyed) { cg.clear(); pixi.groupLayer.removeChild(cg); } (pixi.groupLayer as any)._catGfx = null; }
       const oldLabels2 = (pixi.groupLayer as any)._catLabels as any[];
       if (oldLabels2) { for (const t of oldLabels2) { t.visible = false; pixi.groupLayer.removeChild(t); } (pixi.groupLayer as any)._catLabels = null; }
-      updateGroups(pixi.groupLayer, graph, nodes.filter((n: any) => !hiddenNodes.has(n.id)), st.showGLabels, st.glMin, st.glMax, { enabled: st.gridSnapEnabled, spacing: st.gridSp });
+      // 卡片模式/分类模式下跳过集合渲染（卡片层已处理）
+      if (st.activeMode !== 'cardgrid' && st.activeMode !== 'category' && st.activeMode !== 'fullcat') {
+        updateGroups(pixi.groupLayer, graph, nodes.filter((n: any) => !hiddenNodes.has(n.id)), st.showGLabels, st.glMin, st.glMax, { enabled: st.gridSnapEnabled, spacing: st.gridSp });
+      }
+    }
+    // 卡片网格渲染（卡片布局 / 分类 / 全分类）
+    const isCardMode = st.activeMode === 'cardgrid' || st.activeMode === 'category' || st.activeMode === 'fullcat';
+    if (isCardMode && cardGridCtrl) {
+      cardGridCtrl.tick();
+      cardGridCtrl.render(_pane0AccentColor);
+    } else if (!isCardMode) {
+      clearCards(pixi.cardLayer);
     }
     // 多媒体覆盖层：跟随节点 + 缩放（跳过隐藏节点）
     for (const n of nodes) {
@@ -2964,6 +2987,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     s.layoutMode = layoutMode; s.gridSnapEnabled = gridSnapEnabled;
     s.partialGridSnap = partialGridSnap; s.nodeColorStyle = nodeColorStyle;
     s.fixedHollow = fixedHollow; s.fontFamily = fontFamily;
+    s.cardBorderStyle = cardBorderStyle;
     s.draggingNode = draggingNode; s.wasDragged = wasDragged;
     s.search = search; s.sField = sField; s.sDisplayMode = sDisplayMode; s.sMatchMode = sMatchMode;
     s.linkMode = linkMode; s.linkSrc = linkSrc;
@@ -3177,6 +3201,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         defaultGridSpacing: (preset.gridSp as number) ?? DEFAULT_SETTINGS.gridSp,
         defaultAr: (preset.ar as number) ?? DEFAULT_SETTINGS.ar,
         defaultGraphTheme: (preset.graphTheme as string) ?? DEFAULT_SETTINGS.graphTheme,
+        defaultCardBorderStyle: (preset.cardBorderStyle as string) ?? DEFAULT_SETTINGS.cardBorderStyle,
       };
     },
     getFocusMode: () => $.focusMode, setFocusMode: v => { $.focusMode = v; },
@@ -3188,6 +3213,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getGridWidth: () => $.gridWidth, setGridWidth: v => { $.gridWidth = v; },
     getNodeColorStyle: () => $.nodeColorStyle, setNodeColorStyle: v => { $.nodeColorStyle = v; scheduleSave(); draw(); },
     getFontFamily: () => $.fontFamily, setFontFamily: v => { $.fontFamily = v; document.documentElement.style.setProperty('--fg-font-family', v); setNodeFontFamily(v); scheduleSave(); draw(); },
+    getCardBorderStyle: () => cardBorderStyle, setCardBorderStyle: v => { cardBorderStyle = v as 'straight' | 'rounded'; draw(); scheduleSave(); },
   });
   // 图区自定义保留在底部（滑块/复选框直接修改当前图）
 
@@ -3212,6 +3238,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       centerMode: src.centerMode, selectedTooltip: src.selectedTooltip, glowAppearance: src.glowAppearance, edgeColorGradient, edgeWidthByLevel,
       layoutMode: src.activeMode, gridSnap: src.gridSnapEnabled, partialGridSnap: src.partialGridSnap,
       nodeColorStyle: src.nodeColorStyle, fontFamily: src.fontFamily,
+      cardBorderStyle: (src as any).cardBorderStyle,
     };
   };
 
@@ -3253,6 +3280,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       else if (k === 'gridSnap') { if (isExtra) pane1.gridSnapEnabled = v as boolean; else gridSnapEnabled = v as boolean; }
       else if (k === 'fontFamily') { const vs = v as string; if (isExtra) pane1.fontFamily = vs; else fontFamily = vs; document.documentElement.style.setProperty('--fg-font-family', vs); setNodeFontFamily(vs); }
       else if (k === 'categoryLayout') { if (isExtra) pane1.categoryLayout = v as boolean; else categoryLayout = v as boolean; }
+      else if (k === 'cardBorderStyle') { const vs = v as string; if (isExtra) pane1.cardBorderStyle = vs as 'straight' | 'rounded'; else cardBorderStyle = vs as 'straight' | 'rounded'; }
       else if (k === 'layoutMode') { const vs = v as string; if (isExtra) pane1.activeMode = vs; else activeMode = vs; loadLayouts(); renderModeBar(); }
     }
   };
@@ -4072,6 +4100,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       s.layoutMode = layoutMode; s.gridSnapEnabled = gridSnapEnabled;
       s.partialGridSnap = partialGridSnap; s.nodeColorStyle = nodeColorStyle;
       s.fixedHollow = fixedHollow; s.fontFamily = fontFamily;
+      s.cardBorderStyle = cardBorderStyle;
       s.draggingNode = draggingNode; s.wasDragged = wasDragged;
       s.search = search; s.sField = sField; s.sDisplayMode = sDisplayMode; s.sMatchMode = sMatchMode;
       s.linkMode = linkMode; s.linkSrc = linkSrc;
@@ -4290,8 +4319,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     if (activeMode === 'tree') { applyTreeLayout(); return; }
     if (activeMode === 'radial') { applyLayoutMode('radial'); return; }
-    if (activeMode === 'category') { applyCategoryLayout(false); return; }
-    if (activeMode === 'fullcat') { applyCategoryLayout(true); return; }
+    if (activeMode === 'category') { applyLayoutMode('category'); return; }
+    if (activeMode === 'fullcat') { applyLayoutMode('fullcat'); return; }
+    if (activeMode === 'cardgrid') { applyLayoutMode('cardgrid'); return; }
     if (isBuiltin(activeTab)) {
       const builtin = JSON.parse(JSON.stringify(BUILTIN_GRAPHS[activeTab]));
       graph.nodes = builtin.nodes; graph.edges = builtin.edges; graph.groups = builtin.groups;
@@ -4828,6 +4858,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           if (saved) g.displayMode = saved.mode;
         }
       }
+    } else if (activeMode === 'cardgrid' || activeMode === 'category' || activeMode === 'fullcat') {
+      cardGridCtrl?.deactivate();
+      cardGridCtrl = null;
     }
     activeMode = toMode;
     renderModeBar();
@@ -4926,6 +4959,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       stopStarLoop();
       for (const n of graph.nodes) { delete (n as any)._starId; delete (n as any)._starRoot; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._starRadius; delete (n as any)._starAngle; }
     }
+    if (activeMode === 'cardgrid') {
+      cardGridCtrl?.deactivate();
+      cardGridCtrl = null;
+    }
     activeMode = mode;
     renderModeBar();
     if (mode === 'default') {
@@ -5012,14 +5049,44 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           startStarLoop();
         },
       });
+    } else if (mode === 'cardgrid') {
+      cardGridCtrl = new CardGridController();
+      cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
+      cardGridCtrl.saveFn = () => scheduleSave();
+      cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
+      const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
+      cardGridCtrl.activate(graph, focusPixi, simManager, [], {
+        borderStyle: 'rounded',
+        gap: 8,
+        cardSource: 'components',
+      });
+      cardGridCtrl.layoutAndAnimate();
     } else if (mode === 'category') {
-      for (const c of pixi!.groupLayer.children.slice()) c.destroy({ children: true });
-      applyCategoryLayout(false);
+      cardGridCtrl = new CardGridController();
+      cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
+      cardGridCtrl.saveFn = () => scheduleSave();
+      cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
+      const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
+      cardGridCtrl.activate(graph, focusPixi, simManager, [], {
+        borderStyle: 'rounded',
+        gap: 8,
+        cardSource: 'groups',
+        allGroups: false,
+      });
+      cardGridCtrl.layoutAndAnimate();
     } else if (mode === 'fullcat') {
-      (window as any)._savedGroupModes = graph.groups.map(g => ({ id: g.id, mode: g.displayMode }));
-      for (const g of graph.groups) { if (g.displayMode === 'none') g.displayMode = 'rect'; }
-      for (const c of pixi!.groupLayer.children.slice()) c.destroy({ children: true });
-      applyCategoryLayout(true);
+      cardGridCtrl = new CardGridController();
+      cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
+      cardGridCtrl.saveFn = () => scheduleSave();
+      cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
+      const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
+      cardGridCtrl.activate(graph, focusPixi, simManager, [], {
+        borderStyle: 'rounded',
+        gap: 8,
+        cardSource: 'groups',
+        allGroups: true,
+      });
+      cardGridCtrl.layoutAndAnimate();
     } else {
       // 自定义布局
       const l = layouts.find(x => x.name === mode);
@@ -5043,7 +5110,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       pill.onclick = () => { if (!isActive) applyLayoutMode(mode); };
       return pill;
     };
-    modeRow.appendChild(mkPill('默认', 'default', activeMode === 'default'));
+    modeRow.appendChild(mkPill('基础', 'default', activeMode === 'default'));
     modeRow.appendChild(mkPill('树形', 'tree', activeMode === 'tree'));
     // 星型：点一次 → 静态径向，再点一次 → 恒星星系自转（黄色高亮）
     (() => {
@@ -5080,6 +5147,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       else applyLayoutMode('category');
     };
     modeRow.appendChild(catPill);
+    modeRow.appendChild(mkPill('卡片', 'cardgrid', activeMode === 'cardgrid'));
     // 格点吸附独立 toggle（三态：关闭→部分→全部→关闭），可与任何布局并存
     const snapToggle = document.createElement('span');
     const updateSnapLabel = () => {
@@ -5769,6 +5837,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
       draw();
     },
+    // 卡片网格模式标识（供 ui-events 节点拖拽保持 pin 用）
+    isCardGridMode: () => pi.activeMode === 'cardgrid',
   };
 };
   // 左窗格事件：直接读写单例变量，不通过假 PaneState

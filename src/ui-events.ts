@@ -54,6 +54,8 @@ export interface EventsContext {
   /** 移动端工具栏框选模式 */
   getBoxSelectMode?: () => boolean;
   setBoxSelectMode?: (v: boolean) => void;
+  /** 卡片模式下节点拖拽后保持 pin */
+  isCardGridMode?: () => boolean;
 }
 
 export function setupCanvasEvents(
@@ -135,7 +137,6 @@ export function setupCanvasEvents(
   // 移动端触屏框选
   let touchBoxStart: [number, number] | null = null;
   let touchBoxSelecting = false;
-
   // 框选：节点 + 边的命中测试
   const getSelectionInRect = (x1: number, y1: number, x2: number, y2: number) => {
     const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
@@ -453,12 +454,17 @@ export function setupCanvasEvents(
       }
       if (touchBoxSelecting && touchBoxStart && ctx.selectionBox) {
         const [sx, sy] = touchBoxStart;
-        const minX = Math.min(sx, mx), minY = Math.min(sy, my);
-        const w = Math.max(sx, mx) - minX, h = Math.max(sy, my) - minY;
-        const canvasRect = canvas.getBoundingClientRect();
+        // 世界坐标 → 屏幕坐标 → appShell 相对坐标
+        const [scrX1, scrY1] = worldToScreen(sx, sy);
+        const [scrX2, scrY2] = worldToScreen(mx, my);
+        const parentRect = ctx.appShell!.getBoundingClientRect();
+        const left = Math.min(scrX1, scrX2) - parentRect.left;
+        const top = Math.min(scrY1, scrY2) - parentRect.top;
+        const w = Math.abs(scrX2 - scrX1);
+        const h = Math.abs(scrY2 - scrY1);
         ctx.selectionBox.style.display = 'block';
-        ctx.selectionBox.style.left = `${canvasRect.left - canvasRect.left + minX}px`;
-        ctx.selectionBox.style.top = `${canvasRect.top - canvasRect.top + minY}px`;
+        ctx.selectionBox.style.left = `${left}px`;
+        ctx.selectionBox.style.top = `${top}px`;
         ctx.selectionBox.style.width = `${w}px`;
         ctx.selectionBox.style.height = `${h}px`;
       }
@@ -506,7 +512,7 @@ export function setupCanvasEvents(
         }
       }
       touchBoxStart = null;
-      if (ctx.viewport) ctx.viewport.pause = false;
+      if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
       downPoint = null;
       ctx.setBoxSelectMode?.(false);
       return;
@@ -521,12 +527,17 @@ export function setupCanvasEvents(
         const gn = ctx.graph.nodes.find((gn: any) => gn.id === node.id);
         if (gn) { gn.fx = node.fx; gn.fy = node.fy; gn.x = node.x; gn.y = node.y; }
         ctx.triggerSave?.();
+      } else if (ctx.isCardGridMode?.()) {
+        node.fx = node.x; node.fy = node.y;
+        const gn3 = ctx.graph.nodes.find((gn4: any) => gn4.id === node.id);
+        if (gn3) { gn3.fx = node.x; gn3.fy = node.y; gn3.x = node.x; gn3.y = node.y; }
+        ctx.triggerSave?.();
       } else {
         node.fx = null; node.fy = null;
       }
       setDraggingNode(null); getSimulation()?.alphaTarget(0);
       ctx.onDragEnd?.();
-      if (ctx.viewport) ctx.viewport.pause = false;
+      if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
       downPoint = null;
       draw();
       return;
@@ -539,7 +550,7 @@ export function setupCanvasEvents(
     if (!e.changedTouches[0]) return;
     const touch = e.changedTouches[0];
     handleTap(...toWorldPos({ clientX: touch.clientX, clientY: touch.clientY }));
-    if (ctx.viewport) ctx.viewport.pause = false;
+    if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
   });
 
   canvas.addEventListener("touchcancel", () => {
@@ -547,11 +558,18 @@ export function setupCanvasEvents(
     if (getDraggingNode()) {
       const node = getDraggingNode();
       ctx.setDragScale?.(node.id, 1.0);
-      node.fx = null; node.fy = null;
+      if (ctx.isCardGridMode?.()) {
+        node.fx = node.x; node.fy = node.y;
+        const gn5 = ctx.graph.nodes.find((gn6: any) => gn6.id === node.id);
+        if (gn5) { gn5.fx = node.x; gn5.fy = node.y; gn5.x = node.x; gn5.y = node.y; }
+        ctx.triggerSave?.();
+      } else {
+        node.fx = null; node.fy = null;
+      }
       setDraggingNode(null); getSimulation()?.alphaTarget(0);
       ctx.onDragEnd?.();
     }
-    if (ctx.viewport) ctx.viewport.pause = false;
+    if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
     downPoint = null;
     draw();
   });
@@ -650,14 +668,14 @@ export function setupCanvasEvents(
       sharedState.rightDragLink = null;
       suppressContextMenu = true;
       lastBoxUpTime = Date.now();
-      if (ctx.viewport) ctx.viewport.pause = false;
+      if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
       draw();
       e.preventDefault(); e.stopImmediatePropagation(); return;
     }
     if (e.button === 2) {
       if (isRightButtonDown) {
         isRightButtonDown = false;
-        if (ctx.viewport) ctx.viewport.pause = false;
+        if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
         if (isBoxSelecting) {
           isBoxSelecting = false;
           if (ctx.selectionBox) ctx.selectionBox.style.display = 'none';
@@ -686,12 +704,17 @@ export function setupCanvasEvents(
         const gn = ctx.graph.nodes.find((gn: any) => gn.id === node.id);
         if (gn) { gn.fx = node.fx; gn.fy = node.fy; gn.x = node.x; gn.y = node.y; }
         ctx.triggerSave?.();
+      } else if (ctx.isCardGridMode?.()) {
+        node.fx = node.x; node.fy = node.y;
+        const gn2 = ctx.graph.nodes.find((gn3: any) => gn3.id === node.id);
+        if (gn2) { gn2.fx = node.x; gn2.fy = node.y; gn2.x = node.x; gn2.y = node.y; }
+        ctx.triggerSave?.();
       } else {
         node.fx = null; node.fy = null;
       }
       setDraggingNode(null); getSimulation()?.alphaTarget(0); canvas.style.cursor = "grab"; draw();
       ctx.onDragEnd?.();
-      if (ctx.viewport) ctx.viewport.pause = false;
+      if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
     }
     downPoint = null;
   });
@@ -772,7 +795,7 @@ export function setupCanvasEvents(
         sharedState.rightDragLink = null;
         suppressContextMenu = false;
         lastBoxUpTime = Date.now();
-        if (ctx.viewport) ctx.viewport.pause = false;
+        if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
         draw();
       }
       return;

@@ -10,6 +10,7 @@ export interface PixiLayers {
   blobLayer: Container;
   nodeLayer: Container;
   labelLayer: Container;
+  cardLayer: Container;
   onContextRestored?: (() => void) | null;
   /** Reusable Graphics cache for blob/glow effects to avoid per-frame allocation */
   blobLayerGfx?: Graphics | null;
@@ -72,9 +73,13 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
   viewport.addChild(nodeLayer);
   viewport.addChild(labelLayer);
 
+  // 卡片层：屏幕空间（不在 viewport 内），缩放时卡片边界保持不变
+  const cardLayer = new Container({ label: 'cards' });
+  app.stage.addChild(cardLayer);
+
   // WebGL context loss recovery
   let contextLost = false;
-  const result: PixiLayers = { app, viewport, gridLayer, groupLayer, edgeLayer, blobLayer, nodeLayer, labelLayer };
+  const result: PixiLayers = { app, viewport, gridLayer, groupLayer, edgeLayer, blobLayer, nodeLayer, labelLayer, cardLayer };
   app.canvas.addEventListener('webglcontextlost', (e) => {
     e.preventDefault();
     contextLost = true;

@@ -63,7 +63,7 @@ export function createSidebar(
   fileTree.style.cssText = 'flex:1;overflow-y:auto;padding:4px 0;';
   sidebar.appendChild(fileTree);
 
-  let collapsed = false;
+  let collapsed = true;
   let currentFile: string | null = null;
   let treeData: FileTreeItem[] = [];
   const openDirs = new Set<string>();
@@ -134,7 +134,7 @@ export function createSidebar(
 
       if (item.kind === 'directory') {
         const dirItem = document.createElement('div');
-        dirItem.style.cssText = `display:flex;align-items:center;gap:4px;padding:2px 10px 2px ${10 + indent}px;`;
+        dirItem.style.cssText = `-webkit-app-region:no-drag;display:flex;align-items:center;gap:4px;padding:2px 10px 2px ${10 + indent}px;`;
 
         const toggle = document.createElement('span');
         const isOpen = openDirs.has(fullPath);
@@ -214,7 +214,7 @@ export function createSidebar(
         const fileItem = document.createElement('div');
         fileItem.draggable = true;
         const isActive = fullPath === currentFile;
-        fileItem.style.cssText = `display:flex;align-items:center;gap:6px;padding:3px 10px 3px ${10 + 12 + indent - 3}px;cursor:pointer;transition:background var(--fg-transition-fast,0.15s ease);${isActive ? `background:${V('--fg-sidebar-item-active', '#3a3a3a')};color:${V('--fg-text', '#fff')};border-left:3px solid ${V('--fg-accent', '#5B8FF9')};` : ''}`;
+        fileItem.style.cssText = `-webkit-app-region:no-drag;display:flex;align-items:center;gap:6px;padding:3px 10px 3px ${10 + 12 + indent - 3}px;cursor:pointer;transition:background var(--fg-transition-fast,0.15s ease);${isActive ? `background:${V('--fg-sidebar-item-active', '#3a3a3a')};color:${V('--fg-text', '#fff')};border-left:3px solid ${V('--fg-accent', '#5B8FF9')};` : ''}`;
         fileItem.onmouseenter = () => { if (!isActive) fileItem.style.background = V('--fg-sidebar-item-hover', '#333'); };
         fileItem.onmouseleave = () => { if (!isActive) fileItem.style.background = ''; };
 
@@ -327,25 +327,29 @@ export function createSidebar(
     }},
   ]);
 
-  collapseBtn.onclick = () => {
-    collapsed = !collapsed;
-    sidebar.style.transition = 'width 0.25s ease, min-width 0.25s ease';
+  const applyCollapsed = () => {
     if (collapsed) {
       title.style.display = 'none'; newRow.style.display = 'none';
       settingsSection.style.display = 'none';
-      requestAnimationFrame(() => {
-        sidebar.style.width = `${SIDEBAR_COLLAPSED_WIDTH}px`; sidebar.style.minWidth = `${SIDEBAR_COLLAPSED_WIDTH}px`;
-      });
+      sidebar.style.width = `${SIDEBAR_COLLAPSED_WIDTH}px`; sidebar.style.minWidth = `${SIDEBAR_COLLAPSED_WIDTH}px`;
       collapseBtn.textContent = '\u25B8';
     } else {
       sidebar.style.width = `${getResponsiveSidebarWidth()}px`; sidebar.style.minWidth = `${SIDEBAR_MIN_WIDTH}px`;
       collapseBtn.textContent = '\u2715';
+    }
+    window.dispatchEvent(new CustomEvent('sidebar-toggle', { detail: { collapsed } }));
+  };
+
+  collapseBtn.onclick = () => {
+    collapsed = !collapsed;
+    sidebar.style.transition = 'width 0.25s ease, min-width 0.25s ease';
+    applyCollapsed();
+    if (!collapsed) {
       setTimeout(() => {
         title.style.display = ''; newRow.style.display = '';
         settingsSection.style.display = '';
       }, 260);
     }
-    window.dispatchEvent(new CustomEvent('sidebar-toggle', { detail: { collapsed } }));
   };
 
   // --- 设置按钮 ---
@@ -359,6 +363,8 @@ export function createSidebar(
 
   sidebar.appendChild(settingsSection);
   parent.appendChild(sidebar);
+  // 默认折叠
+  setTimeout(() => applyCollapsed(), 0);
   return { sidebar, updateFileTree, getCurrentFile: () => currentFile,
     syncActiveFile: (name: string) => {
       currentFile = name;

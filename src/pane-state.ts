@@ -83,6 +83,7 @@ export interface PaneState {
   nodeColorStyle: 'uniform' | 'hierarchical' | 'spectrum' | 'spectrum-narrow';
   fixedHollow: boolean;
   fontFamily: string;
+  cardBorderStyle: 'straight' | 'rounded';
 
   // --- World dims ---
   gw: number;
@@ -142,6 +143,7 @@ const P_DEFAULTS = {
   layoutMode: 'default', gridSnapEnabled: false, partialGridSnap: false,
   nodeColorStyle: 'spectrum-narrow' as const, fixedHollow: true,
   fontFamily: '"SiYuan Songti", serif',
+  cardBorderStyle: 'straight' as 'straight' | 'rounded',
 };
 
 export function createPaneState(index: number, container: HTMLElement): PaneState {
@@ -176,6 +178,7 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     layoutMode: P_DEFAULTS.layoutMode, gridSnapEnabled: P_DEFAULTS.gridSnapEnabled,
     partialGridSnap: P_DEFAULTS.partialGridSnap, nodeColorStyle: P_DEFAULTS.nodeColorStyle,
     fixedHollow: P_DEFAULTS.fixedHollow, fontFamily: P_DEFAULTS.fontFamily,
+    cardBorderStyle: P_DEFAULTS.cardBorderStyle,
     gw: 800, gh: 600,
     search: '', sField: 'name', sDisplayMode: 'highlight', sMatchMode: 'contains',
     searchMatchIndex: 0, lastSearchTerm: '',
