@@ -45,7 +45,8 @@ export function createEditPanel(
   const { graph, getSelNode, setSelNode, getSelEdge, setSelEdge, getSelGroup, setSelGroup,
     getLinkMode, setLinkMode, setLinkSrc, getSaveData, getInitSim, getUpdateInfo, getUpdateSelects, draw, triggerSave, getSimulation } = ctx;
 
-  const editPanel = el("div", { style: `position:absolute;right:10px;top:52px;z-index:${Z_EDIT_PANEL};min-width:220px;max-width:500px;max-height:calc(100vh - 60px);overflow-y:auto;padding:10px;border:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.1)')};border-radius:${V('--fg-radius-md','10px')};background:${V('--fg-surface-glass','rgba(40,42,48,0.75)')};backdrop-filter:blur(var(--fg-glass-blur,12px));-webkit-backdrop-filter:blur(12px);color:${V('--fg-text','#d0d0d0')};display:none;flex-direction:column;gap:8px;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};transition:background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease);` });
+  const editPanel = el("div", { style: `position:absolute;right:10px;top:112px;z-index:${Z_EDIT_PANEL};min-width:220px;max-width:500px;max-height:calc(100vh - 124px);overflow-y:auto;padding:10px;border:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.1)')};border-radius:${V('--fg-radius-md','10px')};background:${V('--fg-surface-glass','rgba(40,42,48,0.75)')};backdrop-filter:blur(var(--fg-glass-blur,12px));-webkit-backdrop-filter:blur(12px);color:${V('--fg-text','#d0d0d0')};display:none;flex-direction:column;gap:8px;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};transition:background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease);` });
+  editPanel.className = 'fg-inspector';
   editPanel.style.opacity = String(getEditPanelOpacity());
   const showPanel = () => {
     editPanel.style.display = 'flex';
@@ -121,7 +122,7 @@ export function createEditPanel(
     e.preventDefault(); e.stopPropagation();
     editPanel.style.left = '';
     editPanel.style.right = '10px';
-    editPanel.style.top = '52px';
+    editPanel.style.top = '112px';
     editPanel.style.width = '';
     editPanel.style.maxWidth = '500px';
     editPanel.style.height = '';
@@ -158,7 +159,7 @@ export function createEditPanel(
   }, { passive: false });
 
   // --- 位置持久化 ---
-  const POS_KEY = 'fg-edit-panel-pos';
+  const POS_KEY = 'fg-edit-panel-pos-v2';
   const savePanelState = () => {
     if (collapsed) {
       const r = editPanel.getBoundingClientRect();
@@ -183,7 +184,7 @@ export function createEditPanel(
           if (s.collapsed) {
             editPanel.style.right = '10px';
             editPanel.style.left = 'auto';
-            editPanel.style.top = Math.max(0, Math.min(s.t || s.top || 52, window.innerHeight - 40)) + 'px';
+            editPanel.style.top = Math.max(0, Math.min(s.t || s.top || 112, window.innerHeight - 40)) + 'px';
             preCollapseT = s.preT || '';
             _restoreCollapsed = true;
           } else {
@@ -727,7 +728,7 @@ export function createEditPanel(
     collapsedHandle.style.display = 'none';
     // 展开到初始默认大小/位置
     editPanel.style.width = ''; editPanel.style.height = '';
-    editPanel.style.right = '10px'; editPanel.style.top = '52px'; editPanel.style.left = '';
+    editPanel.style.right = '10px'; editPanel.style.top = '112px'; editPanel.style.left = '';
     editPanel.style.maxWidth = '500px';
     editPanel.style.overflowY = 'auto';
     const selNode = getSelNode(), selEdge = getSelEdge(), selGroup = getSelGroup();

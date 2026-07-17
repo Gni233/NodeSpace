@@ -39,6 +39,10 @@ export interface GraphSettings {
   edgeWidthByLevel?: boolean;
   fixedHollow?: boolean;
   cardBorderStyle?: 'straight' | 'rounded';
+  cardOrders?: Record<string, number>;
+  groupCardOrders?: Record<string, number>;
+  cardViews?: Record<string, { scale: number; offsetX: number; offsetY: number }>;
+  groupCardViews?: Record<string, { scale: number; offsetX: number; offsetY: number }>;
   expandedMedia?: string[];
 }
 

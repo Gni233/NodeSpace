@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { isPathAllowed } = require('./path-guard.cjs');
 
 // ---- File watching: 检测外部工具（MCP Server 等）修改的文件 ----
 const fileWatchers = new Map(); // dir → FSWatcher
@@ -89,6 +90,8 @@ ipcMain.handle('fs-add-allowed-dir', async (_, dirPath) => {
 // Vite 开发服务器 URL
 const DEV_URL = 'http://localhost:5174';
 let mainWindow = null;
+let allowWindowClose = false;
+let closeRequestPending = false;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -119,6 +122,18 @@ function createWindow() {
 
   mainWindow.on('maximize', () => mainWindow?.webContents.send('window-maximize-change', true));
   mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window-maximize-change', false));
+  mainWindow.on('close', (event) => {
+    if (allowWindowClose) return;
+    event.preventDefault();
+    if (closeRequestPending) return;
+    closeRequestPending = true;
+    mainWindow?.webContents.send('app-before-close');
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    allowWindowClose = false;
+    closeRequestPending = false;
+  });
 }
 
 // Allowed base directory for file system operations
@@ -129,11 +144,7 @@ const allowedDirs = new Set([BASE_DIR]);
 if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
 
 function isAllowed(filePath) {
-  const resolved = path.resolve(filePath);
-  for (const dir of allowedDirs) {
-    if (resolved.startsWith(dir)) return true;
-  }
-  return false;
+  return isPathAllowed(allowedDirs, filePath);
 }
 
 // IPC：文件系统操作（完全脱离浏览器沙箱）
@@ -149,14 +160,24 @@ ipcMain.handle('fs-write-file', async (_, filePath, content) => {
   try {
     if (!isAllowed(filePath)) return { error: 'Access denied' };
     selfWriting = true;
-    fs.writeFileSync(filePath, content, 'utf-8');
+    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      fs.writeFileSync(tempPath, content, 'utf-8');
+      fs.renameSync(tempPath, filePath);
+    } catch (error) {
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
+      throw error;
+    }
     // 记录写入后的 mtime，防止 pollingFallback 误判为自己的修改
     try { knownMTimes.set(filePath, fs.statSync(filePath).mtimeMs); } catch {}
     // 延迟清除标记，防止后续 fs.watch 事件误判
     setTimeout(() => { selfWriting = false; }, 300);
     return { ok: true };
   }
-  catch (e) { return { error: e.message }; }
+  catch (e) {
+    selfWriting = false;
+    return { error: e.message };
+  }
 });
 
 ipcMain.handle('fs-read-dir', async (_, dirPath) => {
@@ -199,9 +220,13 @@ ipcMain.handle('fs-copy', async (_, src, dst) => {
   catch (e) { return { error: e.message }; }
 });
 
-ipcMain.handle('fs-exists', async (_, p) => fs.existsSync(p));
+ipcMain.handle('fs-exists', async (_, p) => isAllowed(p) && fs.existsSync(p));
 ipcMain.handle('fs-stat', async (_, p) => {
-  try { const s = fs.statSync(p); return { size: s.size, mtime: s.mtimeMs, isDir: s.isDirectory() }; }
+  try {
+    if (!isAllowed(p)) return { error: 'Access denied' };
+    const s = fs.statSync(p);
+    return { size: s.size, mtime: s.mtimeMs, isDir: s.isDirectory() };
+  }
   catch (e) { return { error: e.message }; }
 });
 
@@ -210,8 +235,6 @@ ipcMain.handle('dialog-open-folder', async () => {
   if (r.canceled) return null;
   const resolved = path.resolve(r.filePaths[0]);
   allowedDirs.add(resolved);
-  // 确保父目录也在列表中（重命名/复制操作可能涉及）
-  allowedDirs.add(path.dirname(resolved));
   return r.filePaths[0];
 });
 
@@ -234,13 +257,27 @@ ipcMain.handle('set-titlebar-color', async (_, bgColor) => {
 });
 
 // 窗口控制
-ipcMain.on('open-external', (_, url) => shell.openExternal(url));
+ipcMain.on('open-external', (_, url) => {
+  try {
+    const protocol = new URL(url).protocol;
+    if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') shell.openExternal(url);
+  } catch {}
+});
 ipcMain.on('window-minimize', () => mainWindow?.minimize());
 ipcMain.on('window-maximize', () => {
   if (mainWindow?.isMaximized()) mainWindow.unmaximize();
   else mainWindow?.maximize();
 });
 ipcMain.on('window-close', () => mainWindow?.close());
+ipcMain.on('window-close-ready', () => {
+  if (!mainWindow) return;
+  allowWindowClose = true;
+  closeRequestPending = false;
+  mainWindow.close();
+});
+ipcMain.on('window-close-cancel', () => {
+  closeRequestPending = false;
+});
 ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() ?? false);
 
 // 应用配置持久化（写入 userData 目录，不依赖 localStorage）

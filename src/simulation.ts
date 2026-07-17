@@ -15,9 +15,18 @@ export function initSimulation(
     groupBound: number;
     onTick: () => void;
     excludeNodeIds?: Set<string>;
+    /** 中心点 x（默认 0） */
+    centerX?: number;
+    /** 中心点 y（默认 0） */
+    centerY?: number;
+    /** 矩形边界（仅卡片 sim 使用），节点接近边界时施加软弹簧力 */
+    boundary?: { x: number; y: number; w: number; h: number };
   }
 ) {
   const { gw, gh, linkDist, linkStr, charge, centerS, collideR, groupBound, onTick, excludeNodeIds } = params;
+  const cx = params.centerX ?? 0;
+  const cy = params.centerY ?? 0;
+  const bnd = params.boundary ?? null;
 
   const nodes = graph.nodes
     .filter(n => !excludeNodeIds?.has(n.id))
@@ -49,11 +58,26 @@ export function initSimulation(
   const simulation = d3.forceSimulation(nodes)
     .force("link", d3.forceLink(simulationEdges).id((d: any) => d.id).distance(linkDist).strength(linkStr))
     .force("charge", d3.forceManyBody().strength((d: any) => d.fixed ? 0 : charge))
-    .force("center", d3.forceCenter(0, 0))
+    .force("center", d3.forceCenter(cx, cy))
     .force("collide", d3.forceCollide(collideR))
-    .force("radial", d3.forceRadial(0).x(0).y(0).strength(centerS))
+    .force("radial", d3.forceRadial(0).x(cx).y(cy).strength(centerS))
     .alpha(1)
     .on("tick", onTick);
+
+  // 边界力：软弹簧，防止节点跑出卡片
+  if (bnd) {
+    simulation.force("bnd", () => {
+      const stiff = 0.3;
+      for (const n of simulation.nodes() as any) {
+        if (n.fx != null || n.fy != null) continue;
+        const r = (n.radius ?? n.r ?? 9);
+        if (n.x - r < bnd.x) n.vx += stiff * (bnd.x - (n.x - r));
+        else if (n.x + r > bnd.x + bnd.w) n.vx -= stiff * ((n.x + r) - (bnd.x + bnd.w));
+        if (n.y - r < bnd.y) n.vy += stiff * (bnd.y - (n.y - r));
+        else if (n.y + r > bnd.y + bnd.h) n.vy -= stiff * ((n.y + r) - (bnd.y + bnd.h));
+      }
+    });
+  }
 
   simulation.force("fix-collide", () => {
     const allNodes = simulation.nodes() as any[];
@@ -99,11 +123,11 @@ export function initSimulation(
       }
     }
     for (const free of freeNodes) {
-      const cx = Math.floor(free.x / cellSize);
-      const cy = Math.floor(free.y / cellSize);
+      const ccx = Math.floor(free.x / cellSize);
+      const ccy = Math.floor(free.y / cellSize);
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
-          const bucket = grid.get(`${cx + dx},${cy + dy}`);
+          const bucket = grid.get(`${ccx + dx},${ccy + dy}`);
           if (!bucket) continue;
           for (const fixed of bucket) {
             const dx2 = free.x - fixed.x, dy2 = free.y - fixed.y;
@@ -127,8 +151,8 @@ export function initSimulation(
       if (members.length > 1) {
         const region = getGroupRegion(members, g.displayMode);
         if (region) {
-          const [cx, cy] = region.closest(n.x, n.y);
-          const dx = n.x - cx, dy = n.y - cy;
+          const [rcx, rcy] = region.closest(n.x, n.y);
+          const dx = n.x - rcx, dy = n.y - rcy;
           if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < 1) continue;

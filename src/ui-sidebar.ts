@@ -30,16 +30,20 @@ export function createSidebar(
   const { onSelectFile, onNewFile, onDeleteFile, onRenameFile, onOpenFolder, onCopyFile, onNewFolder, onMoveFile } = callbacks;
 
   const sidebar = document.createElement('div');
+  sidebar.className = 'fg-sidebar';
   // Outer styling (glass background) is set by caller via className; internal layout only
   sidebar.style.cssText = `width:${SIDEBAR_WIDTH}px;min-width:${SIDEBAR_MIN_WIDTH}px;display:flex;flex-direction:column;font-size:${V('--fg-font-md', '0.85em')};height:100%;overflow:hidden;`;
 
   const header = document.createElement('div');
+  header.className = 'fg-sidebar-header';
   header.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
   const title = document.createElement('span');
+  title.className = 'fg-sidebar-title';
   title.textContent = 'NodeSpace';
   title.style.cssText = `font-weight:700;font-size:${V('--fg-font-lg', '0.92em')};color:${V('--fg-text', '#e0e0e0')};letter-spacing:0.02em;`;
   header.appendChild(title);
   const collapseBtn = document.createElement('button');
+  collapseBtn.className = 'fg-sidebar-collapse';
   collapseBtn.textContent = '\u2715';
   collapseBtn.title = '折叠侧边栏';
   collapseBtn.style.cssText = `background:none;border:none;color:${V('--fg-text-muted', '#aaa')};cursor:pointer;font-size:${V('--fg-font-lg', '0.92em')};padding:0 4px;transition:color var(--fg-transition-fast,0.15s ease);`;
@@ -47,8 +51,10 @@ export function createSidebar(
   sidebar.appendChild(header);
 
   const newRow = document.createElement('div');
+  newRow.className = 'fg-sidebar-new-row';
   newRow.style.cssText = `padding:4px 10px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
   const newFileBtn = document.createElement('button');
+  newFileBtn.className = 'fg-sidebar-new';
   newFileBtn.textContent = '+ 新建';
   newFileBtn.title = '在当前目录下创建新图';
   newFileBtn.style.cssText = `background:none;border:none;color:${V('--fg-text-muted', '#aaa')};cursor:pointer;padding:3px 0;width:100%;text-align:left;transition:color var(--fg-transition-fast,0.15s ease);`;
@@ -60,6 +66,7 @@ export function createSidebar(
   sidebar.appendChild(newRow);
 
   const fileTree = document.createElement('div');
+  fileTree.className = 'fg-file-tree';
   fileTree.style.cssText = 'flex:1;overflow-y:auto;padding:4px 0;';
   sidebar.appendChild(fileTree);
 
@@ -134,6 +141,7 @@ export function createSidebar(
 
       if (item.kind === 'directory') {
         const dirItem = document.createElement('div');
+        dirItem.className = 'fg-tree-directory';
         dirItem.style.cssText = `-webkit-app-region:no-drag;display:flex;align-items:center;gap:4px;padding:2px 10px 2px ${10 + indent}px;`;
 
         const toggle = document.createElement('span');
@@ -214,6 +222,7 @@ export function createSidebar(
         const fileItem = document.createElement('div');
         fileItem.draggable = true;
         const isActive = fullPath === currentFile;
+        fileItem.className = 'fg-tree-file' + (isActive ? ' is-active' : '');
         fileItem.style.cssText = `-webkit-app-region:no-drag;display:flex;align-items:center;gap:6px;padding:3px 10px 3px ${10 + 12 + indent - 3}px;cursor:pointer;transition:background var(--fg-transition-fast,0.15s ease);${isActive ? `background:${V('--fg-sidebar-item-active', '#3a3a3a')};color:${V('--fg-text', '#fff')};border-left:3px solid ${V('--fg-accent', '#5B8FF9')};` : ''}`;
         fileItem.onmouseenter = () => { if (!isActive) fileItem.style.background = V('--fg-sidebar-item-hover', '#333'); };
         fileItem.onmouseleave = () => { if (!isActive) fileItem.style.background = ''; };
@@ -354,11 +363,17 @@ export function createSidebar(
 
   // --- 设置按钮 ---
   const settingsSection = document.createElement('div');
+  settingsSection.className = 'fg-sidebar-settings';
   settingsSection.style.cssText = `border-top:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};margin-top:auto;`;
-  const presetHeader = document.createElement('div');
-  presetHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;cursor:pointer;';
+  const presetHeader = document.createElement('button');
+  presetHeader.type = 'button';
+  presetHeader.className = 'fg-sidebar-settings-trigger';
+  presetHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;padding:8px 10px;cursor:pointer;background:transparent;border:0;text-align:left;';
   presetHeader.innerHTML = `<span style="font-weight:bold;color:${V('--fg-text-muted', '#999')};font-size:${V('--fg-font-sm', '0.8em')};">应用设置</span>`;
-  presetHeader.onclick = () => callbacks.onApplyPreset?.('');
+  presetHeader.onclick = (event) => {
+    event.stopPropagation();
+    callbacks.onApplyPreset?.('');
+  };
   settingsSection.appendChild(presetHeader);
 
   sidebar.appendChild(settingsSection);

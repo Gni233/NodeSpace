@@ -34,6 +34,7 @@ export function createSettingsPanel(
   }
 ): SettingsPanelAPI {
   const panel = document.createElement('div');
+  panel.className = 'fg-settings-dialog';
   const panelMaxW = Math.min(500, window.innerWidth - 40);
   panel.style.cssText =
     `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:${Z_SETTINGS_PANEL};` +
@@ -49,6 +50,7 @@ export function createSettingsPanel(
 
   // 标题栏
   const titleBar = document.createElement('div');
+  titleBar.className = 'fg-dialog-titlebar';
   titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
   const dot = document.createElement('div');
   dot.style.cssText = `width:5px;height:5px;border-radius:50%;background:${V('--fg-text-muted', 'rgba(255,255,255,0.3)')};margin-right:8px;`;

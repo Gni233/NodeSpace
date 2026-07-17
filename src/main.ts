@@ -73,6 +73,7 @@ async function main() {
 
   // ===== 布局：全屏画布 + 玻璃悬浮 UI =====
   const appShell = document.createElement('div');
+  appShell.className = 'fg-app-shell';
   appShell.style.cssText = 'position:relative;width:100vw;height:100vh;height:100dvh;overflow:hidden;padding-bottom:env(safe-area-inset-bottom,0px);';
   appEl.appendChild(appShell);
 
@@ -128,7 +129,7 @@ async function main() {
   // --- 浮动顶栏（标签 + 搜索 + 操作）---
   const floatingTop = document.createElement('div');
   floatingTop.className = 'fg-glass';
-  floatingTop.className = 'fg-glass' + (isElectron ? ' fg-drag-region' : '');
+  floatingTop.className = 'fg-glass fg-command-center' + (isElectron ? ' fg-drag-region' : '');
   floatingTop.style.cssText = `position:absolute;left:${sidebarCollapsedLeft()}px;top:6px;right:${floatingRight};z-index:${Z_FLOATING_UI};display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;transition:left 0.25s ease;`;
   appShell.appendChild(floatingTop);
 
@@ -259,6 +260,7 @@ async function main() {
 
   // --- 搜索栏 ---
   const searchRow = document.createElement('div');
+  searchRow.className = 'fg-search-row';
   searchRow.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex-shrink:0;';
   const searchLabel = document.createElement('span');
   searchLabel.textContent = '搜索:';
@@ -286,21 +288,27 @@ async function main() {
 
   // --- 主要操作按钮行（始终可见）---
   const primaryRow = document.createElement('div');
+  primaryRow.className = 'fg-primary-actions';
   primaryRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex-shrink:0;';
   floatingTop.appendChild(primaryRow);
 
   // --- 操作栏（折叠区：低频操作）---
   const controlsDetails = document.createElement('details');
+  controlsDetails.className = 'fg-tools-panel';
   const controlsSum = document.createElement('summary');
+  controlsSum.className = 'fg-tools-summary';
   controlsSum.textContent = '更多操作';
   controlsSum.style.cssText = `font-size:${V('--fg-font-sm', '0.84em')};cursor:pointer;opacity:0.6;padding:2px 0;`;
+  controlsSum.textContent = '工具';
   controlsDetails.appendChild(controlsSum);
   const controlsDiv = document.createElement('div');
+  controlsDiv.className = 'fg-tools-content';
   controlsDiv.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:4px 0;';
   // 搜索栏收入更多操作
   controlsDiv.appendChild(searchRow);
   // 中间行：集合搜索 + 旋转 + 适应
   const controlsRow2 = document.createElement('div');
+  controlsRow2.className = 'fg-secondary-actions';
   controlsRow2.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;';
   controlsDetails.appendChild(controlsDiv);
   floatingTop.appendChild(controlsDetails);
@@ -312,6 +320,7 @@ async function main() {
 
   // 统计栏
   const statsEl = document.createElement('div');
+  statsEl.className = 'fg-status-line';
   statsEl.style.cssText = `position:fixed;right:10px;bottom:calc(4px + env(safe-area-inset-bottom,0px));z-index:${Z_STATS};font-size:${V('--fg-font-xs', '0.72em')};color:${V('--fg-text-muted','#aaa')};pointer-events:none;`;
   document.body.appendChild(statsEl);
 
@@ -345,23 +354,31 @@ async function main() {
   // --- 设置折叠区 ---
   const MINIMAP_BTN_SIZE = 30;
   const settingsDet = document.createElement('details');
+  settingsDet.className = 'fg-glass fg-appearance-panel' + (isElectron ? ' fg-drag-region' : '');
   const settingsSum = document.createElement('summary');
+  settingsSum.className = 'fg-appearance-title';
   settingsSum.textContent = '图区自定义';
   settingsSum.style.cssText = `font-size:${V('--fg-font-sm', '0.84em')};cursor:pointer;opacity:0.7;padding:4px 0;`;
+  settingsSum.textContent = '画布外观';
   settingsDet.appendChild(settingsSum);
   const setDiv = document.createElement('div');
+  setDiv.className = 'fg-appearance-content';
   setDiv.style.cssText = 'padding:2px 0 6px 0;';
   settingsDet.appendChild(setDiv);
-  settingsDet.className = 'fg-glass' + (isElectron ? ' fg-drag-region' : '');
   const CONSOLE_BTN_SIZE = 30;
   settingsDet.style.cssText = `position:absolute;left:${sidebarCollapsedLeft()}px;right:${CONSOLE_BTN_SIZE + MINIMAP_BTN_SIZE + 20}px;bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:${Z_FLOATING_UI};max-height:40vh;overflow-y:auto;padding:6px 12px;`;
   appShell.appendChild(settingsDet);
+
+  const rightRail = document.createElement('nav');
+  rightRail.className = 'fg-right-rail';
+  rightRail.setAttribute('aria-label', '右侧面板');
+  appShell.appendChild(rightRail);
 
   // --- 全局视图按钮（右下角，与图区自定义同行） ---
   const minimapBtn = document.createElement('button');
   minimapBtn.textContent = '◉';
   minimapBtn.title = '全局视图';
-  minimapBtn.className = 'fg-glass';
+  minimapBtn.className = 'fg-glass fg-corner-tool';
   minimapBtn.style.cssText = `position:absolute;right:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:${Z_FLOATING_UI};width:${MINIMAP_BTN_SIZE}px;height:28px;padding:0;font-size:14px;line-height:1;display:flex;align-items:center;justify-content:center;`;
   appShell.appendChild(minimapBtn);
 
@@ -369,13 +386,13 @@ async function main() {
   const consoleBtn = document.createElement('button');
   consoleBtn.textContent = '>';
   consoleBtn.title = '控制台 (Ctrl+Shift+P)';
-  consoleBtn.className = 'fg-glass';
+  consoleBtn.className = 'fg-glass fg-corner-tool';
   consoleBtn.style.cssText = `position:absolute;right:${CONSOLE_BTN_SIZE + 12}px;bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:${Z_FLOATING_UI};width:${CONSOLE_BTN_SIZE}px;height:28px;padding:0;font-size:14px;line-height:1;display:flex;align-items:center;justify-content:center;font-weight:bold;`;
   appShell.appendChild(consoleBtn);
 
   // --- 控制台面板 ---
   const consolePanel = document.createElement('div');
-  consolePanel.className = 'fg-glass';
+  consolePanel.className = 'fg-glass fg-console-panel';
   consolePanel.style.cssText = `position:absolute;left:${sidebarExpandedLeft()}px;right:74px;bottom:42px;z-index:${Z_FLOATING_UI};display:none;padding:6px 8px;gap:4px;flex-direction:column;`;
   appShell.appendChild(consolePanel);
 
@@ -764,7 +781,15 @@ async function main() {
     return await createStorage(fileName).readData();
   };
 
-  const writeGraphData = async (fileName: string, data: GraphData): Promise<void> => {
+  let lastSaveErrorAt = 0;
+  const reportSaveFailure = (fileName: string, detail: string) => {
+    const now = Date.now();
+    if (now - lastSaveErrorAt < 3000) return;
+    lastSaveErrorAt = now;
+    showToast(`“${fileName.replace(/\.json$/, '')}”保存失败：${detail}`, 'error', 6000);
+  };
+
+  const writeGraphData = async (fileName: string, data: GraphData): Promise<boolean> => {
     // 剥离运行时内部标记，防止下次加载时 initSimulation 过滤掉边
     const cleanEdges = (data.edges || []).map((e: any) => {
       const { _createdAt, _dyingAt, _conflict, ...rest } = e;
@@ -772,7 +797,12 @@ async function main() {
     });
     const cleanData = { ...data, edges: cleanEdges };
     await createStorage(fileName).writeData(cleanData);
-    await adapter.writeFile(fileName, JSON.stringify(cleanData));
+    const result = await adapter.writeFile(fileName, JSON.stringify(cleanData));
+    if (!result.ok || result.value !== true) {
+      reportSaveFailure(fileName, result.ok ? '存储设备拒绝了写入' : result.error);
+      return false;
+    }
+    return true;
   };
 
   // --- 标签页持久化 ---
@@ -869,7 +899,7 @@ async function main() {
   });
 
   // 侧边栏玻璃效果
-  sidebar.sidebar.className = 'fg-glass' + (isElectron ? ' fg-drag-region' : '');
+  sidebar.sidebar.className = 'fg-glass fg-sidebar' + (isElectron ? ' fg-drag-region' : '');
   sidebar.sidebar.style.cssText = `position:absolute;left:${SIDEBAR_LEFT}px;top:6px;bottom:calc(6px + env(safe-area-inset-bottom,0px));z-index:${Z_FLOATING_UI};width:${getResponsiveSidebarWidth()}px;min-width:${SIDEBAR_MIN_WIDTH}px;display:flex;flex-direction:column;font-size:${V('--fg-font-md', '0.85em')};overflow:hidden;`;
 
   const buildFileTree = (files: { name: string; kind: 'file' | 'directory'; children: any[] }[]): any[] => {
@@ -1686,6 +1716,7 @@ async function main() {
   let draggingNode: any = null, wasDragged = false;
   let linkMode = false, linkSrc: string | null = null;
   let boxSelectMode = false;
+  let dragCount = 0; // 节点拖拽计数器，用于 pointer-events 穿透
   let _lastDragNodeId: string | null = null;
   let defArrow = false;
   let linkCursorX = 0, linkCursorY = 0;
@@ -2122,8 +2153,8 @@ async function main() {
       const settings = collectSettings(); // 立即捕获，避免计时器触发时模块变量已被其他窗格污染
       ep.saveTimeout = setTimeout(async () => {
         ep.graph.settings = settings;
-        await writeGraphData(ep.activeTab, ep.graph);
-        ep.dirtyTabs.delete(ep.activeTab);
+        const saved = await writeGraphData(ep.activeTab, ep.graph);
+        if (saved) ep.dirtyTabs.delete(ep.activeTab);
         renderAllTabs();
       }, 300);
       return;
@@ -2133,8 +2164,8 @@ async function main() {
     const settings = collectSettings(); // 同上：立即捕获
     saveTimeout = setTimeout(async () => {
       graph.settings = settings;
-      await writeGraphData(activeTab, graph);
-      dirtyTabs.delete(activeTab);
+      const saved = await writeGraphData(activeTab, graph);
+      if (saved) dirtyTabs.delete(activeTab);
       renderAllTabs();
     }, 300);
   };
@@ -2146,7 +2177,8 @@ async function main() {
       const ep = extraPanes[focusedPaneIndex - 1];
       if (!ep) return;
       ep.graph.settings = collectSettings();
-      await writeGraphData(ep.activeTab, ep.graph);
+      const saved = await writeGraphData(ep.activeTab, ep.graph);
+      if (saved) ep.dirtyTabs.delete(ep.activeTab);
       return;
     }
     graph.settings = collectSettings();
@@ -2154,8 +2186,8 @@ async function main() {
       .filter((e: any) => !e._dyingAt)
       .map((e: any) => { const { _createdAt, _dyingAt, _conflict, ...rest } = e; return rest; });
     const saveGraph = { ...graph, edges: cleanEdges };
-    await writeGraphData(activeTab, saveGraph);
-    dirtyTabs.delete(activeTab);
+    const saved = await writeGraphData(activeTab, saveGraph);
+    if (saved) dirtyTabs.delete(activeTab);
     renderAllTabs();
   };
 
@@ -2306,7 +2338,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (!pixi) return;
     const sim = getSim();
     if (!sim) return;
-    const nodes = sim.nodes() || [];
+    const isCardMode = st.activeMode === 'cardgrid' || st.activeMode === 'category' || st.activeMode === 'fullcat';
+    const nodes = isCardMode ? (graph.nodes || []) : (sim.nodes() || []);
 
     // 居中模式：视口跟随选中节点
     // 居中模式：视口平滑跟随选中节点（per-viewport 状态存在 viewport 对象上）
@@ -2468,7 +2501,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (tgt === nodeId) { focusNeighborIds.add(src); focusEdgeIndices.add(idx); }
       });
     }
-
     if (sharedState.focusMode) {
       // 悬浮聚焦
       if (sharedState.hoverNodeId) {
@@ -2747,6 +2779,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if ((srcSim && (srcSim as any)._collapseAnim) || (tgtSim && (tgtSim as any)._collapseAnim)) return;
         collapsedEdgeIndices.add(idx);
       });
+    }
+    const cardModeActiveForEdges = st.activeMode === 'cardgrid' || st.activeMode === 'category' || st.activeMode === 'fullcat';
+    if (cardModeActiveForEdges && cardGridCtrl) {
+      for (const index of cardGridCtrl.getCrossCardEdgeIndices(graph.edges)) collapsedEdgeIndices.add(index);
     }
 
     // 折叠/展开中连线透明度渐变（值 = alpha 乘数，1=正常，0=全透明）
@@ -3771,6 +3807,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   // --- 操作按钮 ---
   const addBtn = document.createElement('button');
+  addBtn.className = 'fg-action fg-action-primary';
   addBtn.textContent = '新建节点'; addBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   // 节点消失动画：标记 _dying，250ms 后真正删除
   function markNodesDying(ids: string[]) {
@@ -4060,6 +4097,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       draw(); fillNode(newNode.id);
     }
   };
+  addBtn.textContent = '+ 节点';
   primaryRow.appendChild(addBtn);
   // 多分屏扩展数组（初始包含 pane1）
   const extraContainers: HTMLDivElement[] = [pane1Container];
@@ -4242,20 +4280,25 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // paneContainers 跟踪（兼容现有引用）
   const paneContainers = dualPane.paneContainers;
   const linkBtn = document.createElement('button');
+  linkBtn.className = 'fg-action fg-action-toggle';
+  linkBtn.setAttribute('aria-pressed', 'false');
   linkBtn.textContent = '连线模式'; linkBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   linkBtn.onclick = () => {
     if (focusedPaneIndex === PANE_RIGHT) {
       pane1.linkMode = !pane1.linkMode;
+      linkBtn.setAttribute('aria-pressed', String(pane1.linkMode));
       linkBtn.style.background = pane1.linkMode ? '#5B8FF9' : '';
       linkBtn.style.color = pane1.linkMode ? '#fff' : '';
       if (pane1.linkMode) { pane1.linkSrc = null; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
       else { showToast('已退出连线模式', 'info'); }
     } else {
       linkMode = !linkMode; linkBtn.style.background = linkMode ? '#5B8FF9' : ''; linkBtn.style.color = linkMode ? '#fff' : '';
+      linkBtn.setAttribute('aria-pressed', String(linkMode));
       if (linkMode) { linkSrc = null; linkCursorX = 0; linkCursorY = 0; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
       else { showToast('已退出连线模式', 'info'); }
     }
   };
+  linkBtn.textContent = '连线';
   primaryRow.appendChild(linkBtn);
 
   // --- 移动端浮动工具栏 ---
@@ -4302,6 +4345,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   appShell.appendChild(mobileToolbar);
 
   const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'fg-action fg-action-secondary';
   refreshBtn.textContent = '刷新'; refreshBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   refreshBtn.onclick = async () => {
     if (focusedPaneIndex === PANE_RIGHT) {
@@ -4333,7 +4377,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     simManager.initSim(); draw();
   };
-  primaryRow.appendChild(refreshBtn);
+  controlsRow2.appendChild(refreshBtn);
   // --- 布局切换时保存/恢复固定节点 ---
   let savedFixedNodes: { id: string; x: number; y: number; fx: number | null; fy: number | null; fixed: boolean }[] = [];
   let savedGroupModes: { id: string; mode: string; nodeColorMode: string; nodeColor: string }[] = [];
@@ -4833,14 +4877,40 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   loadLayouts();
 
   let modeCollapsed = false;
-  const modeToggle = document.createElement('span');
-  modeToggle.textContent = '布局 ▾'; modeToggle.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-sm', '0.8em')};cursor:pointer;margin-right:4px;`;
-  modeToggle.onclick = () => { modeCollapsed = !modeCollapsed; modeToggle.textContent = modeCollapsed ? '布局 ▸' : '布局 ▾'; modeRow.style.display = modeCollapsed ? 'none' : ''; };
+  const modeToggle = document.createElement('button');
+  modeToggle.type = 'button';
+  modeToggle.className = 'fg-mode-label';
+  modeToggle.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-sm', '0.8em')};cursor:pointer;margin-right:4px;`;
+  const updateModeToggle = () => {
+    modeToggle.textContent = modeCollapsed ? '布局 ›' : '布局 ‹';
+    modeToggle.setAttribute('aria-expanded', String(!modeCollapsed));
+    modeToggle.title = modeCollapsed ? '展开布局选项' : '折叠布局选项';
+    modeToggle.classList.toggle('is-collapsed', modeCollapsed);
+    modeRow.hidden = modeCollapsed;
+  };
+  modeToggle.onclick = () => { modeCollapsed = !modeCollapsed; updateModeToggle(); };
   primaryRow.appendChild(modeToggle);
 
   const modeRow = document.createElement('div');
+  modeRow.className = 'fg-mode-switcher';
   modeRow.style.cssText = 'display:flex;gap:3px;align-items:center;flex-wrap:wrap;';
   primaryRow.appendChild(modeRow);
+  updateModeToggle();
+  const appearanceBtn = document.createElement('button');
+  appearanceBtn.textContent = '外观';
+  appearanceBtn.className = 'fg-action fg-appearance-trigger';
+  appearanceBtn.title = '画布主题与显示设置';
+  appearanceBtn.onclick = () => {
+    settingsDet.open = !settingsDet.open;
+    appearanceBtn.classList.toggle('is-active', settingsDet.open);
+  };
+  settingsDet.addEventListener('toggle', () => {
+    appearanceBtn.classList.toggle('is-active', settingsDet.open);
+  });
+  rightRail.appendChild(appearanceBtn);
+  // Low-frequency search and utility actions live in a popover attached to the
+  // primary bar instead of consuming a permanent third toolbar row.
+  primaryRow.appendChild(controlsDetails);
 
   let activeMode = 'default'; // default | tree | category | fullcat | layout:xxx
   const exitLayoutMode = (toMode = 'default') => {
@@ -4849,6 +4919,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
     } else if (activeMode === 'category' || activeMode === 'fullcat') {
+      cardGridCtrl?.deactivate();
+      cardGridCtrl = null;
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
       (graph as any)._categoryBoxes = null;
@@ -4858,7 +4930,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           if (saved) g.displayMode = saved.mode;
         }
       }
-    } else if (activeMode === 'cardgrid' || activeMode === 'category' || activeMode === 'fullcat') {
+    } else if (activeMode === 'cardgrid') {
       cardGridCtrl?.deactivate();
       cardGridCtrl = null;
     }
@@ -4959,12 +5031,33 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       stopStarLoop();
       for (const n of graph.nodes) { delete (n as any)._starId; delete (n as any)._starRoot; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._starRadius; delete (n as any)._starAngle; }
     }
-    if (activeMode === 'cardgrid') {
+    if (activeMode === 'cardgrid' || activeMode === 'category' || activeMode === 'fullcat') {
       cardGridCtrl?.deactivate();
       cardGridCtrl = null;
     }
     activeMode = mode;
     renderModeBar();
+    const getCardLayoutBounds = (targetPixi: any) => () => {
+      const canvasRect = targetPixi.app.canvas.getBoundingClientRect();
+      const topRect = floatingTop.getBoundingClientRect();
+      const x = Math.max(4, topRect.left - canvasRect.left);
+      const y = Math.max(4, topRect.bottom - canvasRect.top + 4);
+      // Appearance settings are a floating inspector, so they should not shrink
+      // the graph or the card-grid layout area.
+      const bottom = 4;
+      return {
+        x,
+        y,
+        w: Math.max(1, canvasRect.width - x - 4),
+        h: Math.max(1, canvasRect.height - y - bottom),
+      };
+    };
+    const clearCardBackgroundSelection = () => {
+      selNode = null;
+      selEdge = null;
+      selGroup = null;
+      clearEd();
+    };
     if (mode === 'default') {
       // 保存当前位置作为动画起点
       for (const n of graph.nodes) { (n as any)._sx = n.x; (n as any)._sy = n.y; }
@@ -5050,41 +5143,50 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         },
       });
     } else if (mode === 'cardgrid') {
+      const simParams = { getLinkDist: () => linkDist, getLinkStr: () => linkStr, getCharge: () => charge, getCenterS: () => centerS, getCollideR: () => collideR, getGroupBound: () => groupBound, getHeatingTime: () => heatingTime, getAlphaTarget: () => alphaTarget };
       cardGridCtrl = new CardGridController();
       cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
       cardGridCtrl.saveFn = () => scheduleSave();
       cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
       const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
-      cardGridCtrl.activate(graph, focusPixi, simManager, [], {
-        borderStyle: 'rounded',
-        gap: 8,
+      cardGridCtrl.activate(graph, focusPixi, simManager, simParams, {
+        borderStyle: cardBorderStyle,
+        gap: 4,
         cardSource: 'components',
+        onBackgroundTap: clearCardBackgroundSelection,
+        getLayoutBounds: getCardLayoutBounds(focusPixi),
       });
       cardGridCtrl.layoutAndAnimate();
     } else if (mode === 'category') {
+      const simParams = { getLinkDist: () => linkDist, getLinkStr: () => linkStr, getCharge: () => charge, getCenterS: () => centerS, getCollideR: () => collideR, getGroupBound: () => groupBound, getHeatingTime: () => heatingTime, getAlphaTarget: () => alphaTarget };
       cardGridCtrl = new CardGridController();
       cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
       cardGridCtrl.saveFn = () => scheduleSave();
       cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
       const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
-      cardGridCtrl.activate(graph, focusPixi, simManager, [], {
-        borderStyle: 'rounded',
-        gap: 8,
+      cardGridCtrl.activate(graph, focusPixi, simManager, simParams, {
+        borderStyle: cardBorderStyle,
+        gap: 4,
         cardSource: 'groups',
         allGroups: false,
+        onBackgroundTap: clearCardBackgroundSelection,
+        getLayoutBounds: getCardLayoutBounds(focusPixi),
       });
       cardGridCtrl.layoutAndAnimate();
     } else if (mode === 'fullcat') {
+      const simParams = { getLinkDist: () => linkDist, getLinkStr: () => linkStr, getCharge: () => charge, getCenterS: () => centerS, getCollideR: () => collideR, getGroupBound: () => groupBound, getHeatingTime: () => heatingTime, getAlphaTarget: () => alphaTarget };
       cardGridCtrl = new CardGridController();
       cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
       cardGridCtrl.saveFn = () => scheduleSave();
       cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
       const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
-      cardGridCtrl.activate(graph, focusPixi, simManager, [], {
-        borderStyle: 'rounded',
-        gap: 8,
+      cardGridCtrl.activate(graph, focusPixi, simManager, simParams, {
+        borderStyle: cardBorderStyle,
+        gap: 4,
         cardSource: 'groups',
         allGroups: true,
+        onBackgroundTap: clearCardBackgroundSelection,
+        getLayoutBounds: getCardLayoutBounds(focusPixi),
       });
       cardGridCtrl.layoutAndAnimate();
     } else {
@@ -5103,6 +5205,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     modeRow.innerHTML = '';
     const mkPill = (label: string, mode: string, isActive: boolean) => {
       const pill = document.createElement('span');
+      pill.className = 'fg-mode-pill' + (isActive ? ' is-active' : '');
       pill.textContent = label;
       pill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
         isActive ? `background:rgba(91,143,249,0.35);border:1px solid rgba(91,143,249,0.5);color:${V('--fg-text','#fff')};` : `border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`
@@ -5117,6 +5220,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       const isRadial = activeMode === 'radial';
       const label = isRadial && starRotateMode ? '星型 ⟳' : '星型';
       const pill = document.createElement('span');
+      pill.className = 'fg-mode-pill' + (isRadial ? ' is-active' : '');
       pill.textContent = label;
       const bg = isRadial && starRotateMode
         ? `background:rgba(245,158,11,0.35);border:1px solid rgba(245,158,11,0.5);color:${V('--fg-text','#fff')};`
@@ -5137,6 +5241,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const catMode = activeMode === 'category' || activeMode === 'fullcat';
     const catLabel = activeMode === 'fullcat' ? '全分类' : activeMode === 'category' ? '分类' : '分类';
     const catPill = document.createElement('span');
+    catPill.className = 'fg-mode-pill' + (catMode ? ' is-active' : '');
     catPill.textContent = catLabel;
     catPill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
       catMode ? `background:rgba(245,158,11,0.3);border:1px solid rgba(245,158,11,0.5);color:${V('--fg-text','#fff')};` : `border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`
@@ -5150,6 +5255,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     modeRow.appendChild(mkPill('卡片', 'cardgrid', activeMode === 'cardgrid'));
     // 格点吸附独立 toggle（三态：关闭→部分→全部→关闭），可与任何布局并存
     const snapToggle = document.createElement('span');
+    snapToggle.className = 'fg-mode-pill fg-view-toggle';
     const updateSnapLabel = () => {
       if (gridSnapEnabled) { snapToggle.textContent = '⦿ 全部'; snapToggle.title = '全部格点：所有节点吸附到网格'; }
       else if (partialGridSnap) { snapToggle.textContent = '◉ 部分'; snapToggle.title = '部分格点：仅固定节点吸附到网格'; }
@@ -5183,6 +5289,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     modeRow.appendChild(snapToggle);
     // 固定视图 toggle：镂空 / 实心
     const fixedViewToggle = document.createElement('span');
+    fixedViewToggle.className = 'fg-mode-pill fg-view-toggle';
     fixedViewToggle.textContent = fixedHollow ? '◉ 镂空' : '● 实心';
     fixedViewToggle.title = fixedHollow ? '固定节点镂空显示' : '固定节点实心显示';
     fixedViewToggle.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
@@ -5740,7 +5847,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     selectionBox, fixNodes: (ids: string[]) => { for (const id of ids) { const n = pi.graph.nodes.find(gn => gn.id === id); if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; } const sim = getSM().getSim(); if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } } } scheduleSave(); draw(); },
     unfixNodes: (ids: string[]) => { const sim = getSM().getSim(); for (const id of ids) { const n = pi.graph.nodes.find(gn => gn.id === id); if (n) { n.fixed = false; n.fx = null; n.fy = null; } if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = false; sn.fx = null; sn.fy = null; } } } if (sim) { sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); } scheduleSave(); draw(); },
     appShell, triggerSave: () => scheduleSave(),
-    onDragStart: (id: string) => { getSM().setDragNode(id); lastDragId.v = id; },
+    onDragStart: (id: string) => { getSM().setDragNode(id); lastDragId.v = id; dragCount++; appShell.classList.add('is-dragging-node'); },
     onDragEnd: () => {
       if ((pi.gridSnapEnabled || pi.partialGridSnap) && lastDragId.v) {
         const sn = getSM().getSim()?.nodes()?.find((n2: any) => n2.id === lastDragId.v);
@@ -5753,6 +5860,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         lastDragId.v = null;
       }
       getSM().setDragNode(null);
+      dragCount = Math.max(0, dragCount - 1);
+      if (dragCount === 0) appShell.classList.remove('is-dragging-node');
     },
     getLinkMode: () => pi.linkMode, getLinkSrc: () => pi.linkSrc,
     onLinkCursorMove: (x: number, y: number) => { pi.linkCursorX = x; pi.linkCursorY = y; if (sharedState.directDraw) sharedState.directDraw(); else draw(); },
@@ -5838,7 +5947,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       draw();
     },
     // 卡片网格模式标识（供 ui-events 节点拖拽保持 pin 用）
-    isCardGridMode: () => pi.activeMode === 'cardgrid',
+    isCardGridMode: () => pi.activeMode === 'cardgrid' || pi.activeMode === 'category' || pi.activeMode === 'fullcat',
+    clampNodeDrag: (id: string, x: number, y: number) => {
+      if (!cardGridCtrl) return [x, y] as [number, number];
+      return cardGridCtrl.clampToCard(id, x, y);
+    },
   };
 };
   // 左窗格事件：直接读写单例变量，不通过假 PaneState
@@ -6455,11 +6568,27 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   };
 
   // 侧边栏折叠动画同步
+  let cardBoundsRefreshFrame: number | null = null;
+  const refreshCardLayoutBounds = () => {
+    if (cardBoundsRefreshFrame != null) cancelAnimationFrame(cardBoundsRefreshFrame);
+    cardBoundsRefreshFrame = requestAnimationFrame(() => {
+      cardBoundsRefreshFrame = null;
+      if (!cardGridCtrl) return;
+      const targetPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
+      const canvas = targetPixi?.app?.canvas;
+      if (canvas) cardGridCtrl.updateScreenSize(canvas.clientWidth, canvas.clientHeight);
+    });
+  };
+  const cardUiResizeObserver = new ResizeObserver(refreshCardLayoutBounds);
+  cardUiResizeObserver.observe(floatingTop);
+  cardUiResizeObserver.observe(settingsDet);
+
   window.addEventListener('sidebar-toggle', ((e: CustomEvent) => {
     const collapsed = e.detail?.collapsed;
     const newLeft = collapsed ? `${sidebarCollapsedLeft()}px` : `${sidebarExpandedLeft()}px`;
     floatingTop.style.left = newLeft;
     settingsDet.style.left = newLeft;
+    refreshCardLayoutBounds();
   }) as EventListener);
 
   // 响应式窗口大小调整（移动端横竖屏切换）
@@ -6567,28 +6696,63 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
   }, 3000);
 
-  // 页面关闭前强制同步保存所有窗格数据（防止 300ms 防抖期间的修改丢失）
+  const graphPanesForFlush = () => {
+    const panes = [
+      { graph, activeTab, dirtyTabs },
+      ...extraPanes.map(ep => ({ graph: ep.graph, activeTab: ep.activeTab, dirtyTabs: ep.dirtyTabs })),
+    ];
+    const focused = focusedPaneIndex > PANE_LEFT ? panes[focusedPaneIndex] : panes[0];
+    return focused ? [focused, ...panes.filter(p => p !== focused)] : panes;
+  };
+
+  const flushAllGraphs = async (): Promise<boolean> => {
+    if (saveTimeout) { clearTimeout(saveTimeout); saveTimeout = null; }
+    for (const ep of extraPanes) {
+      if (ep.saveTimeout) { clearTimeout(ep.saveTimeout); ep.saveTimeout = null; }
+    }
+    const focused = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1]?.graph : graph;
+    if (focused) focused.settings = collectSettings();
+
+    const savedTabs = new Set<string>();
+    let allSaved = true;
+    for (const pane of graphPanesForFlush()) {
+      if (!pane.graph || !pane.activeTab || savedTabs.has(pane.activeTab)) continue;
+      savedTabs.add(pane.activeTab);
+      const saved = await writeGraphData(pane.activeTab, pane.graph);
+      if (saved) pane.dirtyTabs.delete(pane.activeTab);
+      else allSaved = false;
+    }
+    renderAllTabs();
+    return allSaved;
+  };
+
+  const electronApi = (window as any).electronAPI;
+  electronApi?.onBeforeClose?.(async () => {
+    try {
+      const saved = await flushAllGraphs();
+      if (saved) { electronApi.confirmClose(); return; }
+      showToast('仍有内容未能写入，已取消关闭。请检查存储目录后重试。', 'error', 8000);
+      electronApi.cancelClose();
+    } catch (error) {
+      showToast(`关闭前保存失败：${error instanceof Error ? error.message : String(error)}`, 'error', 8000);
+      electronApi.cancelClose();
+    }
+  });
+
+  // Web/Android 页面关闭无法等待异步写盘；同步更新恢复缓存作为最后防线。
   window.addEventListener('beforeunload', () => {
     try {
       const saved = new Set<string>();
       const savePane = (g: any, tab: string) => {
-        if (!g || !g.nodes || g.nodes.length === 0) return;
+        if (!g || !g.nodes || !tab) return;
         const key = 'fg-data-' + tab;
         if (saved.has(key)) return;
         localStorage.setItem(key, JSON.stringify(g));
         saved.add(key);
       };
-      // 主窗格
-      if (graph && graph.nodes.length > 0) {
-        graph.settings = collectSettings();
-        savePane(graph, activeTab);
-      }
-      // 副窗格 pane1
-      if (pane1?.graph?.nodes?.length > 0) savePane(pane1.graph, pane1.activeTab);
-      // 额外窗格
-      for (const ep of extraPanes) {
-        if (ep?.graph?.nodes?.length > 0) savePane(ep.graph, ep.activeTab);
-      }
+      const focused = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1]?.graph : graph;
+      if (focused) focused.settings = collectSettings();
+      for (const pane of graphPanesForFlush()) savePane(pane.graph, pane.activeTab);
     } catch {}
   });
 

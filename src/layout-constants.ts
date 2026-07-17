@@ -5,9 +5,9 @@
 
 // ---- 侧边栏 ----
 export const SIDEBAR_LEFT = 2;
-export const SIDEBAR_WIDTH = 260;
+export const SIDEBAR_WIDTH = 232;
 export const SIDEBAR_COLLAPSED_WIDTH = 36;
-export const SIDEBAR_MIN_WIDTH = 200;
+export const SIDEBAR_MIN_WIDTH = 180;
 export const SIDEBAR_EXPANDED_MARGIN = 6; // 侧边栏右边距（展开时）
 export const SIDEBAR_COLLAPSED_MARGIN = 4; // 侧边栏右边距（折叠时）
 

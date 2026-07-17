@@ -11,6 +11,7 @@ export interface TabCallbacks {
 
 export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
   const tabBar = document.createElement('div');
+  tabBar.className = 'fg-tab-bar';
   tabBar.style.cssText =
     'display:flex;align-items:center;gap:2px;padding:2px 4px;' +
     'background:transparent;' +
@@ -18,6 +19,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
     'overflow:hidden;flex-shrink:0;min-height:32px;position:relative;';
 
   const tabsContainer = document.createElement('div');
+  tabsContainer.className = 'fg-tabs';
   tabsContainer.style.cssText =
     'display:flex;align-items:flex-end;gap:4px;flex:1;' +
     'overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;';
@@ -41,6 +43,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       const fileName = tabs[i];
       const tab = document.createElement('div');
       const isActive = fileName === active;
+      tab.className = 'fg-tab' + (isActive ? ' is-active' : '');
       const isDirty = dirty?.has(fileName);
       const displayName = fileName.replace(/\.json$/, '');
 
@@ -65,6 +68,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
 
       // ── 自定义拖拽排序（限位在标签栏内）──
       tab.onpointerdown = (e) => {
+        if ((e.target as HTMLElement).closest('[data-tab-close]')) return;
         if (e.button !== 0) return;
         const ox = e.clientX, oy = e.clientY;
         let started = false;
@@ -196,6 +200,8 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       const closeBtn = document.createElement('span');
       closeBtn.textContent = '\u2715';
       closeBtn.title = '关闭页面';
+      closeBtn.dataset.tabClose = 'true';
+      closeBtn.onpointerdown = (e) => e.stopPropagation();
       closeBtn.style.cssText =
         `opacity:0;margin-left:auto;width:14px;height:14px;color:${V('--fg-text-muted','rgba(255,255,255,0.4)')};` +
         `font-size:${V('--fg-font-xxs', '0.65em')};line-height:14px;text-align:center;cursor:pointer;border-radius:${V('--fg-radius-sm','6px')};flex-shrink:0;` +

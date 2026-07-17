@@ -23,6 +23,7 @@ import { join, extname, basename, resolve, dirname } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { resolveInside } from './path-utils.js';
 
 // ---- 数据目录 ----
 function getElectronConfigDir() {
@@ -81,8 +82,13 @@ function refreshDataDir() {
 // ---- 工具函数 ----
 function log(...args) { process.stderr.write(args.join(' ') + '\n'); }
 
+function dataPath(...segments) {
+  return resolveInside(DATA_DIR, ...segments);
+}
+
 function graphPath(name) {
-  return join(DATA_DIR, name.endsWith('.json') ? name : name + '.json');
+  if (typeof name !== 'string' || !name.trim()) throw new Error('Graph name is required');
+  return dataPath(name.endsWith('.json') ? name : name + '.json');
 }
 
 async function readGraph(name) {
@@ -1127,7 +1133,7 @@ const handlers = {
     if (!mediaType) return { error: `不支持的媒体格式: ${ext}。支持: ${Object.keys(typeMap).join(', ')}` };
 
     // 复制到 media 目录
-    const mediaDir = join(DATA_DIR, 'media', snapshotName(graph));
+    const mediaDir = dataPath('media', snapshotName(graph));
     if (!existsSync(mediaDir)) await mkdir(mediaDir, { recursive: true });
     const destName = `${nodeId}${ext}`;
     const destPath = join(mediaDir, destName);

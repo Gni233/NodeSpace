@@ -56,6 +56,8 @@ export interface EventsContext {
   setBoxSelectMode?: (v: boolean) => void;
   /** 卡片模式下节点拖拽后保持 pin */
   isCardGridMode?: () => boolean;
+  /** 卡片模式下节点拖拽时钳制到卡片边界（沿边滑行） */
+  clampNodeDrag?: (id: string, x: number, y: number) => [number, number];
 }
 
 export function setupCanvasEvents(
@@ -405,7 +407,7 @@ export function setupCanvasEvents(
         setDraggingNode(n); n.fx = n.x; n.fy = n.y; setWasDragged(false); canvas.style.cursor = "grabbing";
         // Drag scale feedback
         ctx.setDragScale?.(n.id, 1.1);
-        getSimulation()?.alphaTarget(0.3).restart();
+        if (!ctx.isCardGridMode?.()) getSimulation()?.alphaTarget(0.3).restart();
         ctx.onDragStart?.(n.id);
         if (ctx.viewport) ctx.viewport.pause = true;
       }
@@ -476,7 +478,7 @@ export function setupCanvasEvents(
         setDraggingNode(pendingTouchNode); pendingTouchNode = null;
         const dn = getDraggingNode(); dn.fx = dn.x; dn.fy = dn.y;
         ctx.setDragScale?.(dn.id, 1.1);
-        getSimulation()?.alphaTarget(0.3).restart();
+        if (!ctx.isCardGridMode?.()) getSimulation()?.alphaTarget(0.3).restart();
         ctx.onDragStart?.(dn.id);
         if (ctx.viewport) ctx.viewport.pause = true;
       } else if (!pendingTouchNode && !getDraggingNode()) {
@@ -485,7 +487,9 @@ export function setupCanvasEvents(
     }
     if (getDraggingNode()) {
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= TOUCH_DRAG_THRESHOLD) setWasDragged(true); }
-      getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
+      const clamped = ctx.clampNodeDrag ? ctx.clampNodeDrag(getDraggingNode().id, mx, my) : [mx, my];
+      getDraggingNode().fx = clamped[0]; getDraggingNode().fy = clamped[1];
+      if (!ctx.isCardGridMode?.()) getSimulation()?.alpha(0.3).restart();
     }
     if (!getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
       if (hoveredNodeNote !== hoverNode.note) { hoveredNodeNote = hoverNode.note; updateTooltip(hoverNode.note, touch.clientX, touch.clientY); }
@@ -528,9 +532,10 @@ export function setupCanvasEvents(
         if (gn) { gn.fx = node.fx; gn.fy = node.fy; gn.x = node.x; gn.y = node.y; }
         ctx.triggerSave?.();
       } else if (ctx.isCardGridMode?.()) {
-        node.fx = node.x; node.fy = node.y;
+        // 卡片模式：不钉住节点，让卡片 sim 的力自然作用
+        node.fx = null; node.fy = null;
         const gn3 = ctx.graph.nodes.find((gn4: any) => gn4.id === node.id);
-        if (gn3) { gn3.fx = node.x; gn3.fy = node.y; gn3.x = node.x; gn3.y = node.y; }
+        if (gn3) { gn3.x = node.x; gn3.y = node.y; gn3.fx = null; gn3.fy = null; }
         ctx.triggerSave?.();
       } else {
         node.fx = null; node.fy = null;
@@ -559,9 +564,9 @@ export function setupCanvasEvents(
       const node = getDraggingNode();
       ctx.setDragScale?.(node.id, 1.0);
       if (ctx.isCardGridMode?.()) {
-        node.fx = node.x; node.fy = node.y;
+        node.fx = null; node.fy = null;
         const gn5 = ctx.graph.nodes.find((gn6: any) => gn6.id === node.id);
-        if (gn5) { gn5.fx = node.x; gn5.fy = node.y; gn5.x = node.x; gn5.y = node.y; }
+        if (gn5) { gn5.x = node.x; gn5.y = node.y; gn5.fx = null; gn5.fy = null; }
         ctx.triggerSave?.();
       } else {
         node.fx = null; node.fy = null;
@@ -604,7 +609,9 @@ export function setupCanvasEvents(
     else { canvas.style.cursor = "grab"; }
     if (getDraggingNode()) {
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
-      getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
+      const clamped = ctx.clampNodeDrag ? ctx.clampNodeDrag(getDraggingNode().id, mx, my) : [mx, my];
+      getDraggingNode().fx = clamped[0]; getDraggingNode().fy = clamped[1];
+      if (!ctx.isCardGridMode?.()) getSimulation()?.alpha(0.3).restart();
     }
     // 空白区域拖动 = 平移画布 → 取消长按
     if (!pendingTouchNode && !getDraggingNode() && downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) {
@@ -705,9 +712,9 @@ export function setupCanvasEvents(
         if (gn) { gn.fx = node.fx; gn.fy = node.fy; gn.x = node.x; gn.y = node.y; }
         ctx.triggerSave?.();
       } else if (ctx.isCardGridMode?.()) {
-        node.fx = node.x; node.fy = node.y;
+        node.fx = null; node.fy = null;
         const gn2 = ctx.graph.nodes.find((gn3: any) => gn3.id === node.id);
-        if (gn2) { gn2.fx = node.x; gn2.fy = node.y; gn2.x = node.x; gn2.y = node.y; }
+        if (gn2) { gn2.x = node.x; gn2.y = node.y; gn2.fx = null; gn2.fy = null; }
         ctx.triggerSave?.();
       } else {
         node.fx = null; node.fy = null;

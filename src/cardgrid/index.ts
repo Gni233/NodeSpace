@@ -1,61 +1,89 @@
-import { Container } from 'pixi.js';
 import * as d3 from 'd3';
-import { CardGridState, Card, CardSource } from './types';
-import { createCardGridState, findComponents, syncCards, syncGroupCards } from './state';
-import { packGrid, layoutNodesInCard } from './layout';
-import { renderCards, clearCards } from './render';
-import { setupCardInteractions } from './interactions';
-import { buildGroupCards } from './category';
+import { Container } from 'pixi.js';
+import { Card, CardGridState, CardSource } from './types';
+import {
+  findComponents, buildGroupCards, createState,
+  syncComponentCards, syncGroupCards,
+} from './partition';
+import { layoutCards, cardWorldBox, cardContentScreenBox } from './treemap';
+import { renderCards } from './render';
+import { setupCardInteractions, InteractionContext } from './interactions';
 
 export type { Card, CardGridState } from './types';
 
-export interface CardGridOptions {
-  borderStyle?: 'straight' | 'rounded';
-  gap?: number;
-  cardSource?: CardSource;
-  allGroups?: boolean;
+interface CardSimulationParams {
+  getLinkDist?: () => number;
+  getLinkStr?: () => number;
+  getCharge?: () => number;
+  getCenterS?: () => number;
+  getCollideR?: () => number;
 }
 
-interface CardSim {
-  sim: d3.Simulation<any, any>;
-  nodeIds: string[];
+interface CardSimData {
+  cardId: string;
   simNodes: any[];
+  box: { x: number; y: number; w: number; h: number };
 }
 
 export class CardGridController {
-  state: CardGridState;
   drawFn: () => void = () => {};
   saveFn: () => void = () => {};
   directSaveFn: (() => void) | null = null;
   _saving = false;
 
+  private _state!: CardGridState;
   private _graph: any = null;
   private _pixi: any = null;
   private _sm: any = null;
-  private _cleanupInteraction: (() => void) | null = null;
-  private _viewportZoomCleanup: (() => void) | null = null;
-  private _creationOrder: Map<string, number> = new Map();
+  private _creationOrder = new Map<string, number>();
   private _creationSeq = 0;
   private _screenW = 1200;
   private _screenH = 800;
   private _cardLayer: Container | null = null;
   private _allGroups = false;
-  private _cardSims: Map<string, CardSim> = new Map();
   private _lastCompHash = '';
 
-  constructor() { this.state = createCardGridState(); }
+  private _cardSims = new Map<string, d3.Simulation<any, any>>();
+  private _cleanupInteraction: (() => void) | null = null;
+  private _rafId: number | null = null;
+  private _active = false;
+  private _simParams: CardSimulationParams = {};
+  private _savedViewport: { x: number; y: number; scaleX: number; scaleY: number } | null = null;
+  private _lastRenderAt = 0;
+  private _getLayoutBounds: (() => { x: number; y: number; w: number; h: number }) | null = null;
+  private _viewSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  activate(graph: any, pixi: any, simManager: any, _simNodes: any[], options?: CardGridOptions): void {
+  constructor() {
+    this._state = createState('components');
+  }
+
+  activate(
+    graph: any,
+    pixi: any,
+    simManager: any,
+    simParams: CardSimulationParams,
+    options?: {
+      borderStyle?: 'straight' | 'rounded';
+      gap?: number;
+      cardSource?: CardSource;
+      allGroups?: boolean;
+      getLayoutBounds?: () => { x: number; y: number; w: number; h: number };
+      onBackgroundTap?: () => void;
+    },
+  ): void {
     this._graph = graph;
     this._pixi = pixi;
     this._sm = simManager;
+    this._simParams = simParams;
     this._allGroups = options?.allGroups ?? false;
+    this._getLayoutBounds = options?.getLayoutBounds ?? null;
+
     this._creationOrder = new Map();
     this._creationSeq = 0;
     if (graph?.nodes) {
-      for (let i = 0; i < graph.nodes.length; i++) {
-        if (!this._creationOrder.has(graph.nodes[i].id))
-          this._creationOrder.set(graph.nodes[i].id, this._creationSeq++);
+      for (const n of graph.nodes) {
+        n.fx = null; n.fy = null;
+        if (!this._creationOrder.has(n.id)) this._creationOrder.set(n.id, this._creationSeq++);
       }
     }
 
@@ -63,297 +91,522 @@ export class CardGridController {
       this._screenW = pixi.app.canvas.clientWidth || 1200;
       this._screenH = pixi.app.canvas.clientHeight || 800;
     }
-    if (options?.borderStyle) this.state.borderStyle = options.borderStyle;
-    if (options?.gap != null) this.state.gap = options.gap;
 
     const source = options?.cardSource ?? 'components';
-    this.state.cardSource = source;
+    this._state = createState(source);
+    if (options?.borderStyle) this._state.borderStyle = options.borderStyle;
+    if (options?.gap != null) this._state.gap = options.gap;
 
-    if (pixi?.viewport) {
-      pixi.viewport.plugins.pause('drag');
+    const vp = pixi?.viewport;
+    if (vp) {
+      this._savedViewport = { x: vp.x, y: vp.y, scaleX: vp.scale.x, scaleY: vp.scale.y };
+      const screenPositions = new Map<string, { x: number; y: number }>();
+      for (const n of graph?.nodes ?? []) screenPositions.set(n.id, vp.toScreen(n.x, n.y));
+      for (const plugin of ['drag', 'wheel', 'pinch', 'decelerate']) vp.plugins?.pause?.(plugin);
+      vp.position.set(0, 0);
+      vp.scale.set(1);
+      for (const n of graph?.nodes ?? []) {
+        const p = screenPositions.get(n.id);
+        if (p) { n.x = p.x; n.y = p.y; }
+      }
     }
+    const globalSim = this._sm?.getSim?.();
+    if (globalSim) {
+      for (const node of globalSim.nodes() as any[]) node.fx = node.fy = null;
+      globalSim.stop();
+    }
+
+    this._active = true;
 
     this._cardLayer = pixi?.cardLayer ?? null;
 
-    // 缩放时重建卡片 sim（世界坐标边界变了）
-    if (pixi?.viewport) {
-      const onZoomedEnd = () => {
-        this._relayoutAllCardNodes();
-        this._startCardSims();
-        requestAnimationFrame(() => this.drawFn());
-      };
-      pixi.viewport.on('zoomed-end', onZoomedEnd);
-      this._viewportZoomCleanup = () => {
-        pixi.viewport.off('zoomed-end', onZoomedEnd);
-      };
-    }
-
     if (pixi?.app?.canvas) {
-      const canvas = pixi.app.canvas as HTMLCanvasElement;
-      this._cleanupInteraction = setupCardInteractions(canvas, {
-        getState: () => this.state,
-        getCards: () => this.state.cards,
-        getCanvas: () => canvas,
+      const ctx: InteractionContext = {
+        getState: () => this._state,
+        getCards: () => this._state.cards,
+        getCanvas: () => pixi.app.canvas as HTMLCanvasElement,
         getViewport: () => this._pixi?.viewport ?? null,
-        getSimNodes: () => this._sm?.getSim?.()?.nodes() || [],
+        isOverNode: (sx, sy) => this._isOverNode(sx, sy),
         draw: () => this.drawFn(),
-        onSwap: (sourceId: string, targetId: string) => this.swapCards(sourceId, targetId),
-      });
+        onSwap: (s, t) => this.swapCards(s, t),
+        onPan: (id, dx, dy) => this.panCard(id, dx, dy),
+        onZoom: (id, factor, x, y) => this.zoomCard(id, factor, x, y),
+        onResetView: id => this.resetCardView(id),
+        onBackgroundTap: () => options?.onBackgroundTap?.(),
+      };
+      this._cleanupInteraction = setupCardInteractions(pixi.app.canvas as HTMLCanvasElement, ctx);
     }
   }
 
   deactivate(): void {
-    this._stopCardSims();
+    this._active = false;
+    if (this._viewSaveTimer != null) {
+      clearTimeout(this._viewSaveTimer);
+      this._viewSaveTimer = null;
+      this._saveViewState();
+    }
+    if (this._rafId != null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+    for (const [, sim] of this._cardSims) sim.stop();
+    this._cardSims.clear();
     if (this._cardLayer) {
-      clearCards(this._cardLayer);
+      this._state = createState('components');
     }
-    if (this._pixi?.viewport) {
-      this._pixi.viewport.plugins.resume('drag');
+    const vp = this._pixi?.viewport;
+    if (vp && this._savedViewport) {
+      vp.position.set(this._savedViewport.x, this._savedViewport.y);
+      vp.scale.set(this._savedViewport.scaleX, this._savedViewport.scaleY);
+      for (const n of this._graph?.nodes ?? []) {
+        const world = vp.toWorld(n.x, n.y);
+        n.x = world.x;
+        n.y = world.y;
+      }
+      for (const plugin of ['drag', 'wheel', 'pinch', 'decelerate']) vp.plugins?.resume?.(plugin);
     }
-    if (this._viewportZoomCleanup) {
-      this._viewportZoomCleanup();
-      this._viewportZoomCleanup = null;
+    this._savedViewport = null;
+    this._getLayoutBounds = null;
+    if (this._graph?.nodes) {
+      for (const n of this._graph.nodes) n.fx = n.fy = null;
     }
-    if (this._graph?.nodes)
-      for (const n of this._graph.nodes) { n.fx = null; n.fy = null; }
-    if (this._cleanupInteraction) { this._cleanupInteraction(); this._cleanupInteraction = null; }
-    this.state = createCardGridState();
+    if (this._cleanupInteraction) {
+      this._cleanupInteraction();
+      this._cleanupInteraction = null;
+    }
     this._cardLayer = null;
-    // 恢复全局 sim
+
     const gsim = this._sm?.getSim?.();
     if (gsim) {
-      gsim.alpha(0.3).alphaTarget(0).stop();
-      // unfix 所有节点
-      for (const sn of gsim.nodes()) {
-        sn.fx = null; sn.fy = null;
+      const graphNodes = new Map<string, any>((this._graph?.nodes ?? []).map((n: any) => [n.id, n]));
+      for (const sn of gsim.nodes() as any[]) {
+        const gn = graphNodes.get(sn.id);
+        if (gn) { sn.x = gn.x; sn.y = gn.y; }
+        sn.fx = sn.fy = null;
+      }
+      gsim.alpha(0.3).alphaTarget(0).restart();
+    }
+  }
+
+  tick(): void {
+    if (!this._graph) return;
+
+    const gsim = this._sm?.getSim?.();
+    const nodeMap = new Map<string, any>(this._graph.nodes.map((n: any) => [n.id, n]));
+    this._advanceCardLayout();
+
+    // Only the node explicitly tracked by the interaction layer is being
+    // dragged. Other fx/fy values may be temporary anchors (notably the
+    // 1.5-second stabilizer applied to newly created nodes) and must not
+    // overwrite the card simulation's settled position.
+    const dragged = new Map<string, { fx: number; fy: number }>();
+    const dragNodeId = this._sm?.getDragNode?.() as string | null | undefined;
+    if (gsim && dragNodeId) {
+      const gsn = (gsim.nodes() as any[]).find(node => node.id === dragNodeId);
+      if (gsn && Number.isFinite(gsn.fx) && Number.isFinite(gsn.fy)) {
+        dragged.set(gsn.id, { fx: gsn.fx, fy: gsn.fy });
+      }
+    }
+
+    // 拖拽 pin 先同步到卡片 sim，再推进一帧，避免一帧延迟。
+    for (const [cardId, sim] of this._cardSims) {
+      const cd = (sim as any)._cardData as CardSimData | undefined;
+      if (!cd) continue;
+      for (const sn of cd.simNodes) {
+        const dp = dragged.get(sn.id);
+        if (dp) { sn.x = sn.fx = dp.fx; sn.y = sn.fy = dp.fy; }
+        else if (sn.fx != null) { sn.fx = null; sn.fy = null; }
+      }
+      const card = this._state.cards.find(c => c.id === cardId);
+      if (card) this._syncSimGeometry(card, sim, cd);
+      sim.tick();
+      for (const sn of cd.simNodes) {
+        if (sn.fx != null || sn.fy != null) continue;
+        const gn = nodeMap.get(sn.id);
+        if (gn) { gn.x = sn.x; gn.y = sn.y; }
+      }
+    }
+
+    // 拖拽位置覆盖 graph
+    for (const [id, dp] of dragged) {
+      const gn = nodeMap.get(id);
+      if (gn) { gn.x = dp.fx; gn.y = dp.fy; }
+    }
+
+    // graph → 全局 sim（visibleNodes 读全局 sim）
+    if (gsim) {
+      for (const gsn of gsim.nodes() as any[]) {
+        if (dragged.has(gsn.id)) continue;
+        const gn = nodeMap.get(gsn.id);
+        if (gn) { gsn.x = gn.x; gsn.y = gn.y; gsn.fx = null; gsn.fy = null; }
       }
     }
   }
 
-  /** 每帧调用：推进所有卡片内的力模拟，同步位置 */
-  tick(): void {
-    if (!this._graph) return;
-    for (const [, entry] of this._cardSims) {
-      entry.sim.tick();
-      for (const sn of entry.sim.nodes()) {
-        const gn = this._graph.nodes.find((n: any) => n.id === sn.id);
-        if (gn) { gn.x = sn.x; gn.y = sn.y; gn.fx = null; gn.fy = null; }
-      }
-    }
-    // 同步到全局 sim（画布渲染读取 sim.nodes()）
-    const gsim = this._sm?.getSim?.();
-    if (gsim) {
-      for (const sn of gsim.nodes()) {
-        const gn = this._graph.nodes.find((n: any) => n.id === sn.id);
-        if (gn) { sn.x = gn.x; sn.y = gn.y; sn.fx = gn.x; sn.fy = gn.y; }
-      }
-      gsim.alpha(0).alphaTarget(0);
-    }
+  render(accentColor: number): void {
+    if (this._cardLayer) renderCards(this._cardLayer, this._state, accentColor);
   }
 
   layoutAndAnimate(): void {
     this._doLayout();
-    this._initSimPositions();
-    this._startCardSims();
-    this.drawFn();
+    this._startSims();
+    this.wake();
   }
 
   recalcAndAnimate(): void {
-    // 仅在连通分量/组结构变化时才重排，避免无数据变更时误刷新
-    const hash = this._computeCompHash();
-    if (hash !== this._lastCompHash) {
-      this._lastCompHash = hash;
+    const h = this._computeCompHash();
+    if (h !== this._lastCompHash) {
+      this._lastCompHash = h;
       this._doLayout();
-      this._initSimPositions();
-      this._startCardSims();
+      this._startSims();
     }
-    this.drawFn();
+    this.wake();
     this._saving = true;
     this.saveFn();
     this._saving = false;
   }
 
-  swapCards(sourceId: string, targetId: string): void {
-    const sourceCard = this.state.cards.find(c => c.id === sourceId);
-    const targetCard = this.state.cards.find(c => c.id === targetId);
-    if (!sourceCard || !targetCard) return;
-
-    const tmp = sourceCard.treemapOrder;
-    sourceCard.treemapOrder = targetCard.treemapOrder;
-    targetCard.treemapOrder = tmp;
-
-    this._persistCardOrders();
+  swapCards(srcId: string, tgtId: string): void {
+    const src = this._state.cards.find(c => c.id === srcId);
+    const tgt = this._state.cards.find(c => c.id === tgtId);
+    if (!src || !tgt) return;
+    [src.order, tgt.order] = [tgt.order, src.order];
+    this._persistOrders();
     this._doLayout();
-    this._initSimPositions();
-    this._startCardSims();
-    this.drawFn();
-
-    if (this.directSaveFn) this.directSaveFn();
+    this._startSims();
+    this.wake();
+    this.directSaveFn?.();
   }
 
-  render(accentColor: number): void {
-    if (this._cardLayer) renderCards(this._cardLayer, this.state, accentColor);
+  /** 卡片模式保持低频持续力学运动；交互时提高温度。 */
+  wake(alpha = 0.35): void {
+    if (!this._active) return;
+    for (const [, sim] of this._cardSims) {
+      sim.alpha(Math.max(sim.alpha(), alpha)).alphaTarget(0.018).stop();
+    }
+    if (this._rafId != null) return;
+    const loop = (now: number) => {
+      if (!this._active) { this._rafId = null; return; }
+      this._rafId = requestAnimationFrame(loop);
+      // 30fps 足以表现持续力学，同时避免无意义地占满刷新率。
+      if (now - this._lastRenderAt < 32) return;
+      this._lastRenderAt = now;
+      this.drawFn();
+    };
+    this._rafId = requestAnimationFrame(loop);
+  }
+
+  panCard(cardId: string, dx: number, dy: number): void {
+    const card = this._state.cards.find(c => c.id === cardId);
+    const sim = this._cardSims.get(cardId);
+    const vp = this._pixi?.viewport;
+    if (!card || !sim || !vp) return;
+    const maxX = Math.max(12, card.w * 0.35);
+    const maxY = Math.max(12, card.h * 0.35);
+    const nextX = Math.max(-maxX, Math.min(maxX, card.viewOffsetX + dx));
+    const nextY = Math.max(-maxY, Math.min(maxY, card.viewOffsetY + dy));
+    const actualX = nextX - card.viewOffsetX;
+    const actualY = nextY - card.viewOffsetY;
+    card.viewOffsetX = nextX;
+    card.viewOffsetY = nextY;
+    const p0 = vp.toWorld(0, 0);
+    const p1 = vp.toWorld(actualX, actualY);
+    const cd = (sim as any)._cardData as CardSimData;
+    for (const n of cd.simNodes) { n.x += p1.x - p0.x; n.y += p1.y - p0.y; }
+    this._persistViews();
+    this.wake(0.2);
+  }
+
+  zoomCard(cardId: string, factor: number, anchorX: number, anchorY: number): void {
+    const card = this._state.cards.find(c => c.id === cardId);
+    const sim = this._cardSims.get(cardId);
+    const vp = this._pixi?.viewport;
+    if (!card || !sim || !vp) return;
+    const oldScale = card.viewScale || 1;
+    const nextScale = Math.max(0.45, Math.min(2.5, oldScale * factor));
+    const ratio = nextScale / oldScale;
+    if (Math.abs(ratio - 1) < 0.001) return;
+    const anchor = vp.toWorld(anchorX, anchorY);
+    const cd = (sim as any)._cardData as CardSimData;
+    for (const n of cd.simNodes) {
+      n.x = anchor.x + (n.x - anchor.x) * ratio;
+      n.y = anchor.y + (n.y - anchor.y) * ratio;
+    }
+    card.viewScale = nextScale;
+    this._persistViews();
+    this.wake(0.28);
+  }
+
+  resetCardView(cardId: string): void {
+    const card = this._state.cards.find(c => c.id === cardId);
+    const sim = this._cardSims.get(cardId);
+    const vp = this._pixi?.viewport;
+    if (!card || !sim || !vp) return;
+    const center = vp.toWorld(card.x + card.w / 2, card.y + card.h / 2);
+    const cd = (sim as any)._cardData as CardSimData;
+    const inv = 1 / Math.max(0.01, card.viewScale || 1);
+    for (const n of cd.simNodes) {
+      n.x = center.x + (n.x - center.x) * inv;
+      n.y = center.y + (n.y - center.y) * inv;
+    }
+    card.viewScale = 1;
+    card.viewOffsetX = 0;
+    card.viewOffsetY = 0;
+    this._persistViews();
+    this.wake(0.5);
+  }
+
+  getCrossCardEdgeIndices(edges: any[]): Set<number> {
+    const cardByNode = new Map<string, string>();
+    for (const card of this._state.cards) {
+      for (const nodeId of card.nodeIds) cardByNode.set(nodeId, card.id);
+    }
+    const result = new Set<number>();
+    edges.forEach((edge, index) => {
+      const source = typeof edge.source === 'object' ? edge.source.id : edge.source;
+      const target = typeof edge.target === 'object' ? edge.target.id : edge.target;
+      const sourceCard = cardByNode.get(source);
+      const targetCard = cardByNode.get(target);
+      if (sourceCard && targetCard && sourceCard !== targetCard) result.add(index);
+    });
+    return result;
+  }
+
+  clampToCard(nodeId: string, x: number, y: number): [number, number] {
+    this.wake(0.2);
+    for (const card of this._state.cards) {
+      if (!card.nodeIds.includes(nodeId)) continue;
+      const vp = this._pixi?.viewport;
+      if (!vp) return [x, y];
+      const content = cardContentScreenBox(card);
+      const tl = vp.toWorld(content.x, content.y);
+      const br = vp.toWorld(content.x + content.w, content.y + content.h);
+      return [
+        Math.max(tl.x, Math.min(br.x, x)),
+        Math.max(tl.y, Math.min(br.y, y)),
+      ];
+    }
+    return [x, y];
   }
 
   markNewNode(nodeId: string): void {
-    if (!this._creationOrder.has(nodeId))
+    if (!this._creationOrder.has(nodeId)) {
       this._creationOrder.set(nodeId, this._creationSeq++);
+    }
   }
 
   updateScreenSize(w: number, h: number): void {
     this._screenW = w;
     this._screenH = h;
     this._doLayout();
-    this._initSimPositions();
-    this._startCardSims();
-    this.drawFn();
+    this._startSims();
+    this.wake(0.45);
   }
 
-  // ---- private ----
-
-  private _getVpAdapter() {
-    const vp = this._pixi?.viewport;
-    return vp ? {
-      toWorld: (sx: number, sy: number) => vp.toWorld(sx, sy),
-      scale: { x: vp.scale.x, y: vp.scale.y },
-    } : {
-      toWorld: (sx: number, sy: number) => ({ x: sx - this._screenW / 2, y: sy - this._screenH / 2 }),
-      scale: { x: 1, y: 1 },
-    };
-  }
-
-  private _persistCardOrders(): void {
-    if (!this._graph?.settings) return;
-    const key = this.state.cardSource === 'groups' ? 'groupCardOrders' : 'cardOrders';
-    const orders: Record<string, number> = {};
-    for (const c of this.state.cards) orders[c.id] = c.treemapOrder;
-    (this._graph.settings as any)[key] = orders;
-  }
+  // ========= 内部 =========
 
   private _doLayout(): void {
-    const savedOrdersKey = this.state.cardSource === 'groups' ? 'groupCardOrders' : 'cardOrders';
-    const savedOrders: Record<string, number> | null = (this._graph?.settings as any)?.[savedOrdersKey] ?? null;
+    if (!this._graph) return;
 
-    if (this.state.cardSource === 'groups') {
+    const sk = this._state.source !== 'components' ? 'groupCardOrders' : 'cardOrders';
+    const savedOrders = (this._graph.settings as any)?.[sk] ?? null;
+
+    if (this._state.source !== 'components') {
       const newCards = buildGroupCards(this._graph, this._allGroups);
-      this.state.cards = syncGroupCards(this.state, newCards, savedOrders);
+      this._state.cards = syncGroupCards(this._state.cards, newCards, savedOrders);
     } else {
-      const nodes: any[] = this._graph?.nodes || [];
-      const edges: any[] = this._graph?.edges || [];
-      for (const n of nodes)
-        if (!this._creationOrder.has(n.id))
-          this._creationOrder.set(n.id, this._creationSeq++);
-      const comps = findComponents(nodes, edges);
-      this.state.cards = syncCards(this.state, comps, this._creationOrder, savedOrders);
+      const ns = this._graph?.nodes || [];
+      for (const n of ns) {
+        if (!this._creationOrder.has(n.id)) this._creationOrder.set(n.id, this._creationSeq++);
+      }
+      const comps = findComponents(ns, this._graph?.edges || []);
+      this._state.cards = syncComponentCards(this._state.cards, comps, this._creationOrder, savedOrders);
     }
 
     this._lastCompHash = this._computeCompHash();
-    packGrid(this.state.cards, this._screenW, this._screenH, this.state.gap);
-    this._relayoutAllCardNodes();
-    this._persistCardOrders();
+    const bounds = this._getLayoutBounds?.() ?? { x: 0, y: 0, w: this._screenW, h: this._screenH };
+    layoutCards(this._state.cards, Math.max(1, bounds.w), Math.max(1, bounds.h), this._state.gap, bounds.x, bounds.y);
+    this._restoreViews();
+    this._persistOrders();
   }
 
-  private _relayoutAllCardNodes(): void {
-    const nodes: any[] = this._graph?.nodes || [];
-    const edges: any[] = this._graph?.edges || [];
-    const nodeMap = new Map<string, any>(nodes.map((n: any) => [n.id, n]));
-    const vpAdapter = this._getVpAdapter();
-
-    for (const card of this.state.cards) {
-      layoutNodesInCard(card, nodeMap, edges, vpAdapter);
-      for (const nid of card.nodeIds) {
-        const n = nodeMap.get(nid);
-        if (n && (n as any)._cardX != null) { n.x = (n as any)._cardX; n.y = (n as any)._cardY; }
-      }
-    }
-  }
-
-  /** 初始化 sim 的初始位置（同步 graph.nodes → sim nodes） */
-  private _initSimPositions(): void {
-    const gsim = this._sm?.getSim?.();
-    if (!gsim) return;
-    gsim.stop();
-    for (const sn of gsim.nodes()) {
-      const gn = this._graph.nodes.find((n: any) => n.id === sn.id);
-      if (gn) { sn.x = gn.x; sn.y = gn.y; sn.fx = gn.x; sn.fy = gn.y; }
-    }
-    gsim.alpha(0).alphaTarget(0);
-  }
-
-  private _startCardSims(): void {
-    this._stopCardSims();
+  private _startSims(): void {
     if (!this._graph) return;
 
-    // 停止全局 sim（卡片内用独立 sim）
+    for (const [, sim] of this._cardSims) sim.stop();
+    this._cardSims.clear();
+
     const gsim = this._sm?.getSim?.();
     gsim?.stop();
 
-    const nodes: any[] = this._graph.nodes;
-    const edges: any[] = this._graph.edges || [];
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    const vpAdapter = this._getVpAdapter();
+    const allEdges = this._graph.edges || [];
+    const graphNodeMap = new Map<string, any>(this._graph.nodes.map((n: any) => [n.id, n]));
 
-    for (const card of this.state.cards) {
-      const tl = vpAdapter.toWorld(card.x + card.padding, card.y + card.padding);
-      const br = vpAdapter.toWorld(card.x + card.w - card.padding, card.y + card.h - card.padding);
-      const box = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
-      if (box.w <= 20 || box.h <= 20) continue;
+    for (const card of this._state.cards) {
+      if (card.nodeIds.length === 0) continue;
+
+      const box = cardWorldBox(card, this._pixi?.viewport ?? null);
+      if (!box || box.w <= 20 || box.h <= 20) continue;
+
+      const vp = this._pixi?.viewport;
+      if (!vp) continue;
+      const center = vp.toWorld(
+        card.x + card.w / 2 + card.viewOffsetX,
+        card.y + card.h / 2 + card.viewOffsetY,
+      );
+      const cx = center.x;
+      const cy = center.y;
 
       const simNodes: any[] = [];
-      for (const nid of card.nodeIds) {
-        const n = nodeMap.get(nid);
-        if (!n) continue;
-        simNodes.push({ id: nid, x: n.x, y: n.y, r: (n.radius ?? 14) + 6 });
+      for (let index = 0; index < card.nodeIds.length; index++) {
+        const id = card.nodeIds[index];
+        const gn = graphNodeMap.get(id);
+        if (!gn) continue;
+        const radius = this._nodeRadius(gn);
+        const inside = Number.isFinite(gn.x) && Number.isFinite(gn.y)
+          && gn.x >= box.x && gn.x <= box.x + box.w
+          && gn.y >= box.y && gn.y <= box.y + box.h;
+        const angle = index * 2.399963229728653;
+        const spread = Math.min(box.w, box.h) * Math.min(0.32, 0.06 * Math.sqrt(index + 1));
+        simNodes.push({
+          id,
+          x: inside ? gn.x : cx + Math.cos(angle) * spread,
+          y: inside ? gn.y : cy + Math.sin(angle) * spread,
+          r: radius + 4,
+        });
       }
       if (simNodes.length === 0) continue;
 
-      const compSet = new Set(card.nodeIds);
-      const simEdges: any[] = [];
-      for (const e of edges) {
+      const cardNodeIds = new Set(card.nodeIds);
+      const cardEdges = allEdges.flatMap((e: any) => {
         const s = typeof e.source === 'object' ? e.source.id : e.source;
         const t = typeof e.target === 'object' ? e.target.id : e.target;
-        if (compSet.has(s) && compSet.has(t)) simEdges.push({ source: s, target: t });
-      }
+        return cardNodeIds.has(s) && cardNodeIds.has(t) ? [{ ...e, source: s, target: t }] : [];
+      });
 
+      const data: CardSimData = { cardId: card.id, simNodes, box: { ...box } };
       const sim = d3.forceSimulation(simNodes)
-        .alphaMin(0.001)
-        .velocityDecay(0.4)
-        .force('cent', d3.forceCenter(box.x + box.w / 2, box.y + box.h / 2).strength(0.02))
-        .force('coll', d3.forceCollide().radius((d: any) => d.r + 3).strength(1.5))
+        .force('charge', d3.forceManyBody().strength((this._simParams.getCharge?.() ?? -100) * card.viewScale))
+        .force('center', d3.forceCenter(cx, cy).strength(this._simParams.getCenterS?.() ?? 0.05))
+        .force('collide', d3.forceCollide().radius((d: any) => d.r + (this._simParams.getCollideR?.() ?? 4)).strength(1))
         .force('bnd', () => {
+          const b = data.box;
           for (const sn of simNodes) {
-            // 跳过被拖拽的节点（有 fx/fy 设置）
             if (sn.fx != null || sn.fy != null) continue;
-            if (sn.x - sn.r < box.x) sn.x = box.x + sn.r;
-            else if (sn.x + sn.r > box.x + box.w) sn.x = box.x + box.w - sn.r;
-            if (sn.y - sn.r < box.y) sn.y = box.y + sn.r;
-            else if (sn.y + sn.r > box.y + box.h) sn.y = box.y + box.h - sn.r;
+            if (sn.x - sn.r < b.x) { sn.x = b.x + sn.r; sn.vx = Math.abs(sn.vx || 0) * 0.2; }
+            else if (sn.x + sn.r > b.x + b.w) { sn.x = b.x + b.w - sn.r; sn.vx = -Math.abs(sn.vx || 0) * 0.2; }
+            if (sn.y - sn.r < b.y) { sn.y = b.y + sn.r; sn.vy = Math.abs(sn.vy || 0) * 0.2; }
+            else if (sn.y + sn.r > b.y + b.h) { sn.y = b.y + b.h - sn.r; sn.vy = -Math.abs(sn.vy || 0) * 0.2; }
           }
         });
 
-      if (simEdges.length > 0)
-        sim.force('lnk', d3.forceLink(simEdges).id((d: any) => d.id).distance(40).strength(0.15));
+      if (cardEdges.length > 0)
+        sim.force('link', d3.forceLink(cardEdges)
+          .id((d: any) => d.id)
+          .distance((this._simParams.getLinkDist?.() ?? 40) * card.viewScale)
+          .strength(this._simParams.getLinkStr?.() ?? 0.3));
 
-      sim.alpha(0.05).alphaTarget(0).restart();
-      this._cardSims.set(card.id, { sim, nodeIds: card.nodeIds, simNodes });
+      // 手动以 30fps 推进；小幅 alphaTarget 保留持续的力学响应。
+      sim.alpha(1).alphaTarget(0.018).stop();
+      (sim as any)._cardData = data;
+
+      this._cardSims.set(card.id, sim);
     }
+  }
+
+  private _isOverNode(sx: number, sy: number): boolean {
+    const vp = this._pixi?.viewport;
+    if (!vp) return false;
+    const w = vp.toWorld(sx, sy);
+    for (const n of this._graph?.nodes ?? []) {
+      const r = (n.radius ?? 14) + 6;
+      if ((w.x - n.x) ** 2 + (w.y - n.y) ** 2 <= r * r) return true;
+    }
+    return false;
+  }
+
+  private _advanceCardLayout(): void {
+    for (const card of this._state.cards) {
+      if (card.targetX == null || card.targetY == null || card.targetW == null || card.targetH == null) continue;
+      for (const key of ['x', 'y', 'w', 'h'] as const) {
+        const target = card[`target${key.toUpperCase()}` as 'targetX' | 'targetY' | 'targetW' | 'targetH']!;
+        const delta = target - card[key];
+        card[key] = Math.abs(delta) < 0.15 ? target : card[key] + delta * 0.18;
+      }
+    }
+  }
+
+  private _syncSimGeometry(card: Card, sim: d3.Simulation<any, any>, data: CardSimData): void {
+    const vp = this._pixi?.viewport;
+    if (!vp) return;
+    const box = cardWorldBox(card, vp);
+    if (!box) return;
+    Object.assign(data.box, box);
+    const center = vp.toWorld(
+      card.x + card.w / 2 + card.viewOffsetX,
+      card.y + card.h / 2 + card.viewOffsetY,
+    );
+    const centerForce = sim.force('center') as any;
+    centerForce?.x?.(center.x)?.y?.(center.y)?.strength?.(this._simParams.getCenterS?.() ?? 0.05);
+    const linkForce = sim.force('link') as any;
+    linkForce?.distance?.((this._simParams.getLinkDist?.() ?? 40) * card.viewScale);
+    const chargeForce = sim.force('charge') as any;
+    chargeForce?.strength?.((this._simParams.getCharge?.() ?? -100) * card.viewScale);
+  }
+
+  private _restoreViews(): void {
+    const key = this._state.source === 'components' ? 'cardViews' : 'groupCardViews';
+    const views = (this._graph?.settings as any)?.[key] as Record<string, { scale: number; offsetX: number; offsetY: number }> | undefined;
+    if (!views) return;
+    for (const card of this._state.cards) {
+      const view = views[card.id];
+      if (!view) continue;
+      card.viewScale = Math.max(0.45, Math.min(2.5, view.scale || 1));
+      card.viewOffsetX = Number.isFinite(view.offsetX) ? view.offsetX : 0;
+      card.viewOffsetY = Number.isFinite(view.offsetY) ? view.offsetY : 0;
+    }
+  }
+
+  private _persistViews(): void {
+    if (!this._graph?.settings) return;
+    const key = this._state.source === 'components' ? 'cardViews' : 'groupCardViews';
+    const views: Record<string, { scale: number; offsetX: number; offsetY: number }> = {};
+    for (const card of this._state.cards) {
+      views[card.id] = { scale: card.viewScale, offsetX: card.viewOffsetX, offsetY: card.viewOffsetY };
+    }
+    (this._graph.settings as any)[key] = views;
+    if (this._viewSaveTimer != null) clearTimeout(this._viewSaveTimer);
+    this._viewSaveTimer = setTimeout(() => {
+      this._viewSaveTimer = null;
+      this._saveViewState();
+    }, 250);
+  }
+
+  private _saveViewState(): void {
+    this._saving = true;
+    this.saveFn();
+    this._saving = false;
+  }
+
+  private _nodeRadius(node: any): number {
+    if (node.radiusMode === 'custom' || (!node.radiusMode && node.radius)) return node.radius || 9;
+    return [22, 19, 16, 13, 10, 7][(node.headingLevel || 6) - 1] || 9;
+  }
+
+  private _persistOrders(): void {
+    if (!this._graph?.settings) return;
+    const k = (this._state.source !== 'components') ? 'groupCardOrders' : 'cardOrders';
+    const o: Record<string, number> = {};
+    for (const c of this._state.cards) o[c.id] = c.order;
+    (this._graph.settings as any)[k] = o;
   }
 
   private _computeCompHash(): string {
-    if (this.state.cardSource === 'groups') {
-      const cards = buildGroupCards(this._graph, this._allGroups);
-      return cards.map(c => c.id).join('|');
+    if (this._state.source !== 'components') {
+      return buildGroupCards(this._graph, this._allGroups)
+        .map(c => `${c.id}:${[...c.nodeIds].sort().join(',')}`)
+        .sort()
+        .join('|');
     }
-    const nodes: any[] = this._graph?.nodes || [];
-    const edges: any[] = this._graph?.edges || [];
-    const comps = findComponents(nodes, edges);
-    return comps.map(c => c.sort().join(',')).sort().join('|');
-  }
-
-  private _stopCardSims(): void {
-    for (const [, entry] of this._cardSims) {
-      entry.sim.stop();
-    }
-    this._cardSims.clear();
+    const ns = this._graph?.nodes || [];
+    const es = this._graph?.edges || [];
+    return findComponents(ns, es).map(c => c.sort().join(',')).sort().join('|');
   }
 }

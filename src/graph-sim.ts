@@ -49,6 +49,10 @@ export function createSimManager(
     dragNodeId = id;
   }
 
+  function getDragNode() {
+    return dragNodeId;
+  }
+
   const origOnTick = onTick;
   const wrappedTick = () => {
     if (dragNodeId && simulation) {
@@ -85,5 +89,5 @@ export function createSimManager(
 
   function getSim() { return simulation; }
 
-  return { initSim, updateCenter, getSim, setDragNode };
+  return { initSim, updateCenter, getSim, setDragNode, getDragNode };
 }
