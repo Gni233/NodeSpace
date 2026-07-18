@@ -35,8 +35,8 @@ class CardGfx {
   /** 清理并移除所有图形对象 */
   dispose(layer: Container): void {
     for (const gfx of [this.border, this.selection, this.ghost, this.swapTarget]) {
-      gfx.clear();
       if (gfx.parent) layer.removeChild(gfx);
+      gfx.destroy();
     }
     for (const [, text] of this.labels) {
       text.visible = false;
@@ -194,6 +194,10 @@ export function clearCards(layer: Container): void {
   }
   for (const k of ['_cardGfx', '_cardSelGfx', '_cardGhost', '_cardSwapTarget']) {
     const g = (layer as any)[k] as Graphics | null;
-    if (g && !g.destroyed) { g.clear(); layer.removeChild(g); (layer as any)[k] = null; }
+    if (g && !g.destroyed) {
+      if (g.parent) g.parent.removeChild(g);
+      g.destroy();
+    }
+    (layer as any)[k] = null;
   }
 }

@@ -4,6 +4,7 @@ import * as d3 from 'd3';
 
 import { sharedState } from './shared-state';
 import { createStorage, GraphData, GraphSettings } from './data/storage';
+import { createRecoveryStorage } from './recovery-storage';
 import { createSimManager } from './graph-sim';
 import { setupCanvasEvents } from './ui-events';
 import { showContextMenu } from './ui-contextmenu';
@@ -17,7 +18,7 @@ import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-
 import { isCapacitor, importFilesMobile, pickDirectoryAndImport, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
 import { safPickDirectory, safRestoreDirectory, safIsAvailable } from './saf-bridge';
 import { isHarmonyOS } from './utils/platform';
-import { FileAdapter } from './file-adapter';
+import { FileAdapter, Result, joinPath, replacePathName } from './file-adapter';
 import { createFSAAdapter } from './file-system';
 import { createCapacitorAdapter } from './fs-mobile';
 import { createHarmonyAdapter } from './fs-harmony';
@@ -41,12 +42,15 @@ import { showToast, confirmAction } from './toast';
 import { startNodeAnimation } from './utils/animate-nodes';
 import { EASING, DURATION } from './utils/easing';
 import { createPaneState, PANE_LEFT, PANE_RIGHT, PaneState } from './pane-state';
+import { LayoutSlot } from './layout-controller';
+import { GraphRuntime, GraphRuntimeRegistry } from './graph-runtime';
+import { serializeGraphSnapshot } from './graph-snapshot';
 import { PaneManager, PaneExternals } from './pane-manager';
 import { createMultiPaneLayout, MultiPaneDOM } from './dual-pane-layout';
 import { SIDEBAR_LEFT, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH, sidebarExpandedLeft, sidebarCollapsedLeft, getResponsiveSidebarWidth, Z_CANVAS, Z_LOADING, Z_FLOATING_UI, Z_MOBILE_TOOLBAR, Z_MEDIA_OVERLAY, Z_EDIT_PANEL, Z_SELECTION_BOX, Z_SETTINGS_PANEL, Z_DROPDOWN, Z_CONTEXT_MENU, Z_WINDOW_CONTROLS, Z_STATS, Z_TOAST, WIN_CONTROLS_WIDTH, LAYOUT_ANIM_DURATION, SEARCH_MOVE_DURATION, FIT_ALL_DURATION } from './layout-constants';
 const ANIM_DURATION = 500;
 (window as any).__triggerSave = () => {};
-import { createPixiApp, PixiLayers } from './pixi-app';
+import { clearBlobLayer, createPixiApp, PixiLayers } from './pixi-app';
 import { createNodeSprite, updateNodePosition, applyNodeVisual, getHeadingColor, getSpectrumColor, getNarrowSpectrumColor, NodeSprite, NodeVisualState, setNodeFontFamily } from './pixi-nodes';
 import { updateEdges } from './pixi-edges';
 import { updateGroups } from './pixi-groups';
@@ -152,15 +156,19 @@ async function main() {
       // 打开标签（若尚未激活）
       if (targetPaneIdx === PANE_LEFT) {
         if (activeTab !== fileName) {
-          if (saveTimeout) clearTimeout(saveTimeout);
-          writeGraphData(activeTab, graph);
+          const runtime = primaryRuntime;
+          saveRuntimeNow(runtime, collectSettings()).then(saved => {
+            if (saved) dirtyTabs.delete(runtime.fileName);
+          });
           activeTab = fileName; loadGraphData(fileName);
         }
       } else {
         const ep = extraPanes[targetPaneIdx - 1];
         if (ep && ep.activeTab !== fileName) {
-          if (ep.saveTimeout) clearTimeout(ep.saveTimeout);
-          writeGraphData(ep.activeTab, ep.graph);
+          const runtime = ep.runtime;
+          saveRuntimeNow(runtime, collectPaneSettings(ep)).then(saved => {
+            if (saved) ep.dirtyTabs.delete(runtime.fileName);
+          });
           loadGraphForPane(ep, fileName);
         }
       }
@@ -182,8 +190,12 @@ async function main() {
             renderAllTabs(); persistTabs(); draw();
             return;
           }
-          if (ep.saveTimeout) clearTimeout(ep.saveTimeout);
-          if (fileName === ep.activeTab) writeGraphData(fileName, ep.graph);
+          if (fileName === ep.activeTab) {
+            const runtime = ep.runtime;
+            saveRuntimeNow(runtime, collectPaneSettings(ep)).then(saved => {
+              if (saved) ep.dirtyTabs.delete(runtime.fileName);
+            });
+          }
           ep.openTabs = ep.openTabs.filter(t => t !== fileName);
           if (fileName === ep.activeTab) { ep.activeTab = ep.openTabs[ep.openTabs.length - 1]; loadGraphForPane(ep, ep.activeTab); }
         }
@@ -532,7 +544,7 @@ async function main() {
         case 'delete_graph': {
           const name = args.name || args.label;
           if (!name) { results.push('need "name" arg'); break; }
-          await createStorage(name).deleteData(); await adapter.deleteFile(name);
+          createRecoveryStorage(name).delete(); await adapter.deleteFile(name);
           openTabs = openTabs.filter(t => t !== name);
           if (activeTab === name) activeTab = openTabs[0] || '';
           persistTabs(); renderAllTabs();
@@ -769,16 +781,49 @@ async function main() {
   };
   const reinitAdapter = () => { selectAdapter(); };
 
-  // 存储适配器：所有图统一走 localStorage
+  const clearTransientCategoryVisuals = (data: GraphData) => {
+    for (const node of data.nodes || []) delete (node as any)._pieColors;
+    delete (data as any)._categoryBoxes;
+  };
+
   const readGraphData = async (fileName: string): Promise<GraphData | null> => {
+    const recovery = createRecoveryStorage(fileName);
     const r = await adapter.readFile(fileName);
     if (r.ok && r.value) {
+      if (recovery.hasUnsynced()) {
+        const useRecovery = await confirmAction(
+          `“${fileName.replace(/\.json$/, '')}”有尚未同步到文件的恢复副本。`,
+          { confirm: '使用恢复副本', cancel: '使用磁盘版本' },
+        );
+        if (useRecovery) {
+          const snapshot = recovery.readSnapshot();
+          if (snapshot) {
+            const parsed = JSON.parse(snapshot) as GraphData;
+            clearTransientCategoryVisuals(parsed);
+            return parsed;
+          }
+        } else {
+          recovery.clearUnsynced();
+        }
+      }
       const parsed = JSON.parse(r.value) as GraphData;
-      const lsData = await createStorage(fileName).readData();
-      if (lsData?.settings) { parsed.settings = { ...parsed.settings, ...lsData.settings }; }
+      const cached = await createStorage(fileName).readData();
+      if (cached?.settings) parsed.settings = { ...cached.settings, ...(parsed.settings || {}) };
+      clearTransientCategoryVisuals(parsed);
       return parsed;
     }
-    return await createStorage(fileName).readData();
+    const stored = await createStorage(fileName).readData();
+    if (!stored) return null;
+    if (recovery.hasUnsynced()) {
+      const useRecovery = await confirmAction(
+        `无法读取“${fileName.replace(/\.json$/, '')}”的磁盘版本，是否打开本地恢复副本？`,
+        { confirm: '打开恢复副本', cancel: '取消' },
+      );
+      if (!useRecovery) return null;
+      showToast('正在使用未同步的本地恢复副本', 'warning', 5000);
+    }
+    clearTransientCategoryVisuals(stored);
+    return stored;
   };
 
   let lastSaveErrorAt = 0;
@@ -789,21 +834,22 @@ async function main() {
     showToast(`“${fileName.replace(/\.json$/, '')}”保存失败：${detail}`, 'error', 6000);
   };
 
-  const writeGraphData = async (fileName: string, data: GraphData): Promise<boolean> => {
-    // 剥离运行时内部标记，防止下次加载时 initSimulation 过滤掉边
-    const cleanEdges = (data.edges || []).map((e: any) => {
-      const { _createdAt, _dyingAt, _conflict, ...rest } = e;
-      return rest;
-    });
-    const cleanData = { ...data, edges: cleanEdges };
-    await createStorage(fileName).writeData(cleanData);
-    const result = await adapter.writeFile(fileName, JSON.stringify(cleanData));
+  const writeGraphSnapshot = async (fileName: string, snapshot: string): Promise<boolean> => {
+    const recovery = createRecoveryStorage(fileName);
+    const result = await adapter.writeFile(fileName, snapshot);
     if (!result.ok || result.value !== true) {
-      reportSaveFailure(fileName, result.ok ? '存储设备拒绝了写入' : result.error);
+      const recovered = recovery.writeSnapshot(snapshot) && recovery.markUnsynced();
+      const recoveryStatus = recovered ? '，已保留恢复副本' : '，且无法写入恢复缓存';
+      reportSaveFailure(fileName, `${result.ok ? '存储设备拒绝了写入' : result.error}${recoveryStatus}`);
       return false;
     }
+    recovery.writeSnapshot(snapshot);
+    recovery.clearUnsynced();
     return true;
   };
+
+  const writeGraphData = async (fileName: string, data: GraphData): Promise<boolean> =>
+    writeGraphSnapshot(fileName, serializeGraphSnapshot(data, data.settings));
 
   // --- 标签页持久化 ---
   const TABS_KEY = 'fg-open-tabs';
@@ -830,6 +876,89 @@ async function main() {
     return null;
   }
 
+  const replaceTabPath = (tabs: string[], oldPath: string, newPath: string): string[] =>
+    [...new Set(tabs.map(tab => tab === oldPath ? newPath : tab))];
+
+  const renameOpenFile = (oldPath: string, newPath: string) => {
+    openTabs = replaceTabPath(openTabs, oldPath, newPath);
+    if (activeTab === oldPath) activeTab = newPath;
+    if (dirtyTabs.delete(oldPath)) dirtyTabs.add(newPath);
+    for (const pane of extraPanes) {
+      pane.openTabs = replaceTabPath(pane.openTabs, oldPath, newPath);
+      if (pane.activeTab === oldPath) pane.activeTab = newPath;
+      if (pane.dirtyTabs.delete(oldPath)) pane.dirtyTabs.add(newPath);
+    }
+  };
+
+  const removeOpenFile = async (path: string) => {
+    openTabs = openTabs.filter(tab => tab !== path);
+    dirtyTabs.delete(path);
+    if (activeTab === path) {
+      if (openTabs.length === 0) openTabs.push(BUILTIN_NAMES[0]);
+      activeTab = openTabs[openTabs.length - 1];
+      await loadGraphData(activeTab);
+    }
+    for (const pane of extraPanes) {
+      pane.openTabs = pane.openTabs.filter(tab => tab !== path);
+      pane.dirtyTabs.delete(path);
+      if (pane.activeTab !== path) continue;
+      if (pane.openTabs.length === 0) pane.openTabs.push(BUILTIN_NAMES[0]);
+      await loadGraphForPane(pane, pane.openTabs[pane.openTabs.length - 1]);
+    }
+  };
+
+  const migrateOpenFile = async (oldPath: string, newPath: string, operation: () => Promise<Result<boolean>>) => {
+    if (oldPath === newPath) return true;
+    const destinationRuntime = runtimeRegistry.get(newPath);
+    if (destinationRuntime && destinationRuntime !== runtimeRegistry.get(oldPath)) {
+      showToast(`目标文件已打开：${newPath}`, 'error');
+      return false;
+    }
+    const runtime = runtimeRegistry.get(oldPath);
+    const oldRecovery = createRecoveryStorage(oldPath);
+    const hadUnsyncedRecovery = oldRecovery.hasUnsynced();
+    const data = runtime?.graph ?? await readGraphData(oldPath);
+    const finishRuntimeOperation = () => {
+      if (!runtime) return;
+      runtime.fileOperationActive = false;
+      if (!runtime.dirty || runtime.externalConflict) return;
+      runtime.cancelPendingSave();
+      runtime.saveTimeout = setTimeout(async () => {
+        runtime.saveTimeout = null;
+        await saveRuntimeNow(runtime);
+      }, 300);
+    };
+    if (runtime) {
+      runtime.fileOperationActive = true;
+      if (!await saveRuntimeNow(runtime)) {
+        finishRuntimeOperation();
+        return false;
+      }
+      await runtime.invalidateSaves();
+    }
+    try {
+      const result = await operation();
+      if (!result.ok || result.value !== true) {
+        showToast(`文件操作失败：${result.ok ? '存储设备拒绝了操作' : result.error}`, 'error', 6000);
+        return false;
+      }
+      if (data) {
+        const targetRecovery = createRecoveryStorage(newPath);
+        targetRecovery.writeSnapshot(serializeGraphSnapshot(data, data.settings));
+        if (hadUnsyncedRecovery) targetRecovery.markUnsynced();
+      }
+      oldRecovery.delete();
+      if (runtimeRegistry.get(oldPath)) runtimeRegistry.rename(oldPath, newPath);
+      renameOpenFile(oldPath, newPath);
+      renderAllTabs();
+      persistTabs();
+      sidebar.syncActiveFile(activeTab);
+      return true;
+    } finally {
+      finishRuntimeOperation();
+    }
+  };
+
   const sidebar = createSidebar(appShell, {
     onSelectFile: async (path) => {
       if (focusedPaneIndex === PANE_RIGHT) {
@@ -851,27 +980,26 @@ async function main() {
       await openTab(path);
     },
     onDeleteFile: async (path) => {
-      await createStorage(path).deleteData();
-      if (fileSystemMountPath) { await adapter.deleteFile(path); }
-      openTabs = openTabs.filter(t => t !== path);
-      if (activeTab === path) {
-        activeTab = openTabs.length > 0 ? openTabs[openTabs.length - 1] : BUILTIN_NAMES[0];
-        await loadGraphData(activeTab);
+      const runtime = runtimeRegistry.get(path);
+      if (runtime) await runtime.invalidateSaves();
+      const result = await adapter.deleteFile(path);
+      if (!result.ok || result.value !== true) {
+        showToast(`删除失败：${result.ok ? '存储设备拒绝了操作' : result.error}`, 'error', 6000);
+        return;
       }
+      await removeOpenFile(path);
+      runtimeRegistry.delete(path);
+      createRecoveryStorage(path).delete();
       renderAllTabs();
       persistTabs();
       await refreshFileTree();
     },
     onRenameFile: async (oldPath, newName) => {
-      const newPath = newName.endsWith('.json') ? newName : newName + '.json';
-      await adapter.renameFile(oldPath, newPath);
-      if (activeTab === oldPath) {
-        openTabs = openTabs.map(t => t === oldPath ? newPath : t);
-        await loadGraphData(newPath);
-        renderAllTabs();
-        persistTabs();
+      const normalizedName = newName.endsWith('.json') ? newName : newName + '.json';
+      const newPath = replacePathName(oldPath, normalizedName);
+      if (await migrateOpenFile(oldPath, newPath, () => adapter.renameFile(oldPath, normalizedName))) {
+        await refreshFileTree();
       }
-      await refreshFileTree();
     },
     onCopyFile: async (path) => {
       const content = await readGraphData(path);
@@ -885,13 +1013,12 @@ async function main() {
       await refreshFileTree();
     },
     onMoveFile: async (src, dstDir) => {
-      const parts = src.split('/'); const name = parts.pop()!;
-      const dstPath = dstDir + '/' + name;
-      const content = await readGraphData(src);
-      await writeGraphData(dstPath, content || { nodes: [], edges: [], groups: [] });
-      await adapter.moveFile(src, dstDir);
-      if (activeTab === src) { await loadGraphData(dstPath); }
-      await refreshFileTree();
+      const name = src.split('/').pop()!;
+      const dstPath = joinPath(dstDir, name);
+      if (src === dstPath) return;
+      if (await migrateOpenFile(src, dstPath, () => adapter.moveFile(src, dstDir))) {
+        await refreshFileTree();
+      }
     },
     onApplyPreset: () => { settingsPanel.show(); },
     onResetPresets: () => { settingsPanel.show(); },
@@ -1017,6 +1144,9 @@ async function main() {
     const last = _extChangeLast.get(graphName) || 0;
     if (now - last < 500) return;
     _extChangeLast.set(graphName, now);
+    setTimeout(() => {
+      if (_extChangeLast.get(graphName) === now) _extChangeLast.delete(graphName);
+    }, EXT_CHANGE_DEBOUNCE);
 
     refreshFileTree();
 
@@ -1028,8 +1158,28 @@ async function main() {
     const isMain = clean(activeTab) === gnClean;
     const isPane1 = clean(pane1.activeTab) === gnClean;
     const extraIdx = extraPanes.slice(1).findIndex(ep => clean(ep.activeTab) === gnClean);
+    const targetRuntime = runtimeRegistry.values().find(runtime => clean(runtime.fileName) === gnClean) ?? null;
 
-    if (!isMain && !isPane1 && extraIdx < 0) return;
+    if (!isMain && !isPane1 && extraIdx < 0 && !targetRuntime) return;
+
+    if (targetRuntime?.dirty) {
+      targetRuntime.markExternalConflict();
+      await targetRuntime.invalidateSaves();
+      const useDisk = await confirmAction(
+        `“${targetRuntime.fileName.replace(/\.json$/, '')}”在本地和磁盘上都已修改。`,
+        { confirm: '使用磁盘版本', cancel: '保留本地版本' },
+      );
+      if (!useDisk) {
+        showToast('已保留本地版本；自动保存已暂停，请手动保存后选择是否覆盖磁盘', 'warning', 6000);
+        renderAllTabs();
+        return;
+      }
+    }
+
+    if (targetRuntime) {
+      clearRuntimeLayouts(targetRuntime);
+      targetRuntime.undoManager?.pushSnapshot?.(targetRuntime.graph);
+    }
 
     // 设置冷却标记，阻止 reload 后的 auto-save 覆盖外部修改
     externalChangeCooldown = true;
@@ -1037,7 +1187,8 @@ async function main() {
 
     // ---- 主窗格：动画热更新 ----
     if (isMain) {
-      if (saveTimeout) { clearTimeout(saveTimeout); saveTimeout = null; }
+      primaryRuntime.cancelPendingSave();
+      saveTimeout = null;
 
       // 1) 保存旧状态快照
       const oldNodes = new Map<string, { x: number; y: number }>(
@@ -1049,10 +1200,9 @@ async function main() {
       if (import.meta.hot) {
         const resp = await fetch(`/api/graph/${graphName}`);
         newData = await resp.json();
-        // 合并 localStorage settings（与 readGraphData 逻辑一致）
-        const lsData = await createStorage(graphName).readData();
-        if (lsData?.settings) {
-          newData.settings = { ...(newData.settings || {}), ...lsData.settings };
+        if (!newData.settings) {
+          const cached = await createStorage(graphName).readData();
+          if (cached?.settings) newData.settings = cached.settings;
         }
       } else {
         const saved = await readGraphData(graphName);
@@ -1070,8 +1220,7 @@ async function main() {
       });
       // 4) 计算差异（仅用于动画决策，不对节点做 dying 标记）（仅用于动画决策，不对节点做 dying 标记）
 
-      // 5) 推送 undo 快照
-      saveUndo();
+      // 5) undo 快照已按目标 runtime 推送，避免依赖当前焦点窗格。
 
       // 6) 更新 graph 数据（in-place 替换，保证多窗格共享同一 graph 引用时同步更新）
       const newNodesClean = (newData.nodes || []).map((n: any) => {
@@ -1090,6 +1239,7 @@ async function main() {
       // 7) 应用 settings
       if (newData.settings) {
         const s = newData.settings;
+        primaryRuntime.graph.settings = s;
         linkDist = s.linkDist ?? linkDist; labelSize = s.labelSize ?? labelSize;
         charge = s.charge ?? charge; linkStr = s.linkStr ?? linkStr;
         collideR = s.collideR ?? collideR; centerS = s.centerS ?? centerS;
@@ -1117,6 +1267,9 @@ async function main() {
         fixedHollow = (s as any).fixedHollow ?? fixedHollow;
         document.documentElement.style.setProperty('--fg-font-family', fontFamily);
         setNodeFontFamily(fontFamily);
+        for (const owner of extraPanes) {
+          if (owner.runtime === primaryRuntime) applyPaneSettings(owner, s);
+        }
       }
 
       // 8) 增量更新：先保存目标位置，再把节点放到视口中心，推入 sim
@@ -1185,28 +1338,78 @@ async function main() {
         });
       }
 
+      // 外部版本已成为当前权威数据，不再保留本地 dirty 标记。
+      primaryRuntime.markSaved();
+      primaryRuntime.clearExternalConflict();
+      clearRuntimeDirty(primaryRuntime);
+
       // 11) 最终渲染
       draw();
       return;
     }
 
-    // ---- Pane1：回退到完整重载 ----
-    if (isPane1) {
-      if (pane1.saveTimeout) { clearTimeout(pane1.saveTimeout); pane1.saveTimeout = null; }
-      loadGraphDataPane1(graphName);
-      return;
-    }
-
-    // ---- Extra pane：回退到完整重载 ----
-    if (extraIdx >= 0) {
-      const ep = extraPanes[extraIdx + 1];
-      if (ep.saveTimeout) { clearTimeout(ep.saveTimeout); ep.saveTimeout = null; }
-      loadGraphForPane(ep, graphName);
+    // ---- 非主窗格：原地更新共享 runtime，再刷新所有 owner 的 simulation ----
+    if (targetRuntime && (isPane1 || extraIdx >= 0)) {
+      const saved = await readGraphData(targetRuntime.fileName);
+      if (!saved) {
+        showToast('无法读取外部版本，已保留本地内容', 'error', 5000);
+        targetRuntime.markExternalConflict();
+        return;
+      }
+      targetRuntime.graph.nodes.length = 0;
+      targetRuntime.graph.nodes.push(...(saved.nodes || []));
+      targetRuntime.graph.edges.length = 0;
+      targetRuntime.graph.edges.push(...(saved.edges || []).map((edge: any) => ({
+        ...edge,
+        source: typeof edge.source === 'object' ? edge.source.id : edge.source,
+        target: typeof edge.target === 'object' ? edge.target.id : edge.target,
+      })));
+      targetRuntime.graph.groups.length = 0;
+      targetRuntime.graph.groups.push(...(saved.groups || []));
+      targetRuntime.graph.settings = saved.settings;
+      const initializedSims = new Set<any>();
+      if (primaryRuntime === targetRuntime) {
+        simManager.initSim();
+        initializedSims.add(simManager);
+      }
+      for (const owner of extraPanes) {
+        if (owner.runtime !== targetRuntime) continue;
+        if (saved.settings) applyPaneSettings(owner, saved.settings);
+        if (!initializedSims.has(owner.simManager)) {
+          owner.simManager?.initSim();
+          initializedSims.add(owner.simManager);
+        }
+      }
+      targetRuntime.markSaved();
+      targetRuntime.clearExternalConflict();
+      clearRuntimeDirty(targetRuntime);
+      draw();
     }
   }
 
+  function clearPaneLayout(pane: Pick<PaneState, 'layout' | 'pixi' | 'activeMode'>) {
+    pane.layout.clear();
+    pane.activeMode = 'default';
+    if (pane.pixi) clearCards(pane.pixi.cardLayer);
+  }
+
+  const coordinateLayoutModes = new Set(['cardgrid', 'category', 'fullcat']);
+  const clearRuntimeLayouts = (runtime: GraphRuntime) => {
+    if (primaryRuntime === runtime) clearPaneLayout(pane0);
+    for (const owner of extraPanes) {
+      if (owner.runtime === runtime) clearPaneLayout(owner);
+    }
+  };
+  const prepareRuntimeForSharing = (runtime: GraphRuntime) => {
+    if (primaryRuntime === runtime && coordinateLayoutModes.has(activeMode)) clearPaneLayout(pane0);
+    for (const owner of extraPanes) {
+      if (owner.runtime === runtime && coordinateLayoutModes.has(owner.activeMode)) clearPaneLayout(owner);
+    }
+  };
+
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {
+    clearPaneLayout(pane0);
     loadingOverlay.style.display = 'flex';
     activeTab = fileName;
     updateGwGh();
@@ -1215,30 +1418,29 @@ async function main() {
       simManager.getSim()?.stop();
     }
     // 清除旧节点精灵
-    if (pixi) { for (const c of pixi.blobLayer.children.slice()) c.destroy({ children: true }); for (const c of pixi.nodeLayer.children.slice()) c.destroy({ children: true }); pixi.nodeLayer.removeChildren(); for (const c of pixi.edgeLayer.children.slice()) c.destroy({ children: true }); pixi.edgeLayer.removeChildren(); }
+    if (pixi) { clearBlobLayer(pixi); for (const c of pixi.nodeLayer.children.slice()) c.destroy({ children: true }); pixi.nodeLayer.removeChildren(); for (const c of pixi.edgeLayer.children.slice()) c.destroy({ children: true }); pixi.edgeLayer.removeChildren(); }
     nodeSprites.clear(); clearGridCache();
 
-    // 检查是否已有其他窗格持有同文件 → 共享 graph 引用 + simManager
-    const existing = findExistingForFile(fileName);
+    // 检查是否已有其他窗格持有同文件 → 共享完整文档运行时
+    const previousRuntime = primaryRuntime;
+    const existing = findExistingForFile(fileName, previousRuntime);
     const sharing = !!existing;
+    runtimeRegistry.release(previousRuntime, pane0);
+    primaryRuntime = runtimeRegistry.acquire(fileName, pane0, () => existing ?? new GraphRuntime(fileName, { nodes: [], edges: [], groups: [] }, new UndoManager()));
+    graph = primaryRuntime.graph;
+    undoManager = primaryRuntime.undoManager;
     if (existing) {
-      graph.nodes = existing.graph.nodes;
-      graph.edges = existing.graph.edges;
-      graph.groups = existing.graph.groups;
-      graph.settings = existing.graph.settings;
-      simManager = existing.simManager;
+      prepareRuntimeForSharing(existing);
+      simManager = primaryRuntime.simManager;
     } else {
-      // 从共享 sim 脱离（切换到不同文件）
-      if (simManager && (simManager === simManager1 || extraSims.some((es, i) => es === simManager && extraPanes[i]?.graph !== graph))) {
-        simManager = createSimManager(graph, () => gw, () => gh,
-          () => linkDist, () => linkStr, () => charge, () => centerS,
-          () => collideR, () => groupBound,
-          () => alphaTarget, () => heatingTime,
-          () => sharedState.hiddenNodeIds?.() ?? new Set(),
-          () => draw()
-        );
-        // 左窗格事件用的是 proxy fake PaneState（已有 get simManager() getter），无需重绑
-      }
+      simManager = createSimManager(graph, () => gw, () => gh,
+        () => linkDist, () => linkStr, () => charge, () => centerS,
+        () => collideR, () => groupBound,
+        () => alphaTarget, () => heatingTime,
+        () => sharedState.hiddenNodeIds?.() ?? new Set(),
+        () => draw()
+      );
+      primaryRuntime.simManager = simManager;
       const saved = await readGraphData(fileName);
       if (activeTab !== fileName) { loadingOverlay.style.display = 'none'; return; }
       if (isBuiltin(fileName)) {
@@ -1343,41 +1545,39 @@ async function main() {
 
   // Pane 1 加载文件
   async function loadGraphDataPane1(fileName: string) {
-    if (pane1.saveTimeout) clearTimeout(pane1.saveTimeout);
+    clearPaneLayout(pane1);
+    pane1.runtime.cancelPendingSave();
     if (pane1.activeTab !== fileName) {
-      await writeGraphData(pane1.activeTab, pane1.graph);
+      const saved = await saveRuntimeNow(pane1.runtime, collectPaneSettings(pane1));
+      if (saved) pane1.dirtyTabs.delete(pane1.runtime.fileName);
     }
     pane1.activeTab = fileName;
     if (!pane1.openTabs.includes(fileName)) pane1.openTabs.push(fileName);
 
     // 清除旧 sprites
-    if (pixi1) { for (const c of pixi1.blobLayer.children.slice()) c.destroy({ children: true }); pixi1.blobLayer.removeChildren(); for (const c of pixi1.nodeLayer.children.slice()) c.destroy({ children: true }); pixi1.nodeLayer.removeChildren(); for (const c of pixi1.edgeLayer.children.slice()) c.destroy({ children: true }); pixi1.edgeLayer.removeChildren(); }
+    if (pixi1) { clearBlobLayer(pixi1); for (const c of pixi1.nodeLayer.children.slice()) c.destroy({ children: true }); pixi1.nodeLayer.removeChildren(); for (const c of pixi1.edgeLayer.children.slice()) c.destroy({ children: true }); pixi1.edgeLayer.removeChildren(); }
     pane1NodeSprites.clear();
 
     // 检查是否已有其他窗格持有同文件 → 共享 graph 引用 + simManager
-    const existing = findExistingForFile(fileName, pane1);
+    const existing = findExistingForFile(fileName, pane1.runtime);
     if (existing) {
-      pane1.graph.nodes = existing.graph.nodes;
-      pane1.graph.edges = existing.graph.edges;
-      pane1.graph.groups = existing.graph.groups;
-      pane1.simManager = existing.simManager;
-      simManager1 = existing.simManager; extraSims[0] = existing.simManager;
-      if (existing.graph.settings) applyPaneSettings(pane1, existing.graph.settings);
+      prepareRuntimeForSharing(existing);
+      runtimeRegistry.release(pane1.runtime, pane1);
+      pane1.runtime = runtimeRegistry.acquire(fileName, pane1, () => existing);
+      simManager1 = pane1.simManager; extraSims[0] = pane1.simManager;
+      if (pane1.graph.settings) applyPaneSettings(pane1, pane1.graph.settings);
     } else {
-      // 从共享 sim 脱离（之前可能与其他窗格共享了 simManager）
-      if (simManager1 === simManager || extraSims.some((es, i) => es === simManager1 && extraPanes[i] !== pane1)) {
-        simManager1 = createSimManager(pane1.graph, () => pane1.gw, () => pane1.gh,
-          () => pane1.linkDist, () => pane1.linkStr, () => pane1.charge, () => pane1.centerS,
-          () => pane1.collideR, () => pane1.groupBound,
-          () => pane1.alphaTarget, () => pane1.heatingTime,
-          () => sharedState.hiddenNodeIds?.() ?? new Set(),
-          () => pixiDrawPane1()
-        );
-        extraSims[0] = simManager1; pane1.simManager = simManager1;
-        if (pixi1) setupCanvasEvents(pixi1.app.canvas as any, bindPaneEvents(
-          pane1, pixi1!, simManager1, pane1NodeSprites, { v: null }
-        ));
-      }
+      runtimeRegistry.release(pane1.runtime, pane1);
+      pane1.runtime = runtimeRegistry.acquire(fileName, pane1, () => new GraphRuntime(fileName, { nodes: [], edges: [], groups: [] }, new UndoManager()));
+      simManager1 = createSimManager(pane1.graph, () => pane1.gw, () => pane1.gh,
+        () => pane1.linkDist, () => pane1.linkStr, () => pane1.charge, () => pane1.centerS,
+        () => pane1.collideR, () => pane1.groupBound,
+        () => pane1.alphaTarget, () => pane1.heatingTime,
+        () => sharedState.hiddenNodeIds?.() ?? new Set(),
+        () => pixiDrawPane1()
+      );
+      pane1.simManager = simManager1;
+      extraSims[0] = simManager1;
       const saved = await readGraphData(fileName);
       if (pane1.activeTab !== fileName) { if (pixi1) { loadingOverlay.style.display = 'none'; } return; }
       if (isBuiltin(fileName)) {
@@ -1439,38 +1639,35 @@ async function main() {
 
   /** 通用：加载图到指定窗格 */
   async function loadGraphForPane(pane: PaneState, fileName: string) {
+    clearPaneLayout(pane);
+    const extraIndex = extraPanes.indexOf(pane);
     pane.activeTab = fileName;
     if (!pane.openTabs.includes(fileName)) pane.openTabs.push(fileName);
     // 清除旧 sprites
-    if (pane.pixi) { for (const c of pane.pixi.nodeLayer.children.slice()) c.destroy({ children: true }); pane.pixi.nodeLayer.removeChildren(); for (const c of pane.pixi.edgeLayer.children.slice()) c.destroy({ children: true }); pane.pixi.edgeLayer.removeChildren(); for (const c of pane.pixi.blobLayer.children.slice()) c.destroy({ children: true }); pane.pixi.blobLayer.removeChildren(); }
+    if (pane.pixi) { clearBlobLayer(pane.pixi); for (const c of pane.pixi.nodeLayer.children.slice()) c.destroy({ children: true }); pane.pixi.nodeLayer.removeChildren(); for (const c of pane.pixi.edgeLayer.children.slice()) c.destroy({ children: true }); pane.pixi.edgeLayer.removeChildren(); }
     pane.nodeSprites.clear();
 
     // 检查是否已有其他窗格持有同文件 → 共享 graph 引用 + simManager
-    const existing = findExistingForFile(fileName, pane);
+    const existing = findExistingForFile(fileName, pane.runtime);
     if (existing) {
-      pane.graph.nodes = existing.graph.nodes;
-      pane.graph.edges = existing.graph.edges;
-      pane.graph.groups = existing.graph.groups;
-      pane.simManager = existing.simManager;
-      if (pane.index < extraSims.length) extraSims[pane.index] = existing.simManager;
-      const ss = existing.graph.settings;
+      prepareRuntimeForSharing(existing);
+      runtimeRegistry.release(pane.runtime, pane);
+      pane.runtime = runtimeRegistry.acquire(fileName, pane, () => existing);
+      if (extraIndex >= 0) extraSims[extraIndex] = pane.simManager;
+      const ss = pane.graph.settings;
       if (ss) applyPaneSettings(pane, ss);
     } else {
-      // 从共享 sim 脱离（切换到不同文件）
-      const sm = extraSims[pane.index] || pane.simManager;
-      if (sm && (sm === simManager || extraSims.some((es, i) => es === sm && extraPanes[i] !== pane))) {
-        const newSM = createSimManager(pane.graph, () => pane.gw, () => pane.gh,
-          () => pane.linkDist, () => pane.linkStr, () => pane.charge, () => pane.centerS,
-          () => pane.collideR, () => pane.groupBound,
-          () => pane.alphaTarget, () => pane.heatingTime,
-          () => sharedState.hiddenNodeIds?.() ?? new Set(),
-          () => draw()
-        );
-        extraSims[pane.index] = newSM; pane.simManager = newSM;
-        if (pane.pixi) setupCanvasEvents(pane.pixi.app.canvas as any, bindPaneEvents(
-          pane, pane.pixi, newSM, extraSprites[pane.index], { v: null }
-        ));
-      }
+      runtimeRegistry.release(pane.runtime, pane);
+      pane.runtime = runtimeRegistry.acquire(fileName, pane, () => new GraphRuntime(fileName, { nodes: [], edges: [], groups: [] }, new UndoManager()));
+      const newSM = createSimManager(pane.graph, () => pane.gw, () => pane.gh,
+        () => pane.linkDist, () => pane.linkStr, () => pane.charge, () => pane.centerS,
+        () => pane.collideR, () => pane.groupBound,
+        () => pane.alphaTarget, () => pane.heatingTime,
+        () => sharedState.hiddenNodeIds?.() ?? new Set(),
+        () => draw()
+      );
+      pane.simManager = newSM;
+      if (extraIndex >= 0) extraSims[extraIndex] = newSM;
       const saved = await readGraphData(fileName);
       if (pane.activeTab !== fileName) { loadingOverlay.style.display = 'none'; return; }
       if (isBuiltin(fileName)) {
@@ -1531,28 +1728,29 @@ async function main() {
     pane.fixedHollow = (s as any).fixedHollow ?? true;
   }
 
-  /** 查找已持有 fileName 的现有 pane 数据（graph + simManager），不含自身 self */
-  function findExistingForFile(fileName: string, self?: PaneState): { graph: GraphData; simManager: any } | null {
-    const selfIdx = self ? self.index : undefined;
-    // 已有窗格的 graph 必须有内容（非空 nodes），否则视为未加载
-    const isValid = (g: GraphData) => g.nodes && g.nodes.length > 0;
-    // 左窗格（selfIdx !== undefined 防止左窗格自己加载时把自己当成已有窗格）
-    if (activeTab === fileName && selfIdx !== undefined && selfIdx !== PANE_LEFT && isValid(graph)) return { graph, simManager };
-    // pane1
-    if (pane1.activeTab === fileName && pane1 !== self && isValid(pane1.graph)) return { graph: pane1.graph, simManager: simManager1 };
-    // extraPanes beyond pane1
-    for (let i = 1; i < extraPanes.length; i++) {
-      if (extraPanes[i] !== self && extraPanes[i].activeTab === fileName && isValid(extraPanes[i].graph)) return { graph: extraPanes[i].graph, simManager: extraSims[i] };
+  /** 查找已持有 fileName 的文档运行时，不含调用方当前 runtime */
+  function findExistingForFile(fileName: string, exclude?: GraphRuntime): GraphRuntime | null {
+    if (primaryRuntime !== exclude && primaryRuntime?.fileName === fileName) return primaryRuntime;
+    for (const pane of extraPanes) {
+      if (pane.runtime !== exclude && pane.runtime.fileName === fileName) return pane.runtime;
     }
-    return null;
+    const registered = runtimeRegistry.get(fileName);
+    return registered !== exclude ? registered : null;
   }
 
   async function openTab(fileName: string) {
     const ts = focusedTabState();
-    if (ts.st) clearTimeout(ts.st);
     if (ts.at !== fileName) {
-      ts.g.settings = collectSettings();
-      await writeGraphData(ts.at, ts.g);
+      if (focusedPaneIndex === PANE_LEFT) {
+        const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
+        if (saved) dirtyTabs.delete(primaryRuntime.fileName);
+      } else {
+        const ep = extraPanes[focusedPaneIndex - 1];
+        if (ep) {
+          const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
+          if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
+        }
+      }
       clearAllMedia(); manuallyOpenedMediaIds.clear(); hoveredMediaId = '';
     }
     if (!ts.ot.includes(fileName)) ts.ot.push(fileName);
@@ -1571,9 +1769,16 @@ async function main() {
   async function switchTab(fileName: string) {
     const ts = focusedTabState();
     if (fileName === ts.at) return;
-    if (ts.st) clearTimeout(ts.st);
-    ts.g.settings = collectSettings();
-    await writeGraphData(ts.at, ts.g);
+    if (focusedPaneIndex === PANE_LEFT) {
+      const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
+      if (saved) dirtyTabs.delete(primaryRuntime.fileName);
+    } else {
+      const ep = extraPanes[focusedPaneIndex - 1];
+      if (ep) {
+        const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
+        if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
+      }
+    }
     clearAllMedia(); manuallyOpenedMediaIds.clear(); hoveredMediaId = '';
     if (focusedPaneIndex === PANE_LEFT) {
       activeTab = fileName; await loadGraphData(fileName);
@@ -1593,8 +1798,10 @@ async function main() {
     if (focusedPaneIndex > PANE_LEFT) {
       const ep = extraPanes[focusedPaneIndex - 1];
       if (!ep) return;
-      if (ep.saveTimeout) clearTimeout(ep.saveTimeout);
-      if (fileName === ep.activeTab) await writeGraphData(fileName, ep.graph);
+      if (fileName === ep.activeTab) {
+        const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
+        if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
+      }
       ep.openTabs = ep.openTabs.filter(t => t !== fileName);
       if (ep.openTabs.length === 0) {
         // 最后一个标签 → 关闭分屏（若为 pane1）或移除此窗格
@@ -1607,18 +1814,16 @@ async function main() {
         await loadGraphForPane(ep, ep.activeTab);
       }
     } else {
-      clearTimeout(saveTimeout);
       if (fileName === activeTab) {
-        graph.settings = collectSettings();
-        await writeGraphData(fileName, graph);
+        const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
+        if (saved) dirtyTabs.delete(primaryRuntime.fileName);
       }
       openTabs = openTabs.filter(t => t !== fileName);
       if (openTabs.length === 0) {
         const newName = 'untitled_' + Date.now() + '.json';
         await writeGraphData(newName, { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
         openTabs = [newName]; activeTab = newName;
-        graph.nodes = []; graph.edges = []; graph.groups = [];
-        simManager.initSim();
+        await loadGraphData(newName);
       } else if (fileName === activeTab) {
         activeTab = openTabs[openTabs.length - 1];
         await loadGraphData(activeTab);
@@ -1637,23 +1842,20 @@ async function main() {
     if (!ep && openTabs.includes(fileName)) { await switchTab(fileName); return; }
     // 保存当前标签数据（与 switchTab/openTab 一致）
     if (ep) {
-      if (ep.saveTimeout) clearTimeout(ep.saveTimeout);
-      await writeGraphData(ep.activeTab, ep.graph);
+      const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
+      if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
     } else {
-      if (saveTimeout) { clearTimeout(saveTimeout); saveTimeout = null; }
-      await writeGraphData(activeTab, graph);
+      const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
+      if (saved) dirtyTabs.delete(primaryRuntime.fileName);
     }
     const presetSettings = Object.keys(presetDefaults).length > 0 ? { ...DEFAULT_SETTINGS, ...presetDefaults } : { ...DEFAULT_SETTINGS };
     const empty: GraphData = { nodes: [], edges: [], groups: [], settings: presetSettings };
     await writeGraphData(fileName, empty);
     if (ep) {
-      ep.graph = { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } };
       ep.openTabs.push(fileName);
       ep.activeTab = fileName;
       await loadGraphForPane(ep, fileName);
     } else {
-      graph.nodes = []; graph.edges = []; graph.groups = [];
-      graph.settings = { ...DEFAULT_SETTINGS };
       openTabs.push(fileName);
       activeTab = fileName;
       await loadGraphData(fileName);
@@ -1698,8 +1900,6 @@ async function main() {
     edgeColorGradient = DEFAULT_SETTINGS.edgeColorGradient || false, edgeWidthByLevel = DEFAULT_SETTINGS.edgeWidthByLevel || false,
     fontFamily = (DEFAULT_SETTINGS as any).fontFamily || '"SiYuan Songti", serif',
     cardBorderStyle = (DEFAULT_SETTINGS as any).cardBorderStyle || 'straight';
-  let cardGridCtrl: CardGridController | null = null;
-
   let gw = 800, gh = 600;
   const getViewportTransform = () => {
     if (!pixi) return { k: 1, x: 0, y: 0 };
@@ -1716,6 +1916,7 @@ async function main() {
   let draggingNode: any = null, wasDragged = false;
   let linkMode = false, linkSrc: string | null = null;
   let boxSelectMode = false;
+  let activeMode = 'default'; // default | tree | category | fullcat | layout:xxx
   let dragCount = 0; // 节点拖拽计数器，用于 pointer-events 穿透
   let _lastDragNodeId: string | null = null;
   let defArrow = false;
@@ -1724,10 +1925,13 @@ async function main() {
   // 节点剪贴板（跨图复制粘贴）— 通过 sharedState.sharedState.nodeClipboard 共享
 
   let undoManager = new UndoManager();
+  let primaryRuntime: GraphRuntime;
+  const runtimeRegistry = new GraphRuntimeRegistry();
   const saveUndo = () => {
     const g = focusedPaneIndex === PANE_LEFT ? graph : (extraPanes[focusedPaneIndex - 1]?.graph ?? graph);
     const um = focusedPaneIndex === PANE_LEFT ? undoManager : (extraPanes[focusedPaneIndex - 1]?.undoManager ?? undoManager);
     um.pushSnapshot(g);
+    syncFocusedCommands();
   };
   let saveTimeout: any;
   let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2051,7 +2255,9 @@ async function main() {
   let externalChangeCooldown = false;
   const EXTERNAL_COOLDOWN_MS = 2000;
 
+  const pane0Layout = new LayoutSlot();
   const pane0 = {
+  layout: pane0Layout,
   get graph() { return graph; }, set graph(v) { graph = v; },
   get linkDist() { return linkDist; }, set linkDist(v) { linkDist = v; },
   get labelSize() { return labelSize; }, set labelSize(v) { labelSize = v; },
@@ -2134,59 +2340,116 @@ async function main() {
     edgeColorGradient, edgeWidthByLevel, expandedMedia: [...manuallyOpenedMediaIds],
   });
 
-  let _cardGridRecalcTimer: any = null;
+  const collectPaneSettings = (pane: PaneState): GraphSettings => ({
+    ...(pane.graph.settings ?? DEFAULT_SETTINGS),
+    linkDist: pane.linkDist, labelSize: pane.labelSize, charge: pane.charge, linkStr: pane.linkStr,
+    collideR: pane.collideR, centerS: pane.centerS, groupBound: pane.groupBound,
+    heatingTime: pane.heatingTime, alphaTarget: pane.alphaTarget, editPanelOpacity: pane.editPanelOpacity,
+    useRAFL: pane.useRAFL, nodeExpand: pane.nodeExpand, lineExpand: pane.lineExpand,
+    showGLabels: pane.showGLabels, glMin: pane.glMin, glMax: pane.glMax,
+    gridVis: pane.gridVis, gridMode: pane.gridMode, axisVis: pane.axisVis, axisTicks: pane.axisTicks,
+    gridSp: pane.gridSp, gridWidth: pane.gridWidth, ar: pane.ar, graphTheme: pane.graphTheme,
+    focusMode: pane.focusMode, centerMode: pane.centerMode, selectedTooltip: pane.selectedTooltip,
+    glowAppearance: pane.glowAppearance, categoryLayout: pane.categoryLayout,
+    layoutMode: pane.activeMode, gridSnap: pane.gridSnapEnabled, partialGridSnap: pane.partialGridSnap,
+    nodeColorStyle: pane.nodeColorStyle, fontFamily: pane.fontFamily, fixedHollow: pane.fixedHollow,
+    cardBorderStyle: pane.cardBorderStyle,
+  });
+
+  const collectRuntimeSettings = (runtime: GraphRuntime): GraphSettings => {
+    if (primaryRuntime === runtime) return collectSettings();
+    const owner = extraPanes.find(pane => pane.runtime === runtime);
+    return owner ? collectPaneSettings(owner) : (runtime.graph.settings ?? DEFAULT_SETTINGS);
+  };
+
+  const clearRuntimeDirty = (runtime: GraphRuntime) => {
+    if (primaryRuntime === runtime) dirtyTabs.delete(runtime.fileName);
+    for (const pane of extraPanes) {
+      if (pane.runtime === runtime) pane.dirtyTabs.delete(runtime.fileName);
+    }
+  };
+
+  const persistRuntimeSnapshot = async (runtime: GraphRuntime, settings: GraphSettings): Promise<boolean> => {
+    const snapshot = serializeGraphSnapshot(runtime.graph, settings);
+    const result = await runtime.enqueueSave(snapshot, savedSnapshot => writeGraphSnapshot(runtime.fileName, savedSnapshot));
+    if (result.saved && result.current && runtime.markSaved(result.revision)) {
+      runtime.graph.settings = { ...(runtime.graph.settings || {}), ...settings };
+      runtime.clearExternalConflict();
+      clearRuntimeDirty(runtime);
+      runtimeRegistry.prune(runtime);
+    }
+    renderAllTabs();
+    return result.saved && result.current;
+  };
+
+  const scheduleSaveForPane = (pane: PaneState) => {
+    if (externalChangeCooldown) return;
+    syncFocusedCommands();
+    pane.layout.onGraphChanged();
+    pane.runtime.cancelPendingSave();
+    pane.runtime.markDirty();
+    pane.dirtyTabs.add(pane.activeTab);
+    const runtime = pane.runtime;
+    if (runtime.externalConflict || runtime.fileOperationActive) return;
+    runtime.saveTimeout = setTimeout(async () => {
+      runtime.saveTimeout = null;
+      await persistRuntimeSnapshot(runtime, collectRuntimeSettings(runtime));
+    }, 300);
+  };
+
   const scheduleSave = () => {
     // 外部变更冷却期内跳过自动保存（防止覆盖 MCP Server 等外部工具的修改）
     if (externalChangeCooldown) return;
-
-    // 卡片网格模式下，数据变更触发重算（跳过 recalcAndAnimate/savePositionOnly 自身触发的 save）
-    if (cardGridCtrl && !cardGridCtrl._saving) {
-      clearTimeout(_cardGridRecalcTimer);
-      _cardGridRecalcTimer = setTimeout(() => cardGridCtrl!.recalcAndAnimate(), 200);
-    }
+    syncFocusedCommands();
 
     if (focusedPaneIndex > PANE_LEFT) {
       const ep = extraPanes[focusedPaneIndex - 1];
-      if (!ep) return;
-      clearTimeout(ep.saveTimeout);
-      ep.dirtyTabs.add(ep.activeTab);
-      const settings = collectSettings(); // 立即捕获，避免计时器触发时模块变量已被其他窗格污染
-      ep.saveTimeout = setTimeout(async () => {
-        ep.graph.settings = settings;
-        const saved = await writeGraphData(ep.activeTab, ep.graph);
-        if (saved) ep.dirtyTabs.delete(ep.activeTab);
-        renderAllTabs();
-      }, 300);
+      if (ep) scheduleSaveForPane(ep);
       return;
     }
-    clearTimeout(saveTimeout);
+    pane0.layout.onGraphChanged();
+    primaryRuntime.cancelPendingSave();
+    primaryRuntime.markDirty();
     dirtyTabs.add(activeTab);
-    const settings = collectSettings(); // 同上：立即捕获
-    saveTimeout = setTimeout(async () => {
-      graph.settings = settings;
-      const saved = await writeGraphData(activeTab, graph);
-      if (saved) dirtyTabs.delete(activeTab);
-      renderAllTabs();
+    const runtime = primaryRuntime;
+    if (runtime.externalConflict) return;
+    if (runtime.fileOperationActive) return;
+    runtime.saveTimeout = setTimeout(async () => {
+      runtime.saveTimeout = null;
+      await persistRuntimeSnapshot(runtime, collectRuntimeSettings(runtime));
     }, 300);
+    saveTimeout = primaryRuntime.saveTimeout;
   };
   (window as any).__triggerSave = () => scheduleSave();
   (window as any).__graphNodes = graph.nodes;
+
+  const saveRuntimeNow = async (
+    runtime: GraphRuntime,
+    settings?: GraphSettings,
+    allowConflictOverwrite = false,
+  ): Promise<boolean> => {
+    runtime.cancelPendingSave();
+    if (runtime.externalConflict && !allowConflictOverwrite) {
+      const overwrite = await confirmAction(
+        `“${runtime.fileName.replace(/\.json$/, '')}”已被外部修改，是否用本地内容覆盖磁盘版本？`,
+        { confirm: '覆盖磁盘', cancel: '暂不保存' },
+      );
+      if (!overwrite) return false;
+      await runtime.invalidateSaves();
+      runtime.clearExternalConflict();
+    }
+    return persistRuntimeSnapshot(runtime, settings ?? collectRuntimeSettings(runtime));
+  };
 
   const saveNow = async () => {
     if (focusedPaneIndex > PANE_LEFT) {
       const ep = extraPanes[focusedPaneIndex - 1];
       if (!ep) return;
-      ep.graph.settings = collectSettings();
-      const saved = await writeGraphData(ep.activeTab, ep.graph);
+      const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
       if (saved) ep.dirtyTabs.delete(ep.activeTab);
       return;
     }
-    graph.settings = collectSettings();
-    const cleanEdges = graph.edges
-      .filter((e: any) => !e._dyingAt)
-      .map((e: any) => { const { _createdAt, _dyingAt, _conflict, ...rest } = e; return rest; });
-    const saveGraph = { ...graph, edges: cleanEdges };
-    const saved = await writeGraphData(activeTab, saveGraph);
+    const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
     if (saved) dirtyTabs.delete(activeTab);
     renderAllTabs();
   };
@@ -2245,12 +2508,16 @@ async function main() {
     () => sharedState.hiddenNodeIds?.() ?? new Set(),
     () => draw()
   );
+  primaryRuntime = new GraphRuntime('demo', graph, undoManager);
+  primaryRuntime.simManager = simManager;
+  runtimeRegistry.acquire('demo', pane0, () => primaryRuntime);
   const getSim = () => simManager.getSim();
 
   // --- Pane 1 (右窗格) ---
-  const pane1 = createPaneState(PANE_RIGHT, pane1Container);
+  let pane1 = createPaneState(PANE_RIGHT, pane1Container);
   pane1.pixi = null; // will be synced from pixi1 after init
   let focusedPaneIndex = PANE_LEFT;
+  let syncFocusedCommands = () => {};
 
   // 配置同步：singletons ↔ PaneState
   const configKeys = ['linkDist','labelSize','charge','linkStr','collideR','centerS','groupBound','heatingTime','alphaTarget','editPanelOpacity','useRAFL','nodeExpand','lineExpand','showGLabels','glMin','glMax','gridVis','gridMode','axisVis','axisTicks','gridSp','gridWidth','ar','graphTheme','focusMode','selectedTooltip','glowAppearance','layoutMode','gridSnapEnabled','partialGridSnap','nodeColorStyle','fixedHollow','fontFamily','cardBorderStyle','gw','gh'] as const;
@@ -2288,8 +2555,10 @@ async function main() {
   function switchFocusedPane(toIndex: number) {
     if (focusedPaneIndex === toIndex || toIndex >= extraPanes.length + 1) return;
     focusedPaneIndex = toIndex;
+    const targetMode = toIndex === PANE_LEFT ? activeMode : extraPanes[toIndex - 1]?.activeMode;
+    if (targetMode && ['cardgrid', 'category', 'fullcat'].includes(targetMode)) boxSelectMode = false;
     // UI 主题跟随聚焦窗格
-    const targetTheme = toIndex === PANE_RIGHT ? pane1.graphTheme : graphTheme;
+    const targetTheme = toIndex === PANE_LEFT ? graphTheme : (extraPanes[toIndex - 1]?.graphTheme ?? graphTheme);
     applyUIToFocusedPane(targetTheme);
     // 文件树同步到聚焦窗格的活动文件
     const targetFile = toIndex === PANE_LEFT ? activeTab
@@ -2298,6 +2567,7 @@ async function main() {
     sidebar.syncActiveFile(targetFile);
     settingsUI.updateInfo();
     renderAllTabs();
+    syncFocusedCommands();
     draw();
   }
   // pane 点击自动聚焦
@@ -2531,10 +2801,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (st.glowAppearance) {
       updateBlobFilters();
       pixi.blobLayer.visible = true;
-      let bg = (pixi.blobLayer as any)._cachedGfx;
+      let bg = pixi.blobLayerGfx;
       if (!bg || bg.destroyed) {
         bg = new Graphics();
-        (pixi.blobLayer as any)._cachedGfx = bg;
+        pixi.blobLayerGfx = bg;
         pixi.blobLayer.addChild(bg);
       }
       bg.clear();
@@ -2572,6 +2842,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (glowAlpha > 0.01) bg.circle(n.x, n.y, r).fill({ color, alpha: glowAlpha });
       }
     } else {
+      const bg = pixi.blobLayerGfx;
+      bg?.clear?.();
       pixi.blobLayer.visible = false;
     }
 
@@ -2781,8 +3053,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       });
     }
     const cardModeActiveForEdges = st.activeMode === 'cardgrid' || st.activeMode === 'category' || st.activeMode === 'fullcat';
-    if (cardModeActiveForEdges && cardGridCtrl) {
-      for (const index of cardGridCtrl.getCrossCardEdgeIndices(graph.edges)) collapsedEdgeIndices.add(index);
+    if (cardModeActiveForEdges) {
+      for (const index of st.layout.hiddenEdgeIndices(graph.edges)) collapsedEdgeIndices.add(index);
     }
 
     // 折叠/展开中连线透明度渐变（值 = alpha 乘数，1=正常，0=全透明）
@@ -2906,9 +3178,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     // 卡片网格渲染（卡片布局 / 分类 / 全分类）
     const isCardMode = st.activeMode === 'cardgrid' || st.activeMode === 'category' || st.activeMode === 'fullcat';
-    if (isCardMode && cardGridCtrl) {
-      cardGridCtrl.tick();
-      cardGridCtrl.render(_pane0AccentColor);
+    if (isCardMode && st.layout.current) {
+      st.layout.update();
+      st.layout.render(st.themeAccentColor);
     } else if (!isCardMode) {
       clearCards(pixi.cardLayer);
     }
@@ -2996,6 +3268,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // 左窗格预分配 state（复用对象，避免每帧 GC）
   const pane0St = {
     index: 0, activeTab: '', openTabs: [] as string[], dirtyTabs: new Set<string>(),
+    layout: pane0Layout,
     pixi: null as any, canvasContainer: null as any,
     nodeSprites: null as any, readyToDraw: false, get simManager() { return simManager; },
     _lastDragNodeId: null, searchMatchIndex: 0, lastSearchTerm: "",
@@ -3117,7 +3390,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getSelGroup: () => $.selGroup, setSelGroup: v => { $.selGroup = v; },
     getLinkMode: () => $.linkMode, setLinkMode: v => { $.linkMode = v; },
     setLinkSrc: v => { $.linkSrc = v; },
-    getBoxSelectMode: () => boxSelectMode, setBoxSelectMode: v => { boxSelectMode = v; },
+    getBoxSelectMode: () => boxSelectMode, setBoxSelectMode: v => { boxSelectMode = v; syncFocusedCommands(); },
     getSaveData: () => saveNow,
     getInitSim: () => $.simManager.initSim.bind($.simManager),
     getUpdateInfo: () => updateInfoRef.current,
@@ -3782,22 +4055,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // --- 聚焦窗格状态切换（用于布局/操作等需要访问 singleton 的函数）---
   const withFocusedPane = <T>(fn: () => T): T => {
     if (focusedPaneIndex === PANE_LEFT) return fn();
+    const targetPane = extraPanes[focusedPaneIndex - 1];
+    const targetSim = extraSims[focusedPaneIndex - 1] ?? targetPane?.simManager;
+    if (!targetPane || !targetSim) return fn();
     // 只交换数据层（graph/sim/config），不交换渲染层（pixi/nodeSprites 保持原样给 pane0Draw）
     saveConfigTo(pane0Config as any);
     const savedGraph = graph, savedSim = simManager, savedUndo = undoManager;
     const savedTree = treeMode, savedCat = categoryMode, savedFull = fullCatMode, savedActive = activeMode;
     const savedSelNode = selNode, savedSelEdge = selEdge, savedSelGroup = selGroup;
-    graph = pane1.graph; simManager = simManager1; undoManager = pane1.undoManager;
-    loadConfigFrom(pane1);
-    treeMode = pane1.treeMode; categoryMode = pane1.categoryMode; fullCatMode = pane1.fullCatMode; activeMode = pane1.activeMode;
-    selNode = pane1.selNode; selEdge = pane1.selEdge; selGroup = pane1.selGroup;
+    graph = targetPane.graph; simManager = targetSim; undoManager = targetPane.undoManager;
+    loadConfigFrom(targetPane);
+    treeMode = targetPane.treeMode; categoryMode = targetPane.categoryMode; fullCatMode = targetPane.fullCatMode; activeMode = targetPane.activeMode;
+    selNode = targetPane.selNode; selEdge = targetPane.selEdge; selGroup = targetPane.selGroup;
     try {
-      const result = fn();
-      return result;
+      return fn();
     } finally {
-      saveConfigTo(pane1);
-      pane1.treeMode = treeMode; pane1.categoryMode = categoryMode; pane1.fullCatMode = fullCatMode; pane1.activeMode = activeMode;
-      pane1.selNode = selNode; pane1.selEdge = selEdge; pane1.selGroup = selGroup;
+      saveConfigTo(targetPane);
+      targetPane.treeMode = treeMode; targetPane.categoryMode = categoryMode; targetPane.fullCatMode = fullCatMode; targetPane.activeMode = activeMode;
+      targetPane.selNode = selNode; targetPane.selEdge = selEdge; targetPane.selGroup = selGroup;
       graph = savedGraph; simManager = savedSim; undoManager = savedUndo;
       loadConfigFrom(pane0Config as any);
       treeMode = savedTree; categoryMode = savedCat; fullCatMode = savedFull; activeMode = savedActive;
@@ -4081,22 +4356,37 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     draw();
   };
 
-  addBtn.onclick = () => {
-    if (focusedPaneIndex === PANE_RIGHT) {
-      const center = pixi1?.viewport?.center ?? { x: pane1.gw / 2, y: pane1.gh / 2 };
+  const createNodeInFocusedPane = () => {
+    const targetPane = focusedExtraPane();
+    if (targetPane) {
+      const center = targetPane.pixi?.viewport?.center ?? { x: targetPane.gw / 2, y: targetPane.gh / 2 };
       const newNode = { id: 'n_' + Date.now(), label: '新节点', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
-      pane1.undoManager.pushSnapshot(pane1.graph);
-      pane1.graph.nodes.push(newNode); scheduleSave();
-      const s1 = simManager1.getSim(); if (s1) { s1.nodes([...s1.nodes(), newNode]); s1.alpha(0.3).restart(); }
+      targetPane.undoManager.pushSnapshot(targetPane.graph);
+      targetPane.graph.nodes.push(newNode);
+      targetPane.selNode = newNode.id;
+      targetPane.selEdge = null;
+      targetPane.selGroup = null;
+      const targetSim = targetPane.simManager?.getSim();
+      if (targetSim) {
+        targetSim.nodes([...targetSim.nodes(), newNode]);
+        targetSim.alpha(0.3).restart();
+      }
+      scheduleSaveForPane(targetPane);
+      syncFocusedCommands();
       draw();
-    } else {
-      const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
-      const newNode = { id: 'n_' + Date.now(), label: '新节点', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
-      saveUndo(); graph.nodes.push(newNode); scheduleSave();
-      addNodeToSim(newNode);
-      draw(); fillNode(newNode.id);
+      return;
     }
+
+    const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
+    const newNode = { id: 'n_' + Date.now(), label: '新节点', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
+    saveUndo();
+    graph.nodes.push(newNode);
+    scheduleSave();
+    addNodeToSim(newNode);
+    draw();
+    fillNode(newNode.id);
   };
+  addBtn.onclick = createNodeInFocusedPane;
   addBtn.textContent = '+ 节点';
   primaryRow.appendChild(addBtn);
   // 多分屏扩展数组（初始包含 pane1）
@@ -4217,6 +4507,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
     if (idx === 0 && extraPanes.length === 1) {
       // 仅剩 pane1 → 隐藏分屏（复用 pane1 数据）
+      clearPaneLayout(extraPanes[0]);
       dualPane.paneContainers[PANE_RIGHT].style.display = 'none';
       dualPane.layoutPanes();
       if (focusedPaneIndex === PANE_RIGHT) switchFocusedPane(PANE_LEFT);
@@ -4232,8 +4523,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       switchFocusedPane(idx > 0 ? idx : PANE_LEFT);
     }
 
-    // 销毁目标窗格的 pixi
+    // 销毁目标窗格的布局与 pixi
     const np = extraPanes[idx];
+    clearPaneLayout(np);
+    runtimeRegistry.release(np.runtime, np);
     if (np.pixi) np.pixi.app.destroy(true);
 
     // 若不是最后一个，用末尾数据填补空缺（保持各数组索引一致）
@@ -4260,89 +4553,121 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       extraPanes[i].index = i;
     }
 
-    // 若 pane1 被替换，同步所有 pane1 快捷引用到新的 extraPanes[0]
     if (idx === 0 && extraPanes.length > 0) {
-      const np = extraPanes[0];
-      pane1.openTabs = np.openTabs; pane1.activeTab = np.activeTab;
-      pane1.graph = np.graph; pane1.dirtyTabs = np.dirtyTabs;
-      pane1.saveTimeout = np.saveTimeout;
-      pane1.pixi = pixi1 = np.pixi; pane1.simManager = np.simManager;
-      pane1.nodeSprites = np.nodeSprites;
-      pane1.canvasContainer = np.canvasContainer;
-      // simManager1 不变（createSimManager 时已创建，后续通过 np.simManager 访问）
-      // pane1NodeSprites 指向 np.nodeSprites
+      pane1 = extraPanes[0];
+      pixi1 = pane1.pixi;
+      simManager1 = pane1.simManager;
+      extraSims[0] = pane1.simManager;
       pane1NodeSprites.clear();
-      for (const [k, v] of np.nodeSprites) pane1NodeSprites.set(k, v);
+      for (const [key, sprite] of pane1.nodeSprites) pane1NodeSprites.set(key, sprite);
     }
 
     renderAllTabs(); draw();
   }
   // paneContainers 跟踪（兼容现有引用）
   const paneContainers = dualPane.paneContainers;
+  const focusedUndoManager = () => focusedExtraPane()?.undoManager ?? undoManager;
+  const focusedGraph = () => focusedExtraPane()?.graph ?? graph;
+  const focusedLinkActive = () => focusedExtraPane()?.linkMode ?? linkMode;
+  const focusedLayoutMode = () => focusedExtraPane()?.activeMode ?? activeMode;
+  const isFocusedCardLayout = () => ['cardgrid', 'category', 'fullcat'].includes(focusedLayoutMode());
+
+  const runFocusedHistory = (direction: 'undo' | 'redo') => {
+    const targetPane = focusedExtraPane();
+    const targetGraph = targetPane?.graph ?? graph;
+    const manager = targetPane?.undoManager ?? undoManager;
+    if (!manager[direction](targetGraph)) return;
+    if (targetPane) {
+      targetPane.selNode = null;
+      targetPane.selEdge = null;
+      targetPane.selGroup = null;
+      targetPane.simManager?.initSim();
+      scheduleSaveForPane(targetPane);
+    } else {
+      clearEd();
+      simManager.initSim();
+      scheduleSave();
+    }
+    syncFocusedCommands();
+    draw();
+  };
+
+  const toggleFocusedLinkMode = () => {
+    const targetPane = focusedExtraPane();
+    let active: boolean;
+    if (targetPane) {
+      targetPane.linkMode = !targetPane.linkMode;
+      targetPane.linkSrc = null;
+      targetPane.linkCursorX = 0;
+      targetPane.linkCursorY = 0;
+      active = targetPane.linkMode;
+    } else {
+      linkMode = !linkMode;
+      linkSrc = null;
+      linkCursorX = 0;
+      linkCursorY = 0;
+      active = linkMode;
+    }
+    showToast(active ? '连线模式：点击源节点，再点击目标节点' : '已退出连线模式', 'info', active ? 2000 : 2500);
+    syncFocusedCommands();
+    return active;
+  };
+
+  const fitFocusedPane = () => {
+    const targetPane = focusedExtraPane();
+    const targetPixi = targetPane?.pixi ?? pixi;
+    const nodes = targetPane?.simManager?.getSim()?.nodes() ?? getSim()?.nodes() ?? [];
+    if (!targetPixi || nodes.length === 0) return;
+    let maxX = 0;
+    let maxY = 0;
+    for (const node of nodes) {
+      maxX = Math.max(maxX, Math.abs(node.x));
+      maxY = Math.max(maxY, Math.abs(node.y));
+    }
+    maxX += 60;
+    maxY += 60;
+    const viewport = targetPixi.viewport;
+    const scale = Math.min(viewport.screenWidth / (maxX * 2), viewport.screenHeight / (maxY * 2), 2);
+    viewport.animate({ scale, position: { x: 0, y: 0 }, time: FIT_ALL_DURATION });
+  };
+
   const linkBtn = document.createElement('button');
   linkBtn.className = 'fg-action fg-action-toggle';
   linkBtn.setAttribute('aria-pressed', 'false');
-  linkBtn.textContent = '连线模式'; linkBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  linkBtn.onclick = () => {
-    if (focusedPaneIndex === PANE_RIGHT) {
-      pane1.linkMode = !pane1.linkMode;
-      linkBtn.setAttribute('aria-pressed', String(pane1.linkMode));
-      linkBtn.style.background = pane1.linkMode ? '#5B8FF9' : '';
-      linkBtn.style.color = pane1.linkMode ? '#fff' : '';
-      if (pane1.linkMode) { pane1.linkSrc = null; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
-      else { showToast('已退出连线模式', 'info'); }
-    } else {
-      linkMode = !linkMode; linkBtn.style.background = linkMode ? '#5B8FF9' : ''; linkBtn.style.color = linkMode ? '#fff' : '';
-      linkBtn.setAttribute('aria-pressed', String(linkMode));
-      if (linkMode) { linkSrc = null; linkCursorX = 0; linkCursorY = 0; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
-      else { showToast('已退出连线模式', 'info'); }
-    }
-  };
   linkBtn.textContent = '连线';
+  linkBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
+  linkBtn.onclick = toggleFocusedLinkMode;
   primaryRow.appendChild(linkBtn);
 
   // --- 移动端浮动工具栏 ---
   const mobileToolbar = createMobileToolbar({
-    undo: () => {
-      if (focusedPaneIndex === PANE_RIGHT) {
-        if (pane1.undoManager.undo(pane1.graph)) {
-          pane1.selNode = null; pane1.selEdge = null; pane1.selGroup = null;
-          simManager1.initSim(); draw();
-        }
-      } else {
-        if (undoManager.undo(graph)) { clearEd(); simManager.initSim(); draw(); }
-      }
+    createNode: createNodeInFocusedPane,
+    undo: () => runFocusedHistory('undo'),
+    redo: () => runFocusedHistory('redo'),
+    fitView: fitFocusedPane,
+    toggleLinkMode: toggleFocusedLinkMode,
+    toggleBoxSelectMode: () => {
+      if (isFocusedCardLayout()) return false;
+      boxSelectMode = !boxSelectMode;
+      syncFocusedCommands();
+      return boxSelectMode;
     },
-    redo: () => {
-      if (focusedPaneIndex === PANE_RIGHT) {
-        if (pane1.undoManager.redo(pane1.graph)) {
-          pane1.selNode = null; pane1.selEdge = null; pane1.selGroup = null;
-          simManager1.initSim(); draw();
-        }
-      } else {
-        if (undoManager.redo(graph)) { clearEd(); simManager.initSim(); draw(); }
-      }
-    },
-    toggleLinkMode: () => {
-      if (focusedPaneIndex === PANE_RIGHT) {
-        pane1.linkMode = !pane1.linkMode;
-        linkBtn.style.background = pane1.linkMode ? '#5B8FF9' : '';
-        linkBtn.style.color = pane1.linkMode ? '#fff' : '';
-        if (pane1.linkMode) { pane1.linkSrc = null; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
-        else { showToast('已退出连线模式', 'info'); }
-        return pane1.linkMode;
-      } else {
-        linkMode = !linkMode; linkBtn.style.background = linkMode ? '#5B8FF9' : ''; linkBtn.style.color = linkMode ? '#fff' : '';
-        if (linkMode) { linkSrc = null; linkCursorX = 0; linkCursorY = 0; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); }
-        else { showToast('已退出连线模式', 'info'); }
-        return linkMode;
-      }
-    },
-    toggleBoxSelectMode: () => { boxSelectMode = !boxSelectMode; return boxSelectMode; },
-    getLinkActive: () => focusedPaneIndex === PANE_RIGHT ? pane1.linkMode : linkMode,
+    getLinkActive: focusedLinkActive,
     getBoxSelectActive: () => boxSelectMode,
+    getBoxSelectEnabled: () => !isFocusedCardLayout(),
+    canUndo: () => focusedUndoManager().canUndo(),
+    canRedo: () => focusedUndoManager().canRedo(),
   });
-  appShell.appendChild(mobileToolbar);
+  appShell.appendChild(mobileToolbar.element);
+  syncFocusedCommands = () => {
+    const linkActive = focusedLinkActive();
+    linkBtn.setAttribute('aria-pressed', String(linkActive));
+    linkBtn.style.background = linkActive ? '#5B8FF9' : '';
+    linkBtn.style.color = linkActive ? '#fff' : '';
+    mobileToolbar.sync();
+  };
+  syncFocusedCommands();
+  window.addEventListener('beforeunload', () => mobileToolbar.destroy(), { once: true });
 
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'fg-action fg-action-secondary';
@@ -4912,15 +5237,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // primary bar instead of consuming a permanent third toolbar row.
   primaryRow.appendChild(controlsDetails);
 
-  let activeMode = 'default'; // default | tree | category | fullcat | layout:xxx
   const exitLayoutMode = (toMode = 'default') => {
     currentAnimationCancel?.();
     if (activeMode === 'tree') {
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
     } else if (activeMode === 'category' || activeMode === 'fullcat') {
-      cardGridCtrl?.deactivate();
-      cardGridCtrl = null;
+      const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
+      if (targetPane) clearPaneLayout(targetPane);
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
       (graph as any)._categoryBoxes = null;
@@ -4931,10 +5255,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         }
       }
     } else if (activeMode === 'cardgrid') {
-      cardGridCtrl?.deactivate();
-      cardGridCtrl = null;
+      const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
+      if (targetPane) clearPaneLayout(targetPane);
     }
     activeMode = toMode;
+    syncFocusedCommands();
     renderModeBar();
     if (toMode === 'default') { saveNow(); simManager.initSim(); draw(); }
   };
@@ -5018,6 +5343,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   };
 
   const applyLayoutMode = (mode: string) => withFocusedPane(() => {
+    const targetRuntime = focusedExtraPane()?.runtime ?? primaryRuntime;
+    if (coordinateLayoutModes.has(mode) && targetRuntime.ownerCount > 1) {
+      showToast('同一文件正在多个窗格中打开，当前布局需要独占文档', 'warning', 4000);
+      return;
+    }
     currentAnimationCancel?.(); // 取消正在进行的动画
     // 只在离开默认模式时保存一次
     if (activeMode === 'default' && mode !== 'default') saveFixedState();
@@ -5032,10 +5362,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       for (const n of graph.nodes) { delete (n as any)._starId; delete (n as any)._starRoot; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._starRadius; delete (n as any)._starAngle; }
     }
     if (activeMode === 'cardgrid' || activeMode === 'category' || activeMode === 'fullcat') {
-      cardGridCtrl?.deactivate();
-      cardGridCtrl = null;
+      const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
+      if (targetPane) clearPaneLayout(targetPane);
     }
     activeMode = mode;
+    if (['cardgrid', 'category', 'fullcat'].includes(mode)) boxSelectMode = false;
+    syncFocusedCommands();
     renderModeBar();
     const getCardLayoutBounds = (targetPixi: any) => () => {
       const canvasRect = targetPixi.app.canvas.getBoundingClientRect();
@@ -5057,6 +5389,42 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       selEdge = null;
       selGroup = null;
       clearEd();
+    };
+    const activateCardMode = (cardSource: 'components' | 'groups', allGroups = false) => {
+      const simParams = {
+        getLinkDist: () => linkDist,
+        getLinkStr: () => linkStr,
+        getCharge: () => charge,
+        getCenterS: () => centerS,
+        getCollideR: () => collideR,
+      };
+      const modeId = cardSource === 'components' ? 'cardgrid' : allGroups ? 'fullcat' : 'category';
+      const controller = new CardGridController(modeId);
+      const isPrimaryPane = focusedPaneIndex === PANE_LEFT;
+      const extraPane = isPrimaryPane ? null : extraPanes[focusedPaneIndex - 1];
+      const targetPane = isPrimaryPane ? pane0 : extraPane;
+      const focusPixi = targetPane?.pixi ?? null;
+      if (!targetPane || !focusPixi) return;
+      controller.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
+      controller.saveFn = () => {
+        if (isPrimaryPane) scheduleSave();
+        else if (extraPane) scheduleSaveForPane(extraPane);
+      };
+      controller.directSaveFn = () => {
+        if (isPrimaryPane) saveNow().catch(() => {});
+        else if (extraPane) saveRuntimeNow(extraPane.runtime, collectPaneSettings(extraPane)).catch(() => {});
+      };
+      targetPane.layout.clear();
+      controller.activate(graph, focusPixi, simManager, simParams, {
+        borderStyle: cardBorderStyle,
+        gap: 4,
+        cardSource,
+        allGroups,
+        onBackgroundTap: clearCardBackgroundSelection,
+        getLayoutBounds: getCardLayoutBounds(focusPixi),
+      });
+      targetPane.layout.set(controller);
+      controller.layoutAndAnimate();
     };
     if (mode === 'default') {
       // 保存当前位置作为动画起点
@@ -5143,52 +5511,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         },
       });
     } else if (mode === 'cardgrid') {
-      const simParams = { getLinkDist: () => linkDist, getLinkStr: () => linkStr, getCharge: () => charge, getCenterS: () => centerS, getCollideR: () => collideR, getGroupBound: () => groupBound, getHeatingTime: () => heatingTime, getAlphaTarget: () => alphaTarget };
-      cardGridCtrl = new CardGridController();
-      cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
-      cardGridCtrl.saveFn = () => scheduleSave();
-      cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
-      const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
-      cardGridCtrl.activate(graph, focusPixi, simManager, simParams, {
-        borderStyle: cardBorderStyle,
-        gap: 4,
-        cardSource: 'components',
-        onBackgroundTap: clearCardBackgroundSelection,
-        getLayoutBounds: getCardLayoutBounds(focusPixi),
-      });
-      cardGridCtrl.layoutAndAnimate();
+      activateCardMode('components');
     } else if (mode === 'category') {
-      const simParams = { getLinkDist: () => linkDist, getLinkStr: () => linkStr, getCharge: () => charge, getCenterS: () => centerS, getCollideR: () => collideR, getGroupBound: () => groupBound, getHeatingTime: () => heatingTime, getAlphaTarget: () => alphaTarget };
-      cardGridCtrl = new CardGridController();
-      cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
-      cardGridCtrl.saveFn = () => scheduleSave();
-      cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
-      const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
-      cardGridCtrl.activate(graph, focusPixi, simManager, simParams, {
-        borderStyle: cardBorderStyle,
-        gap: 4,
-        cardSource: 'groups',
-        allGroups: false,
-        onBackgroundTap: clearCardBackgroundSelection,
-        getLayoutBounds: getCardLayoutBounds(focusPixi),
-      });
-      cardGridCtrl.layoutAndAnimate();
+      activateCardMode('groups');
     } else if (mode === 'fullcat') {
-      const simParams = { getLinkDist: () => linkDist, getLinkStr: () => linkStr, getCharge: () => charge, getCenterS: () => centerS, getCollideR: () => collideR, getGroupBound: () => groupBound, getHeatingTime: () => heatingTime, getAlphaTarget: () => alphaTarget };
-      cardGridCtrl = new CardGridController();
-      cardGridCtrl.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
-      cardGridCtrl.saveFn = () => scheduleSave();
-      cardGridCtrl.directSaveFn = () => { saveNow().catch(() => {}); };
-      const focusPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
-      cardGridCtrl.activate(graph, focusPixi, simManager, simParams, {
-        borderStyle: cardBorderStyle,
-        gap: 4,
-        cardSource: 'groups',
-        allGroups: true,
-        onBackgroundTap: clearCardBackgroundSelection,
-        getLayoutBounds: getCardLayoutBounds(focusPixi),
-      });
-      cardGridCtrl.layoutAndAnimate();
+      activateCardMode('groups', true);
     } else {
       // 自定义布局
       const l = layouts.find(x => x.name === mode);
@@ -5359,25 +5686,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const fitBtn = document.createElement('button');
   fitBtn.textContent = '适应'; fitBtn.title = '回到中心并适应所有节点 (F)';
   fitBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  fitBtn.onclick = () => {
-    if (focusedPaneIndex === PANE_RIGHT) {
-      if (pixi1) {
-        const nodes = simManager1.getSim()?.nodes() || [];
-        if (nodes.length > 0) {
-          const xs = nodes.map((n: any) => n.x), ys = nodes.map((n: any) => n.y);
-          const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-          const hw = Math.max(Math.abs(minX), Math.abs(maxX)) + 60;
-          const hh = Math.max(Math.abs(minY), Math.abs(maxY)) + 60;
-          const cw = pixi1.app.canvas.clientWidth || 400;
-          const ch = pixi1.app.canvas.clientHeight || 300;
-          const sc = Math.min(cw/(hw*2), ch/(hh*2), 2);
-          pixi1.viewport.animate({ scale: sc, position: { x: 0, y: 0 }, time: 300 });
-        }
-      }
-    } else {
-      fitAllNodes();
-    }
-  };
+  fitBtn.onclick = fitFocusedPane;
   controlsRow2.appendChild(fitBtn);
   controlsRow2.appendChild(importBtn);
   controlsDiv.appendChild(controlsRow2);
@@ -5426,12 +5735,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const onContextMenu = (type: 'blank'|'node'|'edge'|'group', id: string | null, screenX: number, screenY: number) => {
     const items: { label: string; action: () => void; children?: { label: string; action: () => void }[] }[] = [];
     const mx = screenX, my = screenY;
-    const isExtra = focusedPaneIndex === PANE_RIGHT;
-    const _g = isExtra ? pane1.graph : graph;
-    const _px = isExtra ? pixi1! : pixi!;
-    const _sm = isExtra ? simManager1 : simManager;
-    const _getSim = () => isExtra ? getSim1() : getSim();
-    const _saveUndo = () => { const um = isExtra ? pane1.undoManager : undoManager; um.pushSnapshot(_g); };
+    const targetPane = focusedExtraPane();
+    const isExtra = !!targetPane;
+    const _g = targetPane?.graph ?? graph;
+    const _px = targetPane?.pixi ?? pixi!;
+    const _sm = targetPane?.simManager ?? simManager;
+    const _getSim = () => _sm?.getSim();
+    const _saveUndo = () => (targetPane?.undoManager ?? undoManager).pushSnapshot(_g);
     const _addToSim = (node: any) => {
       const s = _getSim();
       if (s) {
@@ -5703,8 +6013,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           }});
         }
       }
-      addItem({ label: '新建子节点', action: () => { const sim = _sm.getSim()?.nodes(); const simParent = sim?.find((n: any) => n.id === id); const parent = _g.nodes.find(n => n.id === id); const px = simParent?.x ?? parent?.x ?? 200; const py = simParent?.y ?? parent?.y ?? 200; const childId = 'n_' + Date.now(); const childLevel = Math.min(6, (parent?.headingLevel || 6) + 1); const child = { id: childId, label: '子节点', headingLevel: childLevel, tags: [], x: px + 60, y: py + 40, _isNew: true }; _saveUndo(); _g.nodes.push(child); _g.edges.push({ source: id, target: childId, label: '', color: '#BFBFBF', arrow: (isExtra ? pane1.defArrow : defArrow) }); scheduleSave(); _addToSim(child); draw(); { if (!isExtra) fillNode(childId); }; } });
-      addItem({ label: '连线', action: () => { linkMode = true; linkSrc = id; linkCursorX = 0; linkCursorY = 0; } });
+      addItem({ label: '新建子节点', action: () => { const sim = _sm.getSim()?.nodes(); const simParent = sim?.find((n: any) => n.id === id); const parent = _g.nodes.find(n => n.id === id); const px = simParent?.x ?? parent?.x ?? 200; const py = simParent?.y ?? parent?.y ?? 200; const childId = 'n_' + Date.now(); const childLevel = Math.min(6, (parent?.headingLevel || 6) + 1); const child = { id: childId, label: '子节点', headingLevel: childLevel, tags: [], x: px + 60, y: py + 40, _isNew: true }; _saveUndo(); _g.nodes.push(child); _g.edges.push({ source: id, target: childId, label: '', color: '#BFBFBF', arrow: (targetPane?.defArrow ?? defArrow) }); scheduleSave(); _addToSim(child); draw(); { if (!isExtra) fillNode(childId); }; } });
+      addItem({ label: '连线', action: () => { linkMode = true; linkSrc = id; linkCursorX = 0; linkCursorY = 0; syncFocusedCommands(); } });
       items.push({ label: '删除', action: () => {
         _saveUndo();
         markNodesDying([id]);
@@ -5754,12 +6064,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const nodes = sim?.nodes() || [];
     const g = pi ? pi.graph : graph;
     const ne = pi ? pi.nodeExpand : nodeExpand;
+    const finishLinkMode = () => {
+      if (pi) { pi.linkMode = false; pi.linkSrc = null; }
+      else { linkMode = false; linkSrc = null; }
+      syncFocusedCommands();
+    };
     const n = nodes.find((nd: any) => (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + ne) ** 2);
     if (n) {
-      if (ls === n.id) { if (pi) { pi.linkMode = false; pi.linkSrc = null; } else { linkMode = false; linkSrc = null; } return true; }
-      if (g.edges.some(e => (typeof e.source === "object" ? e.source.id : e.source) === ls && (typeof e.target === "object" ? e.target.id : e.target) === n.id)) { if (pi) { pi.linkMode = false; pi.linkSrc = null; } else { linkMode = false; linkSrc = null; } return true; }
-      saveUndo(); g.edges.push({ source: ls, target: n.id, label: '', color: '#BFBFBF', arrow: defArrow, _createdAt: performance.now() });
-      scheduleSave();
+      if (ls === n.id) { finishLinkMode(); return true; }
+      if (g.edges.some(e => (typeof e.source === "object" ? e.source.id : e.source) === ls && (typeof e.target === "object" ? e.target.id : e.target) === n.id)) { finishLinkMode(); return true; }
+      saveUndo(); g.edges.push({ source: ls, target: n.id, label: '', color: '#BFBFBF', arrow: pi?.defArrow ?? defArrow, _createdAt: performance.now() });
+      if (pi) scheduleSaveForPane(pi); else scheduleSave();
       if (sim) {
         const validEdges = g.edges.filter(e => (e.lineStyle || 'solid') === 'solid' && !(e as any)._conflict && !(e as any)._dyingAt);
         const ld = pi ? pi.linkDist : linkDist;
@@ -5770,7 +6085,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
       draw();
     }
-    if (pi) { pi.linkMode = false; pi.linkSrc = null; } else { linkMode = false; linkSrc = null; }
+    finishLinkMode();
     return true;
   };
 
@@ -5844,7 +6159,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     draw, onContextMenu,
     fixNode: (id: string) => { const n = pi.graph.nodes.find(gn => gn.id === id); if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; } const sim = getSM().getSim(); if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); } scheduleSave(); draw(); },
     isFixedNode: (id: string) => { const n = pi.graph.nodes.find(gn => gn.id === id); return n?.fixed || false; },
-    selectionBox, fixNodes: (ids: string[]) => { for (const id of ids) { const n = pi.graph.nodes.find(gn => gn.id === id); if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; } const sim = getSM().getSim(); if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } } } scheduleSave(); draw(); },
+    selectionBox,
+    getBoxSelectMode: () => boxSelectMode,
+    setBoxSelectMode: (value: boolean) => { boxSelectMode = value; syncFocusedCommands(); },
+    fixNodes: (ids: string[]) => { for (const id of ids) { const n = pi.graph.nodes.find(gn => gn.id === id); if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; } const sim = getSM().getSim(); if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } } } scheduleSave(); draw(); },
     unfixNodes: (ids: string[]) => { const sim = getSM().getSim(); for (const id of ids) { const n = pi.graph.nodes.find(gn => gn.id === id); if (n) { n.fixed = false; n.fx = null; n.fy = null; } if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = false; sn.fx = null; sn.fy = null; } } } if (sim) { sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); } scheduleSave(); draw(); },
     appShell, triggerSave: () => scheduleSave(),
     onDragStart: (id: string) => { getSM().setDragNode(id); lastDragId.v = id; dragCount++; appShell.classList.add('is-dragging-node'); },
@@ -5949,8 +6267,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     // 卡片网格模式标识（供 ui-events 节点拖拽保持 pin 用）
     isCardGridMode: () => pi.activeMode === 'cardgrid' || pi.activeMode === 'category' || pi.activeMode === 'fullcat',
     clampNodeDrag: (id: string, x: number, y: number) => {
-      if (!cardGridCtrl) return [x, y] as [number, number];
-      return cardGridCtrl.clampToCard(id, x, y);
+      return pi.layout.constrainNodePosition(id, x, y);
     },
   };
 };
@@ -5959,6 +6276,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   setupCanvasEvents(eventsCanvas, bindPaneEvents(
     {
       index: 0 as number,
+      layout: pane0Layout,
       get graph() { return graph; },
       get selNode() { return selNode; }, set selNode(v) { selNode = v; },
       get selEdge() { return selEdge; }, set selEdge(v) { selEdge = v; },
@@ -6201,24 +6519,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
     } else if (ctrl && e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
-      if (isExtra) {
-        if (pane1.undoManager.undo(pane1.graph)) {
-          pane1.selNode = null; pane1.selEdge = null; pane1.selGroup = null;
-          simManager1.initSim(); draw();
-        }
-      } else {
-        if (undoManager.undo(graph)) { clearEd(); simManager.initSim(); draw(); }
-      }
+      runFocusedHistory('undo');
     } else if (ctrl && e.key === 'z' && e.shiftKey) {
       e.preventDefault();
-      if (isExtra) {
-        if (pane1.undoManager.redo(pane1.graph)) {
-          pane1.selNode = null; pane1.selEdge = null; pane1.selGroup = null;
-          simManager1.initSim(); draw();
-        }
-      } else {
-        if (undoManager.redo(graph)) { clearEd(); simManager.initSim(); draw(); }
-      }
+      runFocusedHistory('redo');
     } else if (ctrl && e.key === 's') {
       e.preventDefault(); saveNow(); showToast('已保存', 'success');
     } else if (e.key === 'f' && !ctrl) {
@@ -6235,20 +6539,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           }
           scheduleSave(); pixiDrawPane1();
         } else {
-          // fit pane 1 viewport
-          if (pixi1) {
-            const nodes = simManager1.getSim()?.nodes() || [];
-            if (nodes.length > 0) {
-              const xs = nodes.map((n: any) => n.x), ys = nodes.map((n: any) => n.y);
-              const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-              const halfW = Math.max(Math.abs(minX), Math.abs(maxX)) + 60;
-              const halfH = Math.max(Math.abs(minY), Math.abs(maxY)) + 60;
-              const cw = pixi1.app.canvas.clientWidth || 400;
-              const ch = pixi1.app.canvas.clientHeight || 300;
-              const scale = Math.min(cw/(halfW*2), ch/(halfH*2), 2);
-              pixi1.viewport.animate({ scale, position: { x: 0, y: 0 }, time: 300 });
-            }
-          }
+          fitFocusedPane();
         }
         return;
       }
@@ -6261,21 +6552,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (isFixedNode(selNode)) { unfixNodes([selNode]); }
         else { fixNode(selNode); }
       } else {
-        fitAllNodes();
+        fitFocusedPane();
       }
     } else if (e.key === 'n' && !ctrl) {
       e.preventDefault();
-      if (isExtra) {
-        const c = pixi1?.viewport?.center ?? { x: pane1.gw / 2, y: pane1.gh / 2 };
-        const nid = 'n_' + Date.now();
-        const nn = { id: nid, label: '新节点', headingLevel: 6, tags: [], x: c.x, y: c.y, _isNew: true };
-        pane1.undoManager.pushSnapshot(pane1.graph);
-        pane1.graph.nodes.push(nn); scheduleSave();
-        const s1 = simManager1.getSim(); if (s1) { s1.nodes([...s1.nodes(), nn]); s1.alpha(0.3).restart(); }
-        pixiDrawPane1();
-      } else {
-        addBtn.click();
-      }
+      createNodeInFocusedPane();
     } else if (/^[1-6]$/.test(e.key) && !ctrl && !e.shiftKey && !e.metaKey) {
       // 数字键 1-6：设置选中节点等级（输入框/可编辑元素聚焦时跳过）
       const activeEl = document.activeElement;
@@ -6333,7 +6614,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
     } else if (e.key === 'Escape') {
       if (sharedState.rightDragLink) { sharedState.rightDragLink = null; draw(); }
-      else if (linkMode) { linkMode = false; linkSrc = null; linkBtn.style.background = ''; linkBtn.style.color = ''; showToast('已退出连线模式', 'info'); }
+      else if (focusedLinkActive()) {
+        if (fp) { fp.linkMode = false; fp.linkSrc = null; }
+        else { linkMode = false; linkSrc = null; }
+        syncFocusedCommands();
+        showToast('已退出连线模式', 'info');
+      }
       else if (isExtra) {
         if (pane1.selNode || pane1.selEdge !== null || pane1.selGroup) {
           pane1.selNode = null; pane1.selEdge = null; pane1.selGroup = null;
@@ -6550,33 +6836,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
   });
 
-  // fitAllNodes 辅助函数
-  const fitAllNodes = () => {
-    const nodes = getSim()?.nodes() || [];
-    if (!pixi) return;
-    // 以世界原点 (0,0) 为中心，计算能容纳所有节点的缩放
-    let maxX = 0, maxY = 0;
-    for (const n of nodes) {
-      maxX = Math.max(maxX, Math.abs(n.x));
-      maxY = Math.max(maxY, Math.abs(n.y));
-    }
-    maxX += 60; maxY += 60;
-    const vp = pixi!.viewport;
-    const scale = Math.min(vp.screenWidth / (maxX * 2), vp.screenHeight / (maxY * 2), 2);
-    // animate position 传入世界坐标，viewport 将其设为视口中心
-    vp.animate({ scale, position: { x: 0, y: 0 }, time: FIT_ALL_DURATION });
-  };
-
   // 侧边栏折叠动画同步
   let cardBoundsRefreshFrame: number | null = null;
   const refreshCardLayoutBounds = () => {
     if (cardBoundsRefreshFrame != null) cancelAnimationFrame(cardBoundsRefreshFrame);
     cardBoundsRefreshFrame = requestAnimationFrame(() => {
       cardBoundsRefreshFrame = null;
-      if (!cardGridCtrl) return;
-      const targetPixi = focusedPaneIndex === PANE_RIGHT ? pixi1 : pixi;
-      const canvas = targetPixi?.app?.canvas;
-      if (canvas) cardGridCtrl.updateScreenSize(canvas.clientWidth, canvas.clientHeight);
+      const panesWithLayouts = [pane0, ...extraPanes];
+      for (const pane of panesWithLayouts) {
+        const canvas = pane.pixi?.app?.canvas;
+        if (canvas) pane.layout.resize(canvas.clientWidth, canvas.clientHeight);
+      }
     });
   };
   const cardUiResizeObserver = new ResizeObserver(refreshCardLayoutBounds);
@@ -6696,31 +6966,19 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
   }, 3000);
 
-  const graphPanesForFlush = () => {
-    const panes = [
-      { graph, activeTab, dirtyTabs },
-      ...extraPanes.map(ep => ({ graph: ep.graph, activeTab: ep.activeTab, dirtyTabs: ep.dirtyTabs })),
-    ];
-    const focused = focusedPaneIndex > PANE_LEFT ? panes[focusedPaneIndex] : panes[0];
-    return focused ? [focused, ...panes.filter(p => p !== focused)] : panes;
-  };
-
   const flushAllGraphs = async (): Promise<boolean> => {
-    if (saveTimeout) { clearTimeout(saveTimeout); saveTimeout = null; }
-    for (const ep of extraPanes) {
-      if (ep.saveTimeout) { clearTimeout(ep.saveTimeout); ep.saveTimeout = null; }
-    }
-    const focused = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1]?.graph : graph;
-    if (focused) focused.settings = collectSettings();
-
-    const savedTabs = new Set<string>();
     let allSaved = true;
-    for (const pane of graphPanesForFlush()) {
-      if (!pane.graph || !pane.activeTab || savedTabs.has(pane.activeTab)) continue;
-      savedTabs.add(pane.activeTab);
-      const saved = await writeGraphData(pane.activeTab, pane.graph);
-      if (saved) pane.dirtyTabs.delete(pane.activeTab);
-      else allSaved = false;
+    for (const runtime of runtimeRegistry.values()) {
+      if (!runtime.dirty && !runtime.externalConflict) continue;
+      const saved = await saveRuntimeNow(runtime, collectRuntimeSettings(runtime));
+      if (!saved) {
+        allSaved = false;
+        continue;
+      }
+      dirtyTabs.delete(runtime.fileName);
+      for (const pane of extraPanes) {
+        if (pane.runtime === runtime) pane.dirtyTabs.delete(runtime.fileName);
+      }
     }
     renderAllTabs();
     return allSaved;
@@ -6742,17 +7000,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // Web/Android 页面关闭无法等待异步写盘；同步更新恢复缓存作为最后防线。
   window.addEventListener('beforeunload', () => {
     try {
-      const saved = new Set<string>();
-      const savePane = (g: any, tab: string) => {
-        if (!g || !g.nodes || !tab) return;
-        const key = 'fg-data-' + tab;
-        if (saved.has(key)) return;
-        localStorage.setItem(key, JSON.stringify(g));
-        saved.add(key);
-      };
-      const focused = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1]?.graph : graph;
-      if (focused) focused.settings = collectSettings();
-      for (const pane of graphPanesForFlush()) savePane(pane.graph, pane.activeTab);
+      for (const runtime of runtimeRegistry.values()) {
+        if (!runtime.fileName || !runtime.graph?.nodes) continue;
+        const snapshot = serializeGraphSnapshot(runtime.graph, collectRuntimeSettings(runtime));
+        createRecoveryStorage(runtime.fileName).writeSnapshot(snapshot);
+        if (runtime.dirty) createRecoveryStorage(runtime.fileName).markUnsynced();
+      }
     } catch {}
   });
 

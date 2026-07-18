@@ -188,10 +188,11 @@ export async function renameFile(oldPath: string, newName: string, dh?: FileSyst
   try {
     const data = await readGraphFile(oldPath, h);
     if (!data) return false;
-    const parts = oldPath.split('/');
-    parts[parts.length - 1] = newName.endsWith('.json') ? newName : newName + '.json';
-    const newPath = parts.join('/');
-    await writeGraphFile(newPath, data, h);
+    const normalizedName = newName.endsWith('.json') ? newName : newName + '.json';
+    const newPath = replacePathName(oldPath, normalizedName);
+    const parts = newPath.split('/');
+    const wrote = await writeGraphFile(newPath, data, h);
+    if (!wrote) return false;
     // 删除旧文件
     let current = h;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -205,7 +206,7 @@ export async function renameFile(oldPath: string, newName: string, dh?: FileSyst
 }
 
 // ---- FileAdapter 工厂 ----
-import { FileAdapter, Result, ok, err } from './file-adapter';
+import { FileAdapter, Result, joinPath, ok, err, replacePathName } from './file-adapter';
 
 export function createFSAAdapter(getDH: () => FileSystemDirectoryHandle | null): FileAdapter {
   const buildCopyName = async (baseName: string, dh: FileSystemDirectoryHandle): Promise<string> => {
@@ -272,7 +273,7 @@ export function createFSAAdapter(getDH: () => FileSystemDirectoryHandle | null):
         const data = await readGraphFile(srcPath, dh);
         if (!data) return err('Source not found');
         const name = srcPath.split('/').pop()!;
-        const wrote = await writeGraphFile(dstDir + '/' + name, data, dh);
+        const wrote = await writeGraphFile(joinPath(dstDir, name), data, dh);
         if (!wrote) return err('Move write failed');
         await deleteFile(srcPath, dh);
         return ok(true);

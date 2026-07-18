@@ -272,7 +272,7 @@ export function isCapacitor(): boolean {
 }
 
 // ---- FileAdapter 工厂 ----
-import { FileAdapter, ok, err } from './file-adapter';
+import { FileAdapter, joinPath, ok, err, replacePathName } from './file-adapter';
 
 export function createCapacitorAdapter(): FileAdapter {
   const dedup = async (baseName: string): Promise<string> => {
@@ -309,7 +309,7 @@ export function createCapacitorAdapter(): FileAdapter {
       try {
         const content = await readFileMobile(oldPath);
         if (!content) return err('Source not found');
-        const wrote = await writeFileMobile(newName, content);
+        const wrote = await writeFileMobile(replacePathName(oldPath, newName), content);
         if (!wrote) return err('Write failed');
         await deleteFileMobile(oldPath);
         return ok(true);
@@ -326,7 +326,7 @@ export function createCapacitorAdapter(): FileAdapter {
     async moveFile(srcPath, dstDir) {
       try {
         const name = srcPath.split('/').pop()!;
-        const dstName = dstDir + '/' + name;
+        const dstName = joinPath(dstDir, name);
         const content = await readFileMobile(srcPath);
         if (!content) return err('Source not found');
         const wrote = await writeFileMobile(dstName, content);

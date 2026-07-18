@@ -116,18 +116,44 @@ set VERSION=%VERSION:,=%
 set TAG=v%VERSION%
 echo   Version: %VERSION%  Tag: %TAG%
 
-:: Delete old remote tag first (may not exist yet, ignore error)
-git push origin --delete %TAG% 2>nul
-gh release delete %TAG% --yes 2>nul
+:: Delete an earlier incomplete release/tag (may not exist, ignore error)
+gh release delete %TAG% --yes --cleanup-tag 2>nul
 
-:: Create release with both APK and EXE attached
-gh release create %TAG% NodeSpace.apk NodeSpace.exe --title "NodeSpace" --notes "Automated build" --latest --target main
-if %errorlevel% neq 0 (
-    echo Release creation failed! Check gh auth and network.
+:: Create as draft first, then upload each asset separately. This makes a slow or
+:: failed upload visible and prevents publishing a release without both assets.
+echo   [Release 1/4] Creating draft...
+gh release create %TAG% --draft --title "NodeSpace" --notes "Automated build" --target main
+if errorlevel 1 (
+    echo [ERROR] Could not create GitHub Release draft.
+    echo Run: gh auth status
     pause
-    exit /b %errorlevel%
+    exit /b 1
 )
-echo   Release %TAG% created with NodeSpace.apk + NodeSpace.exe
+
+echo   [Release 2/4] Uploading APK (about 72 MB)...
+gh release upload %TAG% "NodeSpace.apk"
+if errorlevel 1 (
+    echo [ERROR] APK upload failed. The release remains a draft for inspection.
+    pause
+    exit /b 1
+)
+
+echo   [Release 3/4] Uploading EXE (about 180 MB)...
+gh release upload %TAG% "NodeSpace.exe"
+if errorlevel 1 (
+    echo [ERROR] EXE upload failed. The release remains a draft for inspection.
+    pause
+    exit /b 1
+)
+
+echo   [Release 4/4] Publishing release...
+gh release edit %TAG% --draft=false --latest
+if errorlevel 1 (
+    echo [ERROR] Assets uploaded, but publishing failed. The release remains a draft.
+    pause
+    exit /b 1
+)
+echo   Release %TAG% published with NodeSpace.apk + NodeSpace.exe
 
 echo.
 echo [PUSH] Waiting for stable GitHub connection...
@@ -137,8 +163,8 @@ set cons=0
 :loop
 if not defined att set att=0
 set /a att+=1
-echo [Attempt !att!] Testing GitHub...
-ping -n 1 github.com >nul 2>&1
+echo [Attempt !att!] Testing GitHub API...
+gh api rate_limit >nul 2>&1
 if not errorlevel 1 (
     set /a cons+=1
     echo   OK - consecutive: !cons! / 3

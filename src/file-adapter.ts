@@ -29,6 +29,16 @@ export function err(error: string): Result<never> {
   return { ok: false, error };
 }
 
+export function replacePathName(path: string, name: string): string {
+  const parts = path.split('/');
+  parts[parts.length - 1] = name;
+  return parts.join('/');
+}
+
+export function joinPath(directory: string, name: string): string {
+  return directory ? `${directory}/${name}` : name;
+}
+
 export interface FileAdapter {
   /** 列出文件树（递归，flat平台仅顶层） */
   listFiles(): Promise<Result<FileEntry[]>>;

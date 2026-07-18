@@ -2,6 +2,8 @@ import { GraphData } from './data/storage';
 import { PixiLayers } from './pixi-app';
 import { NodeSprite } from './pixi-nodes';
 import { UndoManager } from './undo-redo';
+import { LayoutSlot } from './layout-controller';
+import { GraphRuntime } from './graph-runtime';
 
 /**
  * Maximum number of simultaneous split panes (left + right).
@@ -24,7 +26,8 @@ export const PANE_RIGHT = 1;
 export interface PaneState {
   index: number;
 
-  // --- Graph data ---
+  // --- Graph runtime ---
+  runtime: GraphRuntime;
   graph: GraphData;
   activeTab: string;
   openTabs: string[];
@@ -113,7 +116,8 @@ export interface PaneState {
   searchDebounceTimer: ReturnType<typeof setTimeout> | null;
   currentAnimationCancel: (() => void) | null;
 
-  // --- Layout mode booleans ---
+  // --- Layout ---
+  layout: LayoutSlot;
   treeMode: boolean;
   categoryMode: boolean;
   fullCatMode: boolean;
@@ -147,9 +151,12 @@ const P_DEFAULTS = {
 };
 
 export function createPaneState(index: number, container: HTMLElement): PaneState {
-  return {
+  const runtime = new GraphRuntime('demo', { nodes: [], edges: [], groups: [] }, new UndoManager());
+  const state: PaneState = {
     index,
-    graph: { nodes: [], edges: [], groups: [] },
+    runtime,
+    get graph() { return this.runtime.graph; },
+    set graph(value: GraphData) { this.runtime.graph = value; },
     activeTab: 'demo',
     openTabs: [],
     dirtyTabs: new Set<string>(),
@@ -157,7 +164,8 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     canvasContainer: container,
     nodeSprites: new Map(),
     readyToDraw: false,
-    simManager: null as any,
+    get simManager() { return this.runtime.simManager; },
+    set simManager(value: any) { this.runtime.simManager = value; },
     selNode: null, selEdge: null, selGroup: null,
     draggingNode: null, wasDragged: false,
     _lastDragNodeId: null,
@@ -185,13 +193,19 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     linkMode: false, linkSrc: null, linkCursorX: 0, linkCursorY: 0,
     defArrow: false,
     themeAccentColor: 0x5B8FF9, themeAccentAltColor: 0xF59E0B,
-    saveTimeout: null, searchDebounceTimer: null, currentAnimationCancel: null,
+    get saveTimeout() { return this.runtime.saveTimeout; },
+    set saveTimeout(value: ReturnType<typeof setTimeout> | null) { this.runtime.saveTimeout = value; },
+    searchDebounceTimer: null, currentAnimationCancel: null,
+    layout: new LayoutSlot(),
     treeMode: false, categoryMode: false, fullCatMode: false, activeMode: 'default',
     savedFixedNodes: [], savedGroupModes: [], layouts: [],
-    undoManager: new UndoManager(),
+    get undoManager() { return this.runtime.undoManager; },
+    set undoManager(value: UndoManager) { this.runtime.undoManager = value; },
     updateInfoRef: { current: () => {} },
     updateSelectsRef: { current: () => {} },
   };
+  runtime.attach(state);
+  return state;
 }
 
 // --- Focus management ---

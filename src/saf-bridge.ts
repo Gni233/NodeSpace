@@ -84,7 +84,7 @@ export function safIsAvailable(): boolean {
 }
 
 // ---- FileAdapter 工厂 ----
-import { FileAdapter, ok, err } from './file-adapter';
+import { FileAdapter, joinPath, ok, err, replacePathName } from './file-adapter';
 
 export function createSAFAdapter(): FileAdapter {
   const dedup = async (baseName: string): Promise<string> => {
@@ -123,7 +123,7 @@ export function createSAFAdapter(): FileAdapter {
       try {
         const raw = await safReadFile(oldPath);
         if (!raw) return err('Source not found');
-        await safWriteFile(newName, raw);
+        await safWriteFile(replacePathName(oldPath, newName), raw);
         await safDeleteFile(oldPath);
         return ok(true);
       } catch (e: any) { return err(e.message); }
@@ -140,7 +140,7 @@ export function createSAFAdapter(): FileAdapter {
     async moveFile(srcPath, dstDir) {
       try {
         const name = srcPath.split('/').pop()!;
-        const dstName = dstDir + '/' + name;
+        const dstName = joinPath(dstDir, name);
         const raw = await safReadFile(srcPath);
         if (!raw) return err('Source not found');
         await safWriteFile(dstName, raw);

@@ -215,9 +215,9 @@ export function setupCardInteractions(canvas: HTMLCanvasElement, ctx: Interactio
     const sx = e.clientX - r.left;
     const sy = e.clientY - r.top;
     const card = hitCard(sx, sy, ctx.getCards());
-    if (!card) return;
     e.stopImmediatePropagation();
     e.preventDefault();
+    if (!card) return;
     const factor = Math.exp(-e.deltaY * 0.0015);
     ctx.onZoom(card.id, factor, sx, sy);
   };

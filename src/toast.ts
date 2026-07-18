@@ -85,7 +85,10 @@ export function showToast(msg: string, type: 'info' | 'success' | 'error' | 'war
   }, duration);
 }
 
-export function confirmAction(msg: string): Promise<boolean> {
+export function confirmAction(
+  msg: string,
+  labels: { confirm?: string; cancel?: string } = {},
+): Promise<boolean> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText =
@@ -105,14 +108,14 @@ export function confirmAction(msg: string): Promise<boolean> {
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = '取消';
+    cancelBtn.textContent = labels.cancel || '取消';
     cancelBtn.style.cssText =
       'padding:5px 14px;' +
       `border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};` +
       `border-radius:${V('--fg-radius-md', '10px')};` +
       `background:transparent;color:${V('--fg-text', '#ccc')};cursor:pointer;font-size:${V('--fg-font-md', '0.85em')};`;
     const okBtn = document.createElement('button');
-    okBtn.textContent = '确定';
+    okBtn.textContent = labels.confirm || '确定';
     okBtn.style.cssText =
       'padding:5px 14px;border:none;' +
       `border-radius:${V('--fg-radius-md', '10px')};` +

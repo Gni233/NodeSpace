@@ -1,4 +1,5 @@
-import { FileAdapter, FileEntry, ok, err } from '../file-adapter';
+import { FileAdapter, FileEntry, joinPath, ok, err, replacePathName } from '../file-adapter';
+import { GRAPH_STORAGE_PREFIX } from '../storage-keys';
 export interface GraphSettings {
   linkDist: number;
   labelSize: number;
@@ -58,7 +59,7 @@ export interface GraphData {
   settings?: GraphSettings;
 }
 
-const STORAGE_PREFIX = 'fg-data-';
+const STORAGE_PREFIX = GRAPH_STORAGE_PREFIX;
 
 export function createStorage(graphName: string) {
   const key = STORAGE_PREFIX + graphName;
@@ -134,7 +135,7 @@ export function createStorageAdapter(): FileAdapter {
       try {
         const raw = localStorage.getItem(STORAGE_PREFIX + oldPath);
         if (!raw) return err('Source not found');
-        localStorage.setItem(STORAGE_PREFIX + newName, raw);
+        localStorage.setItem(STORAGE_PREFIX + replacePathName(oldPath, newName), raw);
         localStorage.removeItem(STORAGE_PREFIX + oldPath);
         return ok(true);
       } catch (e: any) { return err(e.message); }
@@ -157,7 +158,7 @@ export function createStorageAdapter(): FileAdapter {
     async moveFile(srcPath, dstDir) {
       try {
         const name = srcPath.split('/').pop()!;
-        const dstName = dstDir + '/' + name;
+        const dstName = joinPath(dstDir, name);
         const raw = localStorage.getItem(STORAGE_PREFIX + srcPath);
         if (!raw) return err('Source not found');
         localStorage.setItem(STORAGE_PREFIX + dstName, raw);

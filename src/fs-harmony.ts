@@ -120,7 +120,7 @@ export function createHarmonyFileImporter(onDone: () => void): { label: HTMLElem
 }
 
 // ---- FileAdapter 工厂 ----
-import { FileAdapter, ok, err } from './file-adapter';
+import { FileAdapter, joinPath, ok, err, replacePathName } from './file-adapter';
 
 export function createHarmonyAdapter(): FileAdapter {
   const dedup = async (baseName: string): Promise<string> => {
@@ -157,7 +157,7 @@ export function createHarmonyAdapter(): FileAdapter {
       try {
         const content = await readFileHarmony(oldPath);
         if (!content) return err('Source not found');
-        const wrote = await writeFileHarmony(newName, content);
+        const wrote = await writeFileHarmony(replacePathName(oldPath, newName), content);
         if (!wrote) return err('Write failed');
         await deleteFileHarmony(oldPath);
         return ok(true);
@@ -174,7 +174,7 @@ export function createHarmonyAdapter(): FileAdapter {
     async moveFile(srcPath, dstDir) {
       try {
         const name = srcPath.split('/').pop()!;
-        const dstName = dstDir + '/' + name;
+        const dstName = joinPath(dstDir, name);
         const content = await readFileHarmony(srcPath);
         if (!content) return err('Source not found');
         const wrote = await writeFileHarmony(dstName, content);

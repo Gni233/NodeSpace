@@ -103,6 +103,7 @@ export class PaneManager {
     const pane = this.panes[index];
 
     // ---- cleanup before destroy ----
+    pane.layout.clear();
     pane.pixi?.viewport.off('moved');
     pane.pixi?.viewport.off('zoomed-end');
     if (pane.pixi) pane.pixi.onContextRestored = null;

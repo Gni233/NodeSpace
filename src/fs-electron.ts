@@ -1,6 +1,6 @@
 /** Electron IPC 文件适配器 — 通过 preload.cjs 暴露的 electronAPI 操作本地文件系统 */
 
-import { FileAdapter, FileEntry, Result, ok, err } from './file-adapter';
+import { FileAdapter, FileEntry, Result, joinPath, ok, err, replacePathName } from './file-adapter';
 
 interface ElectronAPI {
   readFile(path: string): Promise<string | { error: string }>;
@@ -99,9 +99,8 @@ export function createElectronAdapter(mountPath: string): FileAdapter {
       try {
         const ea = getEA();
         if (!ea) return err('Electron API not available');
-        const parts = oldPath.split('/');
-        parts[parts.length - 1] = newName.endsWith('.json') ? newName : newName + '.json';
-        const newPath = parts.join('/');
+        const normalizedName = newName.endsWith('.json') ? newName : newName + '.json';
+        const newPath = replacePathName(oldPath, normalizedName);
         await ea.rename(resolve(oldPath), resolve(newPath));
         return ok(true);
       } catch (e: any) {
@@ -130,7 +129,7 @@ export function createElectronAdapter(mountPath: string): FileAdapter {
         const ea = getEA();
         if (!ea) return err('Electron API not available');
         const name = srcPath.split('/').pop()!;
-        const dstPath = dstDir + '/' + name;
+        const dstPath = joinPath(dstDir, name);
         const raw = await ea.readFile(resolve(srcPath));
         if (!raw || (raw as any).error) return err('Source not found');
         const w = await ea.writeFile(resolve(dstPath), raw as string);

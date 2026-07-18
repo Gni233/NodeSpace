@@ -18,6 +18,13 @@ export interface PixiLayers {
   gridLayerGfx?: Graphics | null;
 }
 
+export function clearBlobLayer(layers: Pick<PixiLayers, 'blobLayer' | 'blobLayerGfx'>): void {
+  for (const child of layers.blobLayer.children.slice()) child.destroy({ children: true });
+  layers.blobLayer.removeChildren();
+  layers.blobLayerGfx = null;
+  layers.blobLayer.visible = false;
+}
+
 export async function createPixiApp(container: HTMLElement): Promise<PixiLayers> {
   const app = new Application();
 

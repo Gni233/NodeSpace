@@ -8,6 +8,7 @@ import {
 import { layoutCards, cardWorldBox, cardContentScreenBox } from './treemap';
 import { renderCards } from './render';
 import { setupCardInteractions, InteractionContext } from './interactions';
+import { LayoutController } from '../layout-controller';
 
 export type { Card, CardGridState } from './types';
 
@@ -20,12 +21,20 @@ interface CardSimulationParams {
 }
 
 interface CardSimData {
-  cardId: string;
+  card: Card;
   simNodes: any[];
   box: { x: number; y: number; w: number; h: number };
+  linkDistance: number;
+  chargeStrength: number;
+  centerStrength: number;
 }
 
-export class CardGridController {
+const ACTIVE_FRAME_MS = 15;
+const IDLE_FRAME_MS = 32;
+const ACTIVE_FPS_HOLD_MS = 300;
+
+export class CardGridController implements LayoutController {
+  readonly mode: 'cardgrid' | 'category' | 'fullcat';
   drawFn: () => void = () => {};
   saveFn: () => void = () => {};
   directSaveFn: (() => void) | null = null;
@@ -44,16 +53,22 @@ export class CardGridController {
   private _lastCompHash = '';
 
   private _cardSims = new Map<string, d3.Simulation<any, any>>();
+  private _cardByNode = new Map<string, Card>();
+  private _graphNodeById = new Map<string, any>();
+  private _globalSimNodeById = new Map<string, any>();
   private _cleanupInteraction: (() => void) | null = null;
   private _rafId: number | null = null;
   private _active = false;
   private _simParams: CardSimulationParams = {};
   private _savedViewport: { x: number; y: number; scaleX: number; scaleY: number } | null = null;
   private _lastRenderAt = 0;
+  private _activeFpsUntil = 0;
   private _getLayoutBounds: (() => { x: number; y: number; w: number; h: number }) | null = null;
   private _viewSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private _graphChangeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor() {
+  constructor(mode: 'cardgrid' | 'category' | 'fullcat' = 'cardgrid') {
+    this.mode = mode;
     this._state = createState('components');
   }
 
@@ -83,6 +98,7 @@ export class CardGridController {
     if (graph?.nodes) {
       for (const n of graph.nodes) {
         n.fx = null; n.fy = null;
+        delete n._pieColors;
         if (!this._creationOrder.has(n.id)) this._creationOrder.set(n.id, this._creationSeq++);
       }
     }
@@ -102,7 +118,7 @@ export class CardGridController {
       this._savedViewport = { x: vp.x, y: vp.y, scaleX: vp.scale.x, scaleY: vp.scale.y };
       const screenPositions = new Map<string, { x: number; y: number }>();
       for (const n of graph?.nodes ?? []) screenPositions.set(n.id, vp.toScreen(n.x, n.y));
-      for (const plugin of ['drag', 'wheel', 'pinch', 'decelerate']) vp.plugins?.pause?.(plugin);
+      for (const plugin of ['drag', 'pinch', 'decelerate']) vp.plugins?.pause?.(plugin);
       vp.position.set(0, 0);
       vp.scale.set(1);
       for (const n of graph?.nodes ?? []) {
@@ -140,6 +156,10 @@ export class CardGridController {
 
   deactivate(): void {
     this._active = false;
+    if (this._graphChangeTimer != null) {
+      clearTimeout(this._graphChangeTimer);
+      this._graphChangeTimer = null;
+    }
     if (this._viewSaveTimer != null) {
       clearTimeout(this._viewSaveTimer);
       this._viewSaveTimer = null;
@@ -148,6 +168,9 @@ export class CardGridController {
     if (this._rafId != null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     for (const [, sim] of this._cardSims) sim.stop();
     this._cardSims.clear();
+    this._cardByNode.clear();
+    this._graphNodeById.clear();
+    this._globalSimNodeById.clear();
     if (this._cardLayer) {
       this._state = createState('components');
     }
@@ -160,7 +183,7 @@ export class CardGridController {
         n.x = world.x;
         n.y = world.y;
       }
-      for (const plugin of ['drag', 'wheel', 'pinch', 'decelerate']) vp.plugins?.resume?.(plugin);
+      for (const plugin of ['drag', 'pinch', 'decelerate']) vp.plugins?.resume?.(plugin);
     }
     this._savedViewport = null;
     this._getLayoutBounds = null;
@@ -185,56 +208,47 @@ export class CardGridController {
     }
   }
 
-  tick(): void {
+  update(): void {
     if (!this._graph) return;
 
     const gsim = this._sm?.getSim?.();
-    const nodeMap = new Map<string, any>(this._graph.nodes.map((n: any) => [n.id, n]));
     this._advanceCardLayout();
 
-    // Only the node explicitly tracked by the interaction layer is being
-    // dragged. Other fx/fy values may be temporary anchors (notably the
-    // 1.5-second stabilizer applied to newly created nodes) and must not
-    // overwrite the card simulation's settled position.
-    const dragged = new Map<string, { fx: number; fy: number }>();
     const dragNodeId = this._sm?.getDragNode?.() as string | null | undefined;
-    if (gsim && dragNodeId) {
-      const gsn = (gsim.nodes() as any[]).find(node => node.id === dragNodeId);
-      if (gsn && Number.isFinite(gsn.fx) && Number.isFinite(gsn.fy)) {
-        dragged.set(gsn.id, { fx: gsn.fx, fy: gsn.fy });
-      }
-    }
+    const draggedSimNode = dragNodeId ? this._globalSimNodeById.get(dragNodeId) : null;
+    const dragX = Number.isFinite(draggedSimNode?.fx) ? draggedSimNode.fx : null;
+    const dragY = Number.isFinite(draggedSimNode?.fy) ? draggedSimNode.fy : null;
 
-    // 拖拽 pin 先同步到卡片 sim，再推进一帧，避免一帧延迟。
     for (const [cardId, sim] of this._cardSims) {
       const cd = (sim as any)._cardData as CardSimData | undefined;
       if (!cd) continue;
       for (const sn of cd.simNodes) {
-        const dp = dragged.get(sn.id);
-        if (dp) { sn.x = sn.fx = dp.fx; sn.y = sn.fy = dp.fy; }
-        else if (sn.fx != null) { sn.fx = null; sn.fy = null; }
+        if (sn.id === dragNodeId && dragX != null && dragY != null) {
+          sn.x = sn.fx = dragX;
+          sn.y = sn.fy = dragY;
+        } else if (sn.fx != null) {
+          sn.fx = null;
+          sn.fy = null;
+        }
       }
-      const card = this._state.cards.find(c => c.id === cardId);
-      if (card) this._syncSimGeometry(card, sim, cd);
+      if (cd.card.id === cardId) this._syncSimGeometry(cd.card, sim, cd);
       sim.tick();
       for (const sn of cd.simNodes) {
         if (sn.fx != null || sn.fy != null) continue;
-        const gn = nodeMap.get(sn.id);
+        const gn = this._graphNodeById.get(sn.id);
         if (gn) { gn.x = sn.x; gn.y = sn.y; }
       }
     }
 
-    // 拖拽位置覆盖 graph
-    for (const [id, dp] of dragged) {
-      const gn = nodeMap.get(id);
-      if (gn) { gn.x = dp.fx; gn.y = dp.fy; }
+    if (dragNodeId && dragX != null && dragY != null) {
+      const gn = this._graphNodeById.get(dragNodeId);
+      if (gn) { gn.x = dragX; gn.y = dragY; }
     }
 
-    // graph → 全局 sim（visibleNodes 读全局 sim）
     if (gsim) {
       for (const gsn of gsim.nodes() as any[]) {
-        if (dragged.has(gsn.id)) continue;
-        const gn = nodeMap.get(gsn.id);
+        if (gsn.id === dragNodeId) continue;
+        const gn = this._graphNodeById.get(gsn.id);
         if (gn) { gsn.x = gn.x; gsn.y = gn.y; gsn.fx = null; gsn.fy = null; }
       }
     }
@@ -248,6 +262,15 @@ export class CardGridController {
     this._doLayout();
     this._startSims();
     this.wake();
+  }
+
+  onGraphChanged(): void {
+    if (this._saving || !this._active) return;
+    if (this._graphChangeTimer != null) clearTimeout(this._graphChangeTimer);
+    this._graphChangeTimer = setTimeout(() => {
+      this._graphChangeTimer = null;
+      this.recalcAndAnimate();
+    }, 200);
   }
 
   recalcAndAnimate(): void {
@@ -275,9 +298,10 @@ export class CardGridController {
     this.directSaveFn?.();
   }
 
-  /** 卡片模式保持低频持续力学运动；交互时提高温度。 */
+  /** 交互和布局过渡按显示器帧率绘制，稳定后降至约 30fps。 */
   wake(alpha = 0.35): void {
     if (!this._active) return;
+    this._activeFpsUntil = performance.now() + ACTIVE_FPS_HOLD_MS;
     for (const [, sim] of this._cardSims) {
       sim.alpha(Math.max(sim.alpha(), alpha)).alphaTarget(0.018).stop();
     }
@@ -285,8 +309,8 @@ export class CardGridController {
     const loop = (now: number) => {
       if (!this._active) { this._rafId = null; return; }
       this._rafId = requestAnimationFrame(loop);
-      // 30fps 足以表现持续力学，同时避免无意义地占满刷新率。
-      if (now - this._lastRenderAt < 32) return;
+      const frameInterval = now < this._activeFpsUntil ? ACTIVE_FRAME_MS : IDLE_FRAME_MS;
+      if (now - this._lastRenderAt < frameInterval) return;
       this._lastRenderAt = now;
       this.drawFn();
     };
@@ -353,37 +377,30 @@ export class CardGridController {
     this.wake(0.5);
   }
 
-  getCrossCardEdgeIndices(edges: any[]): Set<number> {
-    const cardByNode = new Map<string, string>();
-    for (const card of this._state.cards) {
-      for (const nodeId of card.nodeIds) cardByNode.set(nodeId, card.id);
-    }
+  hiddenEdgeIndices(edges: any[]): Set<number> {
     const result = new Set<number>();
     edges.forEach((edge, index) => {
       const source = typeof edge.source === 'object' ? edge.source.id : edge.source;
       const target = typeof edge.target === 'object' ? edge.target.id : edge.target;
-      const sourceCard = cardByNode.get(source);
-      const targetCard = cardByNode.get(target);
-      if (sourceCard && targetCard && sourceCard !== targetCard) result.add(index);
+      const sourceCard = this._cardByNode.get(source);
+      const targetCard = this._cardByNode.get(target);
+      if (sourceCard && targetCard && sourceCard.id !== targetCard.id) result.add(index);
     });
     return result;
   }
 
-  clampToCard(nodeId: string, x: number, y: number): [number, number] {
+  constrainNodePosition(nodeId: string, x: number, y: number): [number, number] {
     this.wake(0.2);
-    for (const card of this._state.cards) {
-      if (!card.nodeIds.includes(nodeId)) continue;
-      const vp = this._pixi?.viewport;
-      if (!vp) return [x, y];
-      const content = cardContentScreenBox(card);
-      const tl = vp.toWorld(content.x, content.y);
-      const br = vp.toWorld(content.x + content.w, content.y + content.h);
-      return [
-        Math.max(tl.x, Math.min(br.x, x)),
-        Math.max(tl.y, Math.min(br.y, y)),
-      ];
-    }
-    return [x, y];
+    const card = this._cardByNode.get(nodeId);
+    const vp = this._pixi?.viewport;
+    if (!card || !vp) return [x, y];
+    const content = cardContentScreenBox(card);
+    const tl = vp.toWorld(content.x, content.y);
+    const br = vp.toWorld(content.x + content.w, content.y + content.h);
+    return [
+      Math.max(tl.x, Math.min(br.x, x)),
+      Math.max(tl.y, Math.min(br.y, y)),
+    ];
   }
 
   markNewNode(nodeId: string): void {
@@ -392,7 +409,7 @@ export class CardGridController {
     }
   }
 
-  updateScreenSize(w: number, h: number): void {
+  resize(w: number, h: number): void {
     this._screenW = w;
     this._screenH = h;
     this._doLayout();
@@ -421,6 +438,12 @@ export class CardGridController {
     }
 
     this._lastCompHash = this._computeCompHash();
+    this._cardByNode.clear();
+    this._graphNodeById.clear();
+    for (const node of this._graph.nodes) this._graphNodeById.set(node.id, node);
+    for (const card of this._state.cards) {
+      for (const nodeId of card.nodeIds) this._cardByNode.set(nodeId, card);
+    }
     const bounds = this._getLayoutBounds?.() ?? { x: 0, y: 0, w: this._screenW, h: this._screenH };
     layoutCards(this._state.cards, Math.max(1, bounds.w), Math.max(1, bounds.h), this._state.gap, bounds.x, bounds.y);
     this._restoreViews();
@@ -435,9 +458,10 @@ export class CardGridController {
 
     const gsim = this._sm?.getSim?.();
     gsim?.stop();
+    this._globalSimNodeById.clear();
+    for (const node of gsim?.nodes?.() ?? []) this._globalSimNodeById.set(node.id, node);
 
     const allEdges = this._graph.edges || [];
-    const graphNodeMap = new Map<string, any>(this._graph.nodes.map((n: any) => [n.id, n]));
 
     for (const card of this._state.cards) {
       if (card.nodeIds.length === 0) continue;
@@ -457,7 +481,7 @@ export class CardGridController {
       const simNodes: any[] = [];
       for (let index = 0; index < card.nodeIds.length; index++) {
         const id = card.nodeIds[index];
-        const gn = graphNodeMap.get(id);
+        const gn = this._graphNodeById.get(id);
         if (!gn) continue;
         const radius = this._nodeRadius(gn);
         const inside = Number.isFinite(gn.x) && Number.isFinite(gn.y)
@@ -481,10 +505,20 @@ export class CardGridController {
         return cardNodeIds.has(s) && cardNodeIds.has(t) ? [{ ...e, source: s, target: t }] : [];
       });
 
-      const data: CardSimData = { cardId: card.id, simNodes, box: { ...box } };
+      const chargeStrength = (this._simParams.getCharge?.() ?? -100) * card.viewScale;
+      const centerStrength = this._simParams.getCenterS?.() ?? 0.05;
+      const linkDistance = (this._simParams.getLinkDist?.() ?? 40) * card.viewScale;
+      const data: CardSimData = {
+        card,
+        simNodes,
+        box: { ...box },
+        linkDistance,
+        chargeStrength,
+        centerStrength,
+      };
       const sim = d3.forceSimulation(simNodes)
-        .force('charge', d3.forceManyBody().strength((this._simParams.getCharge?.() ?? -100) * card.viewScale))
-        .force('center', d3.forceCenter(cx, cy).strength(this._simParams.getCenterS?.() ?? 0.05))
+        .force('charge', d3.forceManyBody().strength(chargeStrength))
+        .force('center', d3.forceCenter(cx, cy).strength(centerStrength))
         .force('collide', d3.forceCollide().radius((d: any) => d.r + (this._simParams.getCollideR?.() ?? 4)).strength(1))
         .force('bnd', () => {
           const b = data.box;
@@ -500,10 +534,10 @@ export class CardGridController {
       if (cardEdges.length > 0)
         sim.force('link', d3.forceLink(cardEdges)
           .id((d: any) => d.id)
-          .distance((this._simParams.getLinkDist?.() ?? 40) * card.viewScale)
+          .distance(linkDistance)
           .strength(this._simParams.getLinkStr?.() ?? 0.3));
 
-      // 手动以 30fps 推进；小幅 alphaTarget 保留持续的力学响应。
+      // 手动推进；小幅 alphaTarget 保留持续的力学响应。
       sim.alpha(1).alphaTarget(0.018).stop();
       (sim as any)._cardData = data;
 
@@ -544,11 +578,23 @@ export class CardGridController {
       card.y + card.h / 2 + card.viewOffsetY,
     );
     const centerForce = sim.force('center') as any;
-    centerForce?.x?.(center.x)?.y?.(center.y)?.strength?.(this._simParams.getCenterS?.() ?? 0.05);
-    const linkForce = sim.force('link') as any;
-    linkForce?.distance?.((this._simParams.getLinkDist?.() ?? 40) * card.viewScale);
-    const chargeForce = sim.force('charge') as any;
-    chargeForce?.strength?.((this._simParams.getCharge?.() ?? -100) * card.viewScale);
+    centerForce?.x?.(center.x)?.y?.(center.y);
+
+    const centerStrength = this._simParams.getCenterS?.() ?? 0.05;
+    if (centerStrength !== data.centerStrength) {
+      centerForce?.strength?.(centerStrength);
+      data.centerStrength = centerStrength;
+    }
+    const linkDistance = (this._simParams.getLinkDist?.() ?? 40) * card.viewScale;
+    if (linkDistance !== data.linkDistance) {
+      (sim.force('link') as any)?.distance?.(linkDistance);
+      data.linkDistance = linkDistance;
+    }
+    const chargeStrength = (this._simParams.getCharge?.() ?? -100) * card.viewScale;
+    if (chargeStrength !== data.chargeStrength) {
+      (sim.force('charge') as any)?.strength?.(chargeStrength);
+      data.chargeStrength = chargeStrength;
+    }
   }
 
   private _restoreViews(): void {
