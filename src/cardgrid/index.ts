@@ -9,6 +9,8 @@ import { layoutCards, cardWorldBox, cardContentScreenBox } from './treemap';
 import { renderCards } from './render';
 import { setupCardInteractions, InteractionContext } from './interactions';
 import { LayoutController } from '../layout-controller';
+import { sharedState } from '../shared-state';
+import { isCardForceLink } from './force-links';
 
 export type { Card, CardGridState } from './types';
 
@@ -32,6 +34,12 @@ interface CardSimData {
 const ACTIVE_FRAME_MS = 15;
 const IDLE_FRAME_MS = 32;
 const ACTIVE_FPS_HOLD_MS = 300;
+
+/** Scale a card node's label without changing its circle or interactive area. */
+export function getCardLabelSize(baseLabelSize: number, viewScale: number): number {
+  const scale = Number.isFinite(viewScale) ? viewScale : 1;
+  return Math.max(12, Math.min(28, Math.round(baseLabelSize * scale)));
+}
 
 export class CardGridController implements LayoutController {
   readonly mode: 'cardgrid' | 'category' | 'fullcat';
@@ -149,6 +157,7 @@ export class CardGridController implements LayoutController {
         onZoom: (id, factor, x, y) => this.zoomCard(id, factor, x, y),
         onResetView: id => this.resetCardView(id),
         onBackgroundTap: () => options?.onBackgroundTap?.(),
+        onBackgroundPointerDown: () => { sharedState.focusHoverNodeId = null; },
       };
       this._cleanupInteraction = setupCardInteractions(pixi.app.canvas as HTMLCanvasElement, ctx);
     }
@@ -377,6 +386,11 @@ export class CardGridController implements LayoutController {
     this.wake(0.5);
   }
 
+  /** Returns this node's current local card zoom, or null when it has no card. */
+  getNodeViewScale(nodeId: string): number | null {
+    return this._cardByNode.get(nodeId)?.viewScale ?? null;
+  }
+
   hiddenEdgeIndices(edges: any[]): Set<number> {
     const result = new Set<number>();
     edges.forEach((edge, index) => {
@@ -502,7 +516,9 @@ export class CardGridController implements LayoutController {
       const cardEdges = allEdges.flatMap((e: any) => {
         const s = typeof e.source === 'object' ? e.source.id : e.source;
         const t = typeof e.target === 'object' ? e.target.id : e.target;
-        return cardNodeIds.has(s) && cardNodeIds.has(t) ? [{ ...e, source: s, target: t }] : [];
+        return cardNodeIds.has(s) && cardNodeIds.has(t) && isCardForceLink(e)
+          ? [{ ...e, source: s, target: t }]
+          : [];
       });
 
       const chargeStrength = (this._simParams.getCharge?.() ?? -100) * card.viewScale;

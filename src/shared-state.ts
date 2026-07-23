@@ -3,6 +3,7 @@
  */
 let _focusModeFn: (() => boolean) | null = null;
 let _hoverNodeId: string | null = null;
+let _focusHoverNodeId: string | null = null;
 let _selectedNodeIdsFn: (() => string[]) | null = null;
 let _clearSelectionFns: (() => void)[] = [];
 let _setSelectedNodeIdsFns: ((ids: string[]) => void)[] = [];
@@ -18,9 +19,29 @@ export const sharedState = {
   get hoverNodeId() { return _hoverNodeId; },
   set hoverNodeId(id: string | null) { _hoverNodeId = id; },
 
+  /** 聚焦模式锁存的悬停目标；仅在进入下一节点或点击节点外区域时变化 */
+  get focusHoverNodeId() { return _focusHoverNodeId; },
+  set focusHoverNodeId(id: string | null) { _focusHoverNodeId = id; },
+
   get selectedNodeIds() { return _selectedNodeIdsFn?.() ?? []; },
   /** 设置 selectedNodeIds 查询函数 */
   setSelectedNodeIdsFn(fn: () => string[]) { _selectedNodeIdsFn = fn; },
+  /** Register per-canvas selection callbacks and return an idempotent unsubscriber. */
+  registerSelectionHandlers(selectedNodeIds: () => string[], clear: () => void, set: (ids: string[]) => void) {
+    _selectedNodeIdsFn = selectedNodeIds;
+    _clearSelectionFns.push(clear);
+    _setSelectedNodeIdsFns.push(set);
+    let removed = false;
+    return () => {
+      if (removed) return;
+      removed = true;
+      const clearIndex = _clearSelectionFns.indexOf(clear);
+      if (clearIndex >= 0) _clearSelectionFns.splice(clearIndex, 1);
+      const setIndex = _setSelectedNodeIdsFns.indexOf(set);
+      if (setIndex >= 0) _setSelectedNodeIdsFns.splice(setIndex, 1);
+      if (_selectedNodeIdsFn === selectedNodeIds) _selectedNodeIdsFn = null;
+    };
+  },
 
   get setSelectedNodeIds() { return (ids: string[]) => _setSelectedNodeIdsFns.forEach(fn => fn(ids)); },
   set setSelectedNodeIds(fn: ((ids: string[]) => void) | null) { if (fn) _setSelectedNodeIdsFns.push(fn); },

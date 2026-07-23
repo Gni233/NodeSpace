@@ -1,5 +1,12 @@
 import { THEMES, getThemeLabel } from "./theme";
 import { V } from "./layout-constants";
+import {
+  applyForceDensityPreset,
+  detectForceDensityPreset,
+  FORCE_DENSITY_PRESETS,
+  ForceDensityPreset,
+  ForceDensitySettings,
+} from "./force-density-presets";
 
 interface SliderHandle {
   set: (v: number) => void;
@@ -238,6 +245,55 @@ export function buildSettings(
     // 主题
     container.appendChild(themeRow);
 
+    const getForceDensitySettings = (): ForceDensitySettings => ({
+      linkDist: getLinkDist(),
+      charge: getCharge(),
+      linkStr: getLinkStr(),
+      collideR: getCollideR(),
+      centerS: getCenterS(),
+      groupBound: getGroupBound(),
+      heatingTime: getHeatingTime(),
+      alphaTarget: getAlphaTarget(),
+    });
+
+    const densityRow = document.createElement('div');
+    densityRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin:4px 0 8px;';
+    const densityLabel = document.createElement('span');
+    densityLabel.textContent = '节点疏密';
+    densityLabel.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
+    const densitySelect = document.createElement('select');
+    densitySelect.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
+    for (const preset of Object.keys(FORCE_DENSITY_PRESETS) as ForceDensityPreset[]) {
+      const option = document.createElement('option');
+      option.value = preset;
+      option.textContent = preset;
+      densitySelect.appendChild(option);
+    }
+    const customOption = document.createElement('option');
+    customOption.value = 'custom';
+    customOption.textContent = '自定义';
+    customOption.disabled = true;
+    densitySelect.appendChild(customOption);
+    densitySelect.value = detectForceDensityPreset(getForceDensitySettings());
+    densitySelect.addEventListener('change', () => {
+      if (densitySelect.value === 'custom') return;
+      const next = applyForceDensityPreset(getForceDensitySettings(), densitySelect.value as ForceDensityPreset);
+      setLinkDist(next.linkDist);
+      setCharge(next.charge);
+      setLinkStr(next.linkStr);
+      setCollideR(next.collideR);
+      setCenterS(next.centerS);
+      setGroupBound(next.groupBound);
+      setHeatingTime(next.heatingTime);
+      setAlphaTarget(next.alphaTarget);
+      getInitSim()?.();
+      getSaveData()();
+      draw();
+      rebuild();
+    });
+    densityRow.append(densityLabel, densitySelect);
+    container.appendChild(densityRow);
+
     // 高级设置
     const advancedDetails = document.createElement("details");
     advancedDetails.style.cssText = `margin-top:2px;border-top:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};padding-top:6px;`;
@@ -247,6 +303,7 @@ export function buildSettings(
     advancedDetails.appendChild(advancedSum);
     const advancedBody = document.createElement("div");
     advancedBody.style.cssText = "padding:4px 0;";
+    const onMechanicsChange = () => { densitySelect.value = detectForceDensityPreset(getForceDensitySettings()); };
 
     // 力学
     const mechanicsDet = document.createElement("details");
@@ -255,14 +312,14 @@ export function buildSettings(
     mechSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:6px;`;
     mechanicsDet.appendChild(mechSum);
     const mechBody = document.createElement("div");
-    makeSlider(mechBody, "连线距离", 30, 300, getLinkDist(), 1, v => { setLinkDist(v); debouncedInitSim(); getSaveData()(); });
-    makeSlider(mechBody, "节点斥力", -500, -10, getCharge(), 10, v => { setCharge(v); debouncedInitSim(); getSaveData()(); });
-    makeSlider(mechBody, "连线强度", 0, 1, getLinkStr(), 0.05, v => { setLinkStr(v); debouncedInitSim(); getSaveData()(); });
-    makeSlider(mechBody, "碰撞半径", 0, 50, getCollideR(), 1, v => { setCollideR(v); debouncedInitSim(); getSaveData()(); });
-    makeSlider(mechBody, "向心强度", 0, 0.2, getCenterS(), 0.01, v => { setCenterS(v); debouncedInitSim(); getSaveData()(); });
-    makeSlider(mechBody, "集合边界", 0, 2, getGroupBound(), 0.1, v => { setGroupBound(v); debouncedInitSim(); getSaveData()(); });
-    makeSlider(mechBody, "加热时间(秒)", 0, 10, getHeatingTime(), 0.5, v => { setHeatingTime(v); getSaveData()(); });
-    makeSlider(mechBody, "目标活跃度", 0, 1, getAlphaTarget(), 0.05, v => { setAlphaTarget(v); debouncedInitSim(); getSaveData()(); });
+    makeSlider(mechBody, "连线距离", 30, 300, getLinkDist(), 1, v => { setLinkDist(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
+    makeSlider(mechBody, "节点斥力", -500, -10, getCharge(), 10, v => { setCharge(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
+    makeSlider(mechBody, "连线强度", 0, 1, getLinkStr(), 0.05, v => { setLinkStr(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
+    makeSlider(mechBody, "碰撞半径", 0, 50, getCollideR(), 1, v => { setCollideR(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
+    makeSlider(mechBody, "向心强度", 0, 0.2, getCenterS(), 0.01, v => { setCenterS(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
+    makeSlider(mechBody, "集合边界", 0, 2, getGroupBound(), 0.1, v => { setGroupBound(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
+    makeSlider(mechBody, "加热时间(秒)", 0, 10, getHeatingTime(), 0.5, v => { setHeatingTime(v); onMechanicsChange(); getSaveData()(); });
+    makeSlider(mechBody, "目标活跃度", 0, 1, getAlphaTarget(), 0.05, v => { setAlphaTarget(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
     mechanicsDet.appendChild(mechBody);
     advancedBody.appendChild(mechanicsDet);
 

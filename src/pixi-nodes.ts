@@ -127,6 +127,8 @@ export interface NodeVisualState {
   hyperlink?: string;
   /** 是否有子节点（出边连接到其他节点） */
   hasChildren?: boolean;
+  /** 结构节点包含的成员数量 */
+  structureMemberCount?: number;
 }
 
 const TEXT_RESOLUTION = Math.max(3, (window.devicePixelRatio || 1) * 2);
@@ -334,9 +336,9 @@ export function applyNodeVisual(
   // 折叠标记：节点名下方加 ...
   const oldDotsLabel = (sprite as any)._collapseDots as Text | undefined;
   if (oldDotsLabel) { oldDotsLabel.visible = false; sprite.container.removeChild(oldDotsLabel); (sprite as any)._collapseDots = null; }
-  if (state.collapsed && state.hasChildren) {
+  if (state.structureMemberCount || (state.collapsed && state.hasChildren)) {
     const dots = new Text({
-      text: '...',
+      text: state.structureMemberCount ? String(state.structureMemberCount) : '...',
       resolution: TEXT_RESOLUTION,
       style: {
         fontFamily: readFontFamily(),

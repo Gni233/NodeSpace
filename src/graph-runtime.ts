@@ -9,6 +9,7 @@ export class GraphRuntime {
   dirty = false;
   externalConflict = false;
   fileOperationActive = false;
+  private textEditorOwner: object | null = null;
   private owners = new Set<object>();
   private saveChain: Promise<void> = Promise.resolve();
   private revision = 0;
@@ -34,6 +35,30 @@ export class GraphRuntime {
 
   get ownerCount(): number {
     return this.owners.size;
+  }
+
+  beginTextEdit(owner: object): boolean {
+    if (this.textEditorOwner && this.textEditorOwner !== owner) return false;
+    this.textEditorOwner = owner;
+    this.cancelPendingSave();
+    this.simManager?.getSim?.()?.stop?.();
+    return true;
+  }
+
+  endTextEdit(owner: object): void {
+    if (this.textEditorOwner === owner) this.textEditorOwner = null;
+  }
+
+  get textEditActive(): boolean {
+    return this.textEditorOwner !== null;
+  }
+
+  isTextEditorOwner(owner: object): boolean {
+    return this.textEditorOwner === owner;
+  }
+
+  canInteract(owner: object): boolean {
+    return !this.textEditorOwner || this.textEditorOwner === owner;
   }
 
   markDirty(): number {
@@ -89,6 +114,7 @@ export class GraphRuntime {
   dispose(): void {
     this.cancelPendingSave();
     this.externalConflict = false;
+    this.textEditorOwner = null;
     this.simManager?.getSim?.()?.stop?.();
     this.simManager = null;
     this.owners.clear();

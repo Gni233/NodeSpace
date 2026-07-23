@@ -3,6 +3,14 @@ import {Z_CONTEXT_MENU, V } from "./layout-constants";
 
 let currentMenu: HTMLElement | null = null;
 
+export interface ContextMenuItem {
+  label?: string;
+  action?: () => void;
+  children?: ContextMenuItem[];
+  separator?: boolean;
+  disabled?: boolean;
+}
+
 export function closeContextMenu() {
   if (currentMenu) {
     currentMenu.remove();
@@ -44,7 +52,7 @@ export function showContextMenu(
   container: HTMLElement,
   x: number,
   y: number,
-  items: { label: string; action: () => void; children?: { label: string; action: () => void }[] }[]
+  items: ContextMenuItem[]
 ) {
   closeContextMenu();
   const menu = document.createElement("div");
@@ -68,18 +76,29 @@ export function showContextMenu(
   /** 在指定位置创建菜单 DOM */
   const buildItems = (parent: HTMLElement, itemList: typeof items, mx: number, my: number) => {
     itemList.forEach(item => {
+      if (item.separator) {
+        const separator = document.createElement('div');
+        separator.setAttribute('role', 'separator');
+        separator.style.cssText = `height:1px;margin:4px 6px;background:${V('--fg-border-light', 'rgba(255,255,255,0.1)')};`;
+        parent.appendChild(separator);
+        return;
+      }
       const mi = document.createElement("div");
-      mi.textContent = item.label;
-      mi.style.cssText = itemStyle + (item.children ? ' display:flex;justify-content:space-between;' : '');
+      mi.textContent = item.label ?? '';
+      mi.style.cssText = itemStyle + (item.children ? ' display:flex;justify-content:space-between;' : '') + (item.disabled ? 'opacity:0.42;cursor:default;' : '');
+      mi.setAttribute('aria-disabled', String(!!item.disabled));
       if (item.children) {
         const arrow = document.createElement('span');
         arrow.textContent = '\u25B6';
         arrow.style.cssText = 'font-size:0.7em;opacity:0.5;';
         mi.appendChild(arrow);
       }
-      mi.onmouseenter = () => mi.style.background = itemHover;
-      mi.onmouseleave = () => mi.style.background = "";
+      if (!item.disabled) {
+        mi.onmouseenter = () => mi.style.background = itemHover;
+        mi.onmouseleave = () => mi.style.background = "";
+      }
       mi.onclick = () => {
+        if (item.disabled) return;
         if (item.children) {
           // 子菜单：在父项右侧创建
           const sub = document.createElement("div");
@@ -94,7 +113,7 @@ export function showContextMenu(
           };
           setTimeout(() => document.addEventListener('pointerdown', onSubClose), 0);
         } else {
-          item.action();
+          item.action?.();
           closeContextMenu();
           if (sharedState.clearSelection) sharedState.clearSelection();
         }

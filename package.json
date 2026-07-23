@@ -41,6 +41,7 @@
     "appId": "com.nodespace.app",
     "productName": "NodeSpace",
     "icon": "public/icon.svg",
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "dist/**/*",
       "electron/**/*"

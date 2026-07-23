@@ -1,6 +1,7 @@
 import * as d3 from 'd3';
 import { GraphData } from "./data/storage";
 import { getGroupRegion } from "./geometry/hit";
+import { getStructureProjection } from './structure-nodes';
 
 export function initSimulation(
   graph: GraphData,
@@ -27,9 +28,11 @@ export function initSimulation(
   const cx = params.centerX ?? 0;
   const cy = params.centerY ?? 0;
   const bnd = params.boundary ?? null;
+  const projection = getStructureProjection(graph);
+  const excluded = new Set<string>([...(excludeNodeIds ?? []), ...projection.hiddenNodeIds]);
 
-  const nodes = graph.nodes
-    .filter(n => !excludeNodeIds?.has(n.id))
+  const nodes = projection.nodes
+    .filter(n => !excluded.has(n.id))
     .map(n => {
       const node = { ...n };
       if (n.fixed && n.x != null && n.y != null) {
@@ -40,12 +43,13 @@ export function initSimulation(
       return node;
     });
 
-  const simulationEdges = graph.edges
+  const simulationEdges = projection.edges
     .filter(e => {
-      if ((e.lineStyle || 'solid') !== 'solid' || (e as any)._conflict || (e as any)._dyingAt) return false;
+      if ((e.lineStyle || 'solid') !== 'solid' && !(e as any)._structureMembership) return false;
+      if ((e as any)._conflict || (e as any)._dyingAt) return false;
       const src = typeof e.source === 'object' ? e.source.id : e.source;
       const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-      if (excludeNodeIds?.has(src) || excludeNodeIds?.has(tgt)) return false;
+      if (excluded.has(src) || excluded.has(tgt)) return false;
       return true;
     })
     .map(e => ({

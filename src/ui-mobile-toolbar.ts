@@ -8,8 +8,25 @@ const isTouchDevice = (): boolean => {
   return matchMedia('(any-pointer: coarse)').matches;
 };
 
+export interface MobileToolbarSelectionState {
+  /** True only when the selection is one ordinary (non-structure) node. */
+  isSingleOrdinaryNode: boolean;
+  /** Whether the selected node's heading may be promoted. */
+  canRaiseHeading: boolean;
+  /** Whether the selected node's heading may be demoted. */
+  canLowerHeading: boolean;
+}
+
 export interface MobileToolbarCallbacks {
   createNode: () => void;
+  /** Creates a child for the single selected ordinary node. */
+  createChildNode?: () => void;
+  /** Promotes the selected node's heading level. */
+  raiseHeading?: () => void;
+  /** Demotes the selected node's heading level. */
+  lowerHeading?: () => void;
+  /** Returns selection-dependent availability for creation and heading actions. */
+  getSelectionState?: () => MobileToolbarSelectionState;
   undo: () => void;
   redo: () => void;
   fitView: () => void;
@@ -91,7 +108,14 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     sync();
   };
 
-  const createBtn = makeBtn('+', '新建节点', () => runAndSync(callbacks.createNode));
+  const createBtn = makeBtn('+', '新建节点', () => {
+    const selection = callbacks.getSelectionState?.();
+    if (selection?.isSingleOrdinaryNode && callbacks.createChildNode) {
+      runAndSync(callbacks.createChildNode);
+      return;
+    }
+    runAndSync(callbacks.createNode);
+  });
   const undoBtn = makeBtn('↩', '撤销', () => runAndSync(callbacks.undo));
   const linkBtn = makeBtn('↔', '连线模式', () => runAndSync(callbacks.toggleLinkMode));
   linkBtn.setAttribute('aria-pressed', 'false');
@@ -129,7 +153,24 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
   boxBtn.style.width = '100%';
   boxBtn.appendChild(document.createTextNode(' 框选'));
 
+  const raiseHeadingBtn = makeBtn('⇧', '提升层级', () => {
+    if (callbacks.raiseHeading) runAndSync(callbacks.raiseHeading);
+    setMenuOpen(false);
+  });
+  raiseHeadingBtn.setAttribute('role', 'menuitem');
+  raiseHeadingBtn.style.width = '100%';
+  raiseHeadingBtn.appendChild(document.createTextNode(' 提升层级'));
+
+  const lowerHeadingBtn = makeBtn('⇩', '降低层级', () => {
+    if (callbacks.lowerHeading) runAndSync(callbacks.lowerHeading);
+    setMenuOpen(false);
+  });
+  lowerHeadingBtn.setAttribute('role', 'menuitem');
+  lowerHeadingBtn.style.width = '100%';
+  lowerHeadingBtn.appendChild(document.createTextNode(' 降低层级'));
+
   menu.append(redoBtn, boxBtn);
+  menu.append(raiseHeadingBtn, lowerHeadingBtn);
   bar.append(createBtn, undoBtn, linkBtn, fitBtn, moreBtn, menu);
 
   let menuOpen = false;
@@ -139,7 +180,22 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     moreBtn.setAttribute('aria-expanded', String(open));
   };
 
+  const syncDisabled = (button: HTMLButtonElement, disabled: boolean) => {
+    button.disabled = disabled;
+    button.style.opacity = disabled ? '0.45' : '';
+  };
+
   const sync = () => {
+    const selection = callbacks.getSelectionState?.() ?? {
+      isSingleOrdinaryNode: false,
+      canRaiseHeading: false,
+      canLowerHeading: false,
+    };
+    const createsChild = selection.isSingleOrdinaryNode && !!callbacks.createChildNode;
+    const createLabel = createsChild ? '新建子节点' : '新建节点';
+    createBtn.title = createLabel;
+    createBtn.setAttribute('aria-label', createLabel);
+
     setToggleState(linkBtn, callbacks.getLinkActive());
     const boxActive = callbacks.getBoxSelectActive();
     boxBtn.setAttribute('aria-checked', String(boxActive));
@@ -147,10 +203,10 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     boxBtn.style.color = boxActive ? '#fff' : '';
     boxBtn.disabled = !callbacks.getBoxSelectEnabled();
     boxBtn.style.opacity = boxBtn.disabled ? '0.45' : '';
-    undoBtn.disabled = !callbacks.canUndo();
-    redoBtn.disabled = !callbacks.canRedo();
-    undoBtn.style.opacity = undoBtn.disabled ? '0.45' : '';
-    redoBtn.style.opacity = redoBtn.disabled ? '0.45' : '';
+    syncDisabled(raiseHeadingBtn, !callbacks.raiseHeading || !selection.canRaiseHeading);
+    syncDisabled(lowerHeadingBtn, !callbacks.lowerHeading || !selection.canLowerHeading);
+    syncDisabled(undoBtn, !callbacks.canUndo());
+    syncDisabled(redoBtn, !callbacks.canRedo());
   };
 
   const viewportBounds = () => {

@@ -3,6 +3,7 @@ import { GraphData } from "./data/storage";
 import { safePrompt } from './dialog';
 import { confirmAction } from './toast';
 import {Z_EDIT_PANEL, V } from "./layout-constants";
+import { detachNodeFromStructure } from './structure-nodes';
 
 export interface EditPanelContext {
   graph: GraphData;
@@ -11,6 +12,8 @@ export interface EditPanelContext {
   getSelGroup: () => string | null; setSelGroup: (v: string | null) => void;
   getLinkMode: () => boolean;      setLinkMode: (v: boolean) => void;
   setLinkSrc: (v: string | null) => void;
+  clearLinkMode?: () => void;
+  saveUndo?: () => void;
   getBoxSelectMode?: () => boolean; setBoxSelectMode?: (v: boolean) => void;
   getSaveData: () => () => Promise<void>;
   getInitSim: () => () => void;
@@ -20,9 +23,12 @@ export interface EditPanelContext {
   triggerSave: () => void;
   getSimulation: () => any;
   markNodesDying?: (ids: string[]) => void;
+  reinitializeGraph?: () => void;
   updateLinkForce?: () => void;
   /** 将当前图的节点显示属性同步到其他持有同文件的窗格的模拟节点 */
   syncGraphToOtherPanes?: () => void;
+  /** 在下一帧合并跨窗格同步与重绘。 */
+  scheduleNameRender?: () => void;
   onToast?: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => void;
 }
 
@@ -42,7 +48,7 @@ export function createEditPanel(
   getEditPanelOpacity: () => number
 ) {
   const colors = PRESET_COLORS;
-  const { graph, getSelNode, setSelNode, getSelEdge, setSelEdge, getSelGroup, setSelGroup,
+  const { getSelNode, setSelNode, getSelEdge, setSelEdge, getSelGroup, setSelGroup,
     getLinkMode, setLinkMode, setLinkSrc, getSaveData, getInitSim, getUpdateInfo, getUpdateSelects, draw, triggerSave, getSimulation } = ctx;
 
   const editPanel = el("div", { style: `position:absolute;right:10px;top:112px;z-index:${Z_EDIT_PANEL};min-width:220px;max-width:500px;max-height:calc(100vh - 124px);overflow-y:auto;padding:10px;border:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.1)')};border-radius:${V('--fg-radius-md','10px')};background:${V('--fg-surface-glass','rgba(40,42,48,0.75)')};backdrop-filter:blur(var(--fg-glass-blur,12px));-webkit-backdrop-filter:blur(12px);color:${V('--fg-text','#d0d0d0')};display:none;flex-direction:column;gap:8px;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};transition:background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease);` });
@@ -283,7 +289,7 @@ export function createEditPanel(
     const selGroup = getSelGroup();
     const sim = getSimulation();
     if (selNode) {
-      const n = graph.nodes.find(n => n.id === selNode);
+      const n = ctx.graph.nodes.find(n => n.id === selNode);
       if (n) {
         n.label = nName.value.trim() || n.id;
         n.note = nNote.value.trim();
@@ -308,7 +314,7 @@ export function createEditPanel(
         ctx.syncGraphToOtherPanes?.();
       }
     } else if (selEdge !== null) {
-      const e = graph.edges[selEdge];
+      const e = ctx.graph.edges[selEdge];
       if (e) {
         e.label = eLabel.value.trim();
         e.color = eCol.value;
@@ -318,7 +324,7 @@ export function createEditPanel(
         ctx.updateLinkForce?.();
       }
     } else if (selGroup) {
-      const g = graph.groups.find(g => g.id === selGroup);
+      const g = ctx.graph.groups.find(g => g.id === selGroup);
       if (g) {
         g.displayMode = gMode.value as any;
         g.color = gCol.value;
@@ -348,6 +354,35 @@ export function createEditPanel(
     el.addEventListener('change', debouncedSave);
   };
 
+  let nameEdit: { nodeId: string; undoSaved: boolean } | null = null;
+  const commitNameEdit = () => {
+    nameEdit = null;
+  };
+  const syncNodeName = () => {
+    const selectedNodeId = getSelNode();
+    if (selectedNodeId === null) return;
+    const node = ctx.graph.nodes.find(n => n.id === selectedNodeId);
+    if (!node) return;
+    let currentNameEdit = nameEdit;
+    if (!currentNameEdit || currentNameEdit.nodeId !== selectedNodeId) {
+      commitNameEdit();
+      currentNameEdit = { nodeId: selectedNodeId, undoSaved: false };
+      nameEdit = currentNameEdit;
+    }
+    const label = nName.value.trim() || node.id;
+    if (label === node.label) return;
+    if (!currentNameEdit.undoSaved) {
+      ctx.saveUndo?.();
+      currentNameEdit.undoSaved = true;
+    }
+    node.label = label;
+    const simNode = getSimulation()?.nodes().find((candidate: any) => candidate.id === selectedNodeId);
+    if (simNode) simNode.label = label;
+    ctx.triggerSave();
+    if (ctx.scheduleNameRender) ctx.scheduleNameRender();
+    else { ctx.syncGraphToOtherPanes?.(); ctx.draw(); }
+  };
+
   // --- 颜色预设块 ---
   const makeColorPresets = (picker: HTMLInputElement): HTMLElement => {
     const pre = el("div", { style: "display:flex;gap:3px;align-items:center;flex-wrap:wrap;" });
@@ -371,16 +406,23 @@ export function createEditPanel(
   nodeTitleRow.appendChild(el("div", { text: "节点", style: "font-weight:bold;" }));
   const nodeDelBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;` });
   nodeDelBtn.onclick = async () => {
-    if (getSelNode()) { const id = getSelNode()!; const node = graph.nodes.find(n => n.id === id); const nodeTags = node?.tags || []; ctx.markNodesDying?.([id]); const idx = graph.nodes.findIndex(n => n.id === id); if (idx >= 0) graph.nodes.splice(idx, 1); for (const e of graph.edges) { const esrc = typeof e.source === 'object' ? e.source.id : e.source; const etgt = typeof e.target === 'object' ? e.target.id : e.target; if (esrc === id || etgt === id) (e as any)._dyingAt = performance.now(); } for (const t of nodeTags) { if (!graph.nodes.some(nd => (nd.tags || []).includes(t))) { const gIdx = graph.groups.findIndex(g => g.label === t); if (gIdx >= 0) graph.groups.splice(gIdx, 1); } } }
-    await getSaveData()(); clearEd(); getUpdateInfo()(); getUpdateSelects()(); draw();
-    setTimeout(() => { for (let i = graph.edges.length - 1; i >= 0; i--) { const e2: any = graph.edges[i]; if (e2._dyingAt && performance.now() - e2._dyingAt >= 400) graph.edges.splice(i, 1); } draw(); }, 400);
+    if (getSelNode()) { const id = getSelNode()!; const node = ctx.graph.nodes.find(n => n.id === id); const nodeTags = node?.tags || []; detachNodeFromStructure(ctx.graph, id); ctx.markNodesDying?.([id]); const idx = ctx.graph.nodes.findIndex(n => n.id === id); if (idx >= 0) ctx.graph.nodes.splice(idx, 1); for (const e of ctx.graph.edges) { const esrc = typeof e.source === 'object' ? e.source.id : e.source; const etgt = typeof e.target === 'object' ? e.target.id : e.target; if (esrc === id || etgt === id) (e as any)._dyingAt = performance.now(); } for (const t of nodeTags) { if (!ctx.graph.nodes.some(nd => (nd.tags || []).includes(t))) { const gIdx = ctx.graph.groups.findIndex(g => g.label === t); if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1); } } }
+    ctx.reinitializeGraph?.(); await getSaveData()(); clearEd(); getUpdateInfo()(); getUpdateSelects()(); draw();
+    setTimeout(() => { for (let i = ctx.graph.edges.length - 1; i >= 0; i--) { const e2: any = ctx.graph.edges[i]; if (e2._dyingAt && performance.now() - e2._dyingAt >= 400) ctx.graph.edges.splice(i, 1); } draw(); }, 400);
   };
   nodeTitleRow.appendChild(nodeDelBtn);
   nodeEdit.appendChild(nodeTitleRow);
   const nName = el("input", { type: "text", style: "width:100%;" }) as HTMLInputElement;
-  nName.addEventListener('keydown', (e) => { if (e.key === 'Enter') { nName.blur(); } });
+  nName.addEventListener('focus', () => {
+    const selectedNodeId = getSelNode();
+    if (selectedNodeId === null) return;
+    const node = ctx.graph.nodes.find(n => n.id === selectedNodeId);
+    if (node) nameEdit = { nodeId: selectedNodeId, undoSaved: false };
+  });
+  nName.addEventListener('input', syncNodeName);
+  nName.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nName.blur(); } });
+  nName.addEventListener('blur', commitNameEdit);
   makeRow(nodeEdit, '名称', nName);
-  bindAutoSave(nName);
   const nNote = el("textarea", { attrs: { rows: "2" }, style: `width:100%;resize:vertical;font-size:${V('--fg-font-md', '0.85em')};` }) as HTMLTextAreaElement;
   nNote.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { nNote.blur(); } });
   makeRow(nodeEdit, '内容', nNote);
@@ -394,16 +436,16 @@ export function createEditPanel(
     nTagsContainer.innerHTML = '';
     // 从已保存的 node 中读取
     const selNode = getSelNode();
-    const n = selNode ? graph.nodes.find(n => n.id === selNode) : null;
+    const n = selNode ? ctx.graph.nodes.find(n => n.id === selNode) : null;
     const tags: string[] = n ? (n.tags || []) : [];
     for (const t of tags) {
       const pill = el("span", { text: t, style: `font-size:${V('--fg-font-xs', '0.72em')};padding:1px 6px;border-radius:${V('--fg-radius-sm','6px')};border:1px solid rgba(255,255,255,0.2);white-space:nowrap;display:inline-flex;align-items:center;gap:3px;cursor:pointer;` });
       pill.title = '点击编辑集合';
       pill.onclick = () => {
-        let g = graph.groups.find(g => g.label === t);
+        let g = ctx.graph.groups.find(g => g.label === t);
         if (!g) {
           g = { id: 'g_' + Date.now(), label: t, displayMode: 'rect', color: '#5B8FF9', borderColor: '#3A6FD8', opacity: 0.15, nodeColorMode: 'off' as const, nodeColor: '#5B8FF9' };
-          graph.groups.push(g);
+          ctx.graph.groups.push(g);
           triggerSave();
         }
         fillGroup(g.id);
@@ -417,9 +459,9 @@ export function createEditPanel(
         if (idx >= 0) tags.splice(idx, 1);
         (n as any).tags = tags;
         // 若无其他节点使用此标签，删除对应集合
-        if (!graph.nodes.some(nd => (nd.tags || []).includes(t))) {
-          const gIdx = graph.groups.findIndex(g => g.label === t);
-          if (gIdx >= 0) graph.groups.splice(gIdx, 1);
+        if (!ctx.graph.nodes.some(nd => (nd.tags || []).includes(t))) {
+          const gIdx = ctx.graph.groups.findIndex(g => g.label === t);
+          if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1);
         }
         triggerSave(); draw();
         refreshTagPills();
@@ -434,7 +476,7 @@ export function createEditPanel(
     addTagBtn.onclick = async () => {
       const tn = await safePrompt('输入标签名：');
       if (!tn) return;
-      const nn = graph.nodes.find(n => n.id === getSelNode());
+      const nn = ctx.graph.nodes.find(n => n.id === getSelNode());
       if (nn) { if (!nn.tags) nn.tags = []; if (!nn.tags.includes(tn)) nn.tags.push(tn); triggerSave(); draw(); }
       refreshTagPills();
     };
@@ -546,7 +588,7 @@ export function createEditPanel(
   edgeTitleRow.appendChild(el("div", { text: "边", style: "font-weight:bold;" }));
   const edgeDelBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;` });
   edgeDelBtn.onclick = async () => {
-    if (getSelEdge() !== null) { const e2 = graph.edges[getSelEdge()!]; if (e2) (e2 as any)._dyingAt = performance.now(); clearEd(); draw(); setTimeout(() => { for (let i = graph.edges.length - 1; i >= 0; i--) { const e3: any = graph.edges[i]; if (e3._dyingAt && performance.now() - e3._dyingAt >= 400) graph.edges.splice(i, 1); } draw(); }, 400); }
+    if (getSelEdge() !== null) { const e2 = ctx.graph.edges[getSelEdge()!]; if (e2) (e2 as any)._dyingAt = performance.now(); clearEd(); draw(); setTimeout(() => { for (let i = ctx.graph.edges.length - 1; i >= 0; i--) { const e3: any = ctx.graph.edges[i]; if (e3._dyingAt && performance.now() - e3._dyingAt >= 400) ctx.graph.edges.splice(i, 1); } draw(); }, 400); }
     await getSaveData()(); getUpdateInfo()(); getUpdateSelects()(); draw();
   };
   edgeTitleRow.appendChild(edgeDelBtn);
@@ -591,7 +633,7 @@ export function createEditPanel(
   groupTitleRow.appendChild(el("div", { text: "集合", style: "font-weight:bold;" }));
   const groupDelBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;` });
   groupDelBtn.onclick = async () => {
-    if (getSelGroup()) { const gIdx = graph.groups.findIndex(g => g.id === getSelGroup()); if (gIdx >= 0) graph.groups.splice(gIdx, 1); getInitSim()(); }
+    if (getSelGroup()) { const gIdx = ctx.graph.groups.findIndex(g => g.id === getSelGroup()); if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1); getInitSim()(); }
     await getSaveData()(); clearEd(); getUpdateInfo()(); getUpdateSelects()(); draw();
   };
   groupTitleRow.appendChild(groupDelBtn);
@@ -755,7 +797,8 @@ export function createEditPanel(
     groupEdit.style.display = s === 'group' ? 'block' : 'none';
   };
   const fillNode = (id: string) => {
-    const n = graph.nodes.find(n => n.id === id); if (!n) { clearEd(); return; }
+    commitNameEdit();
+    const n = ctx.graph.nodes.find(n => n.id === id); if (!n) { clearEd(); return; }
     showSection('node');
     setSelNode(id); setSelEdge(null); setSelGroup(null);
     nName.value = n.label || ''; nNote.value = n.note || '';
@@ -783,17 +826,17 @@ export function createEditPanel(
     draw();
   };
   const fillEdge = (idx: number) => {
-    const e = graph.edges[idx]; if (!e) { clearEd(); return; }
+    const e = ctx.graph.edges[idx]; if (!e) { clearEd(); return; }
     showSection('edge');
     setSelEdge(idx); setSelNode(null); setSelGroup(null);
-    const s = graph.nodes.find(n => n.id === (typeof e.source === 'object' ? e.source.id : e.source)), t = graph.nodes.find(n => n.id === (typeof e.target === 'object' ? e.target.id : e.target));
+    const s = ctx.graph.nodes.find(n => n.id === (typeof e.source === 'object' ? e.source.id : e.source)), t = ctx.graph.nodes.find(n => n.id === (typeof e.target === 'object' ? e.target.id : e.target));
     eIdSpan.textContent = `${s?.label || (typeof e.source === 'object' ? e.source.id : e.source)} → ${t?.label || (typeof e.target === 'object' ? e.target.id : e.target)}`;
     eLabel.value = e.label || ''; eCol.value = e.color || '#BFBFBF'; eArrChk.checked = e.arrow || false;
     eStyle.value = e.lineStyle || 'solid';
     showPanel(); draw();
   };
   const fillGroup = (id: string) => {
-    const g = graph.groups.find(g => g.id === id); if (!g) { clearEd(); return; }
+    const g = ctx.graph.groups.find(g => g.id === id); if (!g) { clearEd(); return; }
     showSection('group');
     setSelGroup(id); setSelNode(null); setSelEdge(null);
     gIdSpan.textContent = `ID: ${g.id}`; gLabel.value = g.label; gMode.value = g.displayMode || 'none';
@@ -811,7 +854,7 @@ export function createEditPanel(
     fluidOpacityRow.style.display = g.displayMode === 'fluid' ? 'block' : 'none';
 
     gMems.innerHTML = '';
-    const members = graph.nodes.filter(n => (n.tags || []).includes(g.label));
+    const members = ctx.graph.nodes.filter(n => (n.tags || []).includes(g.label));
     members.forEach(n => {
       const it = el("div"); it.textContent = n.label || n.id; it.style.cursor = 'pointer';
       it.onclick = () => { fillNode(n.id); showPanel(); };
@@ -821,15 +864,17 @@ export function createEditPanel(
     showPanel(); draw();
   };
   const clearEd = () => {
+    commitNameEdit();
     setSelNode(null); setSelEdge(null); setSelGroup(null);
     nTagsContainer.innerHTML = '';
-    setLinkMode(false); setLinkSrc(null);
+    if (ctx.clearLinkMode) ctx.clearLinkMode();
+    else { setLinkMode(false); setLinkSrc(null); }
     draw();
     if (editPanel.style.display !== 'none') editPanel.style.display = 'none';
   };
 
   swapBtn.onclick = () => {
-    if (getSelEdge() === null) return; const e = graph.edges[getSelEdge()!];
+    if (getSelEdge() === null) return; const e = ctx.graph.edges[getSelEdge()!];
     [e.source, e.target] = [e.target, e.source]; fillEdge(getSelEdge()!); getInitSim()(); getSaveData()();
   };
 

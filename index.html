@@ -49,7 +49,11 @@
     }
 
     /* ---- Mobile touch adaptation ---- */
-    canvas, .fg-glass, .fg-glass-elevated {
+    canvas {
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .fg-glass, .fg-glass-elevated {
       touch-action: manipulation;
     }
     button, input, select, textarea, [contenteditable] {

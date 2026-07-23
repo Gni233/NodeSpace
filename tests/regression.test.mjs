@@ -170,6 +170,71 @@ test('graph runtimes share documents and release clean instances safely', async 
   assert.equal(invalidatedRan, false);
 });
 
+test('structure nodes collapse and restore a node group without rewriting source edges', async () => {
+  const {
+    createStructureNode,
+    dissolveStructureNode,
+    getStructureProjection,
+    sanitizeCopiedNode,
+    setStructureCollapsed,
+  } = await importTypeScriptModule(
+    path.join(root, 'src', 'structure-nodes.ts'),
+    { './node-order': path.join(root, 'src', 'node-order.ts') },
+  );
+  const graph = {
+    nodes: [
+      { id: 'a', label: 'A', x: 0, y: 0, tags: ['shared'] },
+      { id: 'b', label: 'B', x: 20, y: 20, tags: ['shared'] },
+      { id: 'c', label: 'C', x: 100, y: 0, tags: [] },
+    ],
+    edges: [
+      { source: 'a', target: 'b', label: 'inside' },
+      { source: 'a', target: 'c', label: 'outside' },
+    ],
+    groups: [],
+  };
+  const structure = createStructureNode(graph, ['a', 'b'], 'AB');
+  assert.equal(graph.edges.length, 2);
+  assert.equal(graph.nodes.find(node => node.id === 'a').structureParentId, structure.id);
+  assert.deepEqual(getStructureProjection(graph).hiddenNodeIds, new Set(['a', 'b']));
+  assert.deepEqual(
+    getStructureProjection(graph).edges.map(edge => [edge.source, edge.target, edge.label]),
+    [[structure.id, 'c', 'outside']],
+  );
+
+  assert.equal(setStructureCollapsed(graph, structure.id, false), true);
+  const expanded = getStructureProjection(graph);
+  assert.equal(expanded.hiddenNodeIds.size, 0);
+  assert.equal(expanded.edges.filter(edge => edge._structureMembership).length, 2);
+  assert.equal(graph.edges.length, 2);
+
+  const serialized = JSON.parse((await importTypeScriptModule(path.join(root, 'src', 'graph-snapshot.ts'))).serializeGraphSnapshot(graph));
+  assert.deepEqual(serialized.nodes.find(node => node.id === structure.id).structure.memberIds, ['a', 'b']);
+  assert.equal(serialized.edges.some(edge => edge._structureMembership), false);
+
+  assert.equal(dissolveStructureNode(graph, structure.id), true);
+  assert.equal(graph.nodes.some(node => node.id === structure.id), false);
+  assert.equal(graph.nodes.find(node => node.id === 'a').structureParentId, undefined);
+  assert.equal(graph.edges.length, 2);
+
+  const linkedGraph = {
+    nodes: [
+      { id: 'x', x: 0, y: 0 },
+      { id: 'y', x: 10, y: 0 },
+      { id: 'z', x: 40, y: 0 },
+    ],
+    edges: [],
+    groups: [],
+  };
+  const linkedStructure = createStructureNode(linkedGraph, ['x', 'y'], 'XY');
+  linkedGraph.edges.push({ source: linkedStructure.id, target: 'z', label: 'later link' });
+  const copiedStructure = sanitizeCopiedNode(linkedStructure);
+  assert.equal(copiedStructure.structure, undefined);
+  assert.equal(copiedStructure.structureParentId, undefined);
+  dissolveStructureNode(linkedGraph, linkedStructure.id);
+  assert.deepEqual(linkedGraph.edges, [{ source: 'x', target: 'z', label: 'later link' }]);
+});
+
 test('graph snapshots freeze clean data and recovery metadata tracks unsynced writes', async () => {
   const { serializeGraphSnapshot } = await importTypeScriptModule(path.join(root, 'src', 'graph-snapshot.ts'));
   const { createRecoveryStorage } = await importTypeScriptModule(
@@ -211,6 +276,60 @@ test('graph snapshots freeze clean data and recovery metadata tracks unsynced wr
   assert.equal(recovery.hasUnsynced(), false);
   recovery.delete();
   assert.equal(recovery.readSnapshot(), null);
+});
+
+test('canvas pointer gestures keep taps, drags, box selection, long press, and cancellation exclusive', async () => {
+  const { CanvasGestureState } = await importTypeScriptModule(path.join(root, 'src', 'canvas-gesture-state.ts'));
+  const gesture = new CanvasGestureState();
+
+  gesture.begin(1, 10, 10, 'node-a', false, 10);
+  assert.deepEqual(gesture.move(1, 15, 15), { mode: 'pending-node', startedNodeDrag: false, moved: false });
+  assert.deepEqual(gesture.end(1), { mode: 'pending-node', targetNodeId: 'node-a', tap: true, moved: false });
+
+  gesture.begin(2, 0, 0, 'node-b', false, 10);
+  assert.deepEqual(gesture.move(2, 11, 0), { mode: 'node-drag', startedNodeDrag: true, moved: true });
+  assert.deepEqual(gesture.move(2, 20, 0), { mode: 'node-drag', startedNodeDrag: false, moved: true });
+  assert.equal(gesture.end(2).tap, false);
+
+  gesture.begin(3, 0, 0, 'node-c', true, 10);
+  assert.equal(gesture.mode, 'box-select');
+  assert.deepEqual(gesture.move(3, 20, 20), { mode: 'box-select', startedNodeDrag: false, moved: true });
+  assert.equal(gesture.end(3).mode, 'box-select');
+
+  gesture.begin(4, 0, 0, null, false, 10);
+  assert.equal(gesture.markLongPress(4), true);
+  assert.equal(gesture.end(4).tap, false);
+
+  gesture.begin(5, 0, 0, 'node-d', false, 10);
+  assert.equal(gesture.cancel(5), true);
+  assert.equal(gesture.pointerId, null);
+  assert.equal(gesture.mode, 'idle');
+  assert.equal(gesture.end(5), null);
+});
+
+test('hover focus remains latched until another node or background click', async () => {
+  const events = await readFile(path.join(root, 'src', 'ui-events.ts'), 'utf8');
+  const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
+  const shared = await readFile(path.join(root, 'src', 'shared-state.ts'), 'utf8');
+  assert.match(shared, /get focusHoverNodeId\(\)/);
+  assert.match(events, /if \(hoverNode\) sharedState\.focusHoverNodeId = hoverNode\.id/);
+  assert.match(events, /if \(!node\) sharedState\.focusHoverNodeId = null/);
+  assert.doesNotMatch(events, /pointerleave[\s\S]{0,180}focusHoverNodeId = null/);
+  assert.match(main, /if \(sharedState\.focusHoverNodeId\)[\s\S]*?addFocusNode\(sharedState\.focusHoverNodeId\)/);
+});
+
+test('canvas input uses one Pointer Events path and box selection owns the viewport immediately', async () => {
+  const source = await readFile(path.join(root, 'src', 'ui-events.ts'), 'utf8');
+  const styles = await readFile(path.join(root, 'index.html'), 'utf8');
+  assert.doesNotMatch(source, /addEventListener\(["']touch(?:start|move|end|cancel)/);
+  assert.doesNotMatch(source, /addEventListener\(["']click["']/);
+  assert.match(source, /if \(boxSelect\) \{[\s\S]*?ctx\.viewport\.pause = true;[\s\S]*?e\.preventDefault\(\);[\s\S]*?e\.stopImmediatePropagation\(\)/);
+  assert.match(source, /gestureEnd\.mode === 'box-select'[\s\S]*?ctx\.viewport\.pause = false/);
+  assert.match(source, /canvas\.addEventListener\("pointercancel"/);
+  assert.match(source, /gestureEnd\.targetNodeId[\s\S]*?visibleNodes\(\)\.find[\s\S]*?lockedNode\.x, lockedNode\.y/);
+  assert.match(source, /handleTap\(x, y, lockedNode\?\.id\)/);
+  assert.match(source, /const onPointerUp = \(e: PointerEvent\)[\s\S]*?window\.addEventListener\("pointerup", onPointerUp, \{ capture: true \}\)/);
+  assert.match(styles, /canvas \{\s*touch-action: none;/);
 });
 
 test('mobile toolbar gestures preserve taps and suppress only completed drags', async () => {
@@ -256,6 +375,7 @@ test('card grid uses bounded continuous motion and independent card gestures', a
   assert.match(source, /\{ \.\.\.e, source: s, target: t \}/);
   assert.doesNotMatch(source, /\['drag', 'wheel', 'pinch', 'decelerate'\]/);
   assert.match(interactions, /gesture: 'reorder' \| 'pan' \| 'pinch' \| null/);
+  assert.match(interactions, /ctx\.onBackgroundPointerDown\(\);[\s\S]*?e\.stopImmediatePropagation\(\)/);
   assert.match(interactions, /const card = hitCard\([\s\S]*?e\.stopImmediatePropagation\(\);[\s\S]*?if \(!card\) return;/);
   assert.match(interactions, /e\.stopImmediatePropagation\(\)/);
   assert.match(treemap, /card\?\.order/);
@@ -274,9 +394,10 @@ test('save flow only clears dirty tabs after a successful frozen write', async (
   assert.match(source, /pixi\.blobLayerGfx[\s\S]*?bg\?\.clear\?\.\(\);\s*pixi\.blobLayer\.visible = false/);
   assert.match(source, /onBeforeClose/);
   assert.match(source, /function clearPaneLayout\(pane: Pick<PaneState, 'layout' \| 'pixi' \| 'activeMode'>\)/);
-  assert.match(source, /pane\.layout\.clear\(\);\s*pane\.activeMode = 'default'/);
-  assert.match(source, /async function loadGraphData\(fileName: string\) \{\s*clearPaneLayout\(pane0\)/);
-  assert.match(source, /async function loadGraphForPane\(pane: PaneState, fileName: string\) \{\s*clearPaneLayout\(pane\)/);
+  assert.match(source, /pane\.layout\.clear\(\);\s*pane\.activeMode = 'default'[\s\S]*?clearBlobLayer\(pane\.pixi\)/);
+  assert.match(source, /async function loadGraphData\(fileName: string\) \{\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane0\)/);
+  assert.match(source, /async function loadGraphForPane\(pane: PaneState, fileName: string\) \{\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane\)/);
+  assert.match(source, /if \(isCardMode && st\.layout\.current\) st\.layout\.update\(\);\s*const structureProjection = getStructureProjection\(graph\);\s*const nodes = isCardMode/);
   assert.doesNotMatch(source, /let cardGridCtrl/);
   assert.match(source, /targetPane\.layout\.set\(controller\)/);
   assert.match(source, /const scheduleSaveForPane = \(pane: PaneState\)/);
@@ -318,6 +439,7 @@ test('interface regressions keep panel controls usable and inactive tab close is
   const tabs = await readFile(path.join(root, 'src', 'ui-tabs.ts'), 'utf8');
   const styles = await readFile(path.join(root, 'index.html'), 'utf8');
   const fileSystem = await readFile(path.join(root, 'src', 'file-system.ts'), 'utf8');
+  const editPanel = await readFile(path.join(root, 'src', 'ui-edit.ts'), 'utf8');
 
   assert.match(main, /rightRail\.appendChild\(appearanceBtn\)/);
   assert.match(main, /modeRow\.hidden = modeCollapsed/);
@@ -329,6 +451,9 @@ test('interface regressions keep panel controls usable and inactive tab close is
   assert.match(styles, /\.fg-mode-switcher\[hidden\] \{ display:none !important; \}/);
   assert.match(styles, /\.fg-status-line \{[\s\S]*?right:82px !important;/);
   assert.match(fileSystem, /const wrote = await writeGraphFile\(newPath, data, h\);\s*if \(!wrote\) return false;\s*\/\/ 删除旧文件/);
+  assert.doesNotMatch(editPanel, /const \{ graph,/);
+  assert.match(editPanel, /const fillNode = \(id: string\) => \{[\s\S]*?const n = ctx\.graph\.nodes\.find/);
+  assert.match(editPanel, /const fillNode = \(id: string\) => \{\s*commitNameEdit\(\);/);
 });
 
 test('mobile toolbar routes focused-pane commands and keeps touch state synchronized', async () => {
@@ -372,7 +497,7 @@ test('mobile toolbar routes focused-pane commands and keeps touch state synchron
   );
   assert.doesNotMatch(mobileCallbacks, /focusedPaneIndex === PANE_RIGHT/);
   assert.match(main, /const focusedUndoManager = \(\) => focusedExtraPane\(\)\?\.undoManager/);
-  assert.match(main, /const createNodeInFocusedPane = \(\) => \{\s*const targetPane = focusedExtraPane\(\)/);
+  assert.match(main, /const createNodeInFocusedPane = \(\) => \{[\s\S]*?const targetPane = focusedExtraPane\(\)/);
 
   assert.match(undo, /canUndo\(\): boolean \{\s*return this\.undoStack\.length > 0;/);
   assert.match(undo, /canRedo\(\): boolean \{\s*return this\.redoStack\.length > 0;/);

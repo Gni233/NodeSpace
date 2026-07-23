@@ -66,7 +66,14 @@ echo [1/4] Clearing old build artifacts...
 del /q "android\app\build\outputs\apk\debug\app-debug.apk" 2>nul
 del /q "NodeSpace.apk" 2>nul
 del /q "NodeSpace.exe" 2>nul
-if exist "release\" rmdir /s /q "release" 2>nul
+call :clean_release
+if errorlevel 1 (
+    echo [ERROR] Cannot clean the Electron release folder.
+    echo Close NodeSpace and any Explorer window opened inside:
+    echo   %CD%\release
+    pause
+    exit /b 1
+)
 
 echo [2/4] Building frontend + Android APK...
 set "JAVA_HOME=%JAVA_HOME%"
@@ -90,11 +97,33 @@ echo [3/4] Building Electron EXE...
 :: Use mirror for Electron downloads (GitHub is often unreachable)
 set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
-call npx electron-builder --win
-if %errorlevel% neq 0 (
-    echo EXE build failed! Check errors above.
+set "ELECTRON_BUILD_OK="
+for /l %%a in (1,1,3) do (
+    echo   Electron build attempt %%a / 3...
+    call npx electron-builder --win
+    if not errorlevel 1 (
+        set "ELECTRON_BUILD_OK=1"
+        goto :electron_build_done
+    )
+    if %%a lss 3 (
+        echo   Build failed. Waiting for file locks to clear, then retrying...
+        timeout /t 3 /nobreak >nul
+        call :clean_release
+        if errorlevel 1 (
+            echo [ERROR] The release folder is still locked.
+            echo Close NodeSpace and any Explorer window opened inside:
+            echo   %CD%\release
+            pause
+            exit /b 1
+        )
+    )
+)
+
+:electron_build_done
+if not defined ELECTRON_BUILD_OK (
+    echo [ERROR] EXE build failed after 3 attempts. Check errors above.
     pause
-    exit /b %errorlevel%
+    exit /b 1
 )
 :: Find the built EXE and copy to repo root
 for %%f in ("release\*.exe") do (
@@ -226,3 +255,14 @@ echo   APK: NodeSpace.apk
 echo   EXE: NodeSpace.exe
 echo ========================================
 pause
+goto :eof
+
+:clean_release
+if not exist "release\" exit /b 0
+for /l %%r in (1,1,5) do (
+    rmdir /s /q "release" 2>nul
+    if not exist "release\" exit /b 0
+    echo   Release folder is busy; cleanup retry %%r / 5...
+    timeout /t 2 /nobreak >nul
+)
+exit /b 1

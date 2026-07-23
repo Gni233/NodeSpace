@@ -33,6 +33,7 @@ export interface PaneExternals {
   saveCurrent: () => void;
   handleLinkTap: (x: number, y: number) => boolean;
   showToast: (msg: string, type?: string, duration?: number) => void;
+  createStructure?: (pane: PaneState, ids: string[]) => Promise<void> | void;
 }
 
 // ---- PaneManager ----
@@ -103,6 +104,8 @@ export class PaneManager {
     const pane = this.panes[index];
 
     // ---- cleanup before destroy ----
+    pane.disposeCanvasEvents?.();
+    pane.disposeCanvasEvents = null;
     pane.layout.clear();
     pane.pixi?.viewport.off('moved');
     pane.pixi?.viewport.off('zoomed-end');
@@ -165,7 +168,8 @@ export class PaneManager {
     // 5. Canvas 交互事件
     const lastDragId = { v: pane._lastDragNodeId };
     const ctx = createEventsContextForPane(pane, pixi, pane.nodeSprites, lastDragId, ext);
-    setupCanvasEvents(pixi.app.canvas as any, ctx);
+    pane.disposeCanvasEvents?.();
+    pane.disposeCanvasEvents = setupCanvasEvents(pixi.app.canvas as any, ctx);
   }
 
   // ---- 统一绘制 ----
@@ -244,8 +248,11 @@ function createEventsContextForPane(
   const sm = pi.simManager;
   const getSim = () => sm?.getSim();
 
+  const interactionAllowed = () => pi.runtime.canInteract(pi);
   return {
     graph: pi.graph,
+    isInteractionEnabled: interactionAllowed,
+    onInteractionBlocked: () => ext.showToast('此图正在另一窗格的文字视图中编辑', 'warning', 3500),
     getSelNode: () => pi.selNode,
     setSelNode: (v: string | null) => { pi.selNode = v; },
     getSelEdge: () => pi.selEdge,
@@ -339,6 +346,7 @@ function createEventsContextForPane(
     getGridSnapEnabled: () => pi.gridSnapEnabled || pi.partialGridSnap,
     getGridSp: () => pi.gridSp,
     getHiddenNodeIds: () => sharedState.hiddenNodeIds?.() ?? new Set(),
+    createStructure: (ids: string[]) => ext.createStructure?.(pi, ids),
 
     setDragScale: (nodeId: string | null, scale: number) => {
       if (nodeId) {
@@ -347,8 +355,20 @@ function createEventsContextForPane(
       }
     },
 
-    onTap: (x: number, y: number) => {
+    onTap: (x: number, y: number, nodeId?: string) => {
+      if (!interactionAllowed()) {
+        ext.showToast('此图正在另一窗格的文字视图中编辑', 'warning', 3500);
+        return;
+      }
       ext.saveCurrent();
+      if (nodeId && !pi.linkMode) {
+        pi.selNode = nodeId;
+        pi.selEdge = null;
+        pi.selGroup = null;
+        ext.fillNode(nodeId);
+        ext.onDraw();
+        return;
+      }
       if (ext.handleLinkTap(x, y)) return;
       if (pi.linkMode && !pi.linkSrc) {
         const nodes = getSim()?.nodes() || [];
@@ -401,6 +421,10 @@ function createEventsContextForPane(
     },
 
     onCreateEdge: (sourceId: string, targetId: string, shiftKey?: boolean) => {
+      if (!interactionAllowed()) {
+        ext.showToast('此图正在另一窗格的文字视图中编辑', 'warning', 3500);
+        return;
+      }
       pi.undoManager.pushSnapshot(pi.graph);
       const edge: any = {
         source: sourceId, target: targetId,

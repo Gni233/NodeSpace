@@ -13,6 +13,7 @@ export interface InteractionContext {
   onZoom: (cardId: string, factor: number, anchorX: number, anchorY: number) => void;
   onResetView: (cardId: string) => void;
   onBackgroundTap: () => void;
+  onBackgroundPointerDown: () => void;
 }
 
 const DRAG_THRESHOLD = 5; // 超过此 px 距离才进入拖拽交换
@@ -57,6 +58,7 @@ export function setupCardInteractions(canvas: HTMLCanvasElement, ctx: Interactio
     if (ctx.isOverNode(sx, sy)) return;
 
     // 不是点时由卡片系统接管，阻止全局 viewport 响应。
+    ctx.onBackgroundPointerDown();
     e.stopImmediatePropagation();
     e.preventDefault();
 

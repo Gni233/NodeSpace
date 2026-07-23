@@ -91,11 +91,155 @@ function graphPath(name) {
   return dataPath(name.endsWith('.json') ? name : name + '.json');
 }
 
+function isValidCreatedOrder(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function incrementCreatedOrder(order) {
+  if (order >= Number.MAX_SAFE_INTEGER) {
+    throw new RangeError('createdOrder has reached the largest safe integer');
+  }
+  return order + 1;
+}
+
+function repairCreatedOrdersAndGetMaximum(nodes) {
+  if (!Array.isArray(nodes)) return -1;
+  const usedOrders = new Set();
+  let maxOrder = -1;
+  for (const node of nodes) {
+    const order = node?.createdOrder;
+    if (!isValidCreatedOrder(order) || usedOrders.has(order)) continue;
+    usedOrders.add(order);
+    maxOrder = Math.max(maxOrder, order);
+  }
+
+  let assignedMaximum = maxOrder;
+  let nextOrder = null;
+  const preservedOrders = new Set();
+  for (const node of nodes) {
+    const order = node?.createdOrder;
+    if (isValidCreatedOrder(order) && !preservedOrders.has(order)) {
+      preservedOrders.add(order);
+      continue;
+    }
+    nextOrder ??= incrementCreatedOrder(maxOrder);
+    node.createdOrder = nextOrder;
+    assignedMaximum = nextOrder;
+    nextOrder = incrementCreatedOrder(nextOrder);
+  }
+  return assignedMaximum;
+}
+
+function repairCreatedOrders(nodes) {
+  repairCreatedOrdersAndGetMaximum(nodes);
+}
+
+function nextCreatedOrder(nodes) {
+  return incrementCreatedOrder(repairCreatedOrdersAndGetMaximum(nodes));
+}
+
+function assignCreatedOrders(nodes, existingNodes) {
+  if (nodes.length === 0) return [];
+  const maxOrder = repairCreatedOrdersAndGetMaximum(existingNodes);
+  if (maxOrder > Number.MAX_SAFE_INTEGER - nodes.length) {
+    throw new RangeError('createdOrder has reached the largest safe integer');
+  }
+  return nodes.map((node, index) => {
+    const order = maxOrder + index + 1;
+    node.createdOrder = order;
+    return order;
+  });
+}
+
+function assignCreatedOrder(node, existingNodes) {
+  return assignCreatedOrders([node], existingNodes)[0];
+}
+
+function endpointId(endpoint) {
+  return typeof endpoint === 'object' ? endpoint?.id : endpoint;
+}
+
+function isStructureNode(node) {
+  return Array.isArray(node?.structure?.memberIds);
+}
+
+function dissolveStructureNode(graph, structureId) {
+  const index = graph.nodes.findIndex(node => node.id === structureId && isStructureNode(node));
+  if (index < 0) return false;
+  const structureNode = graph.nodes[index];
+  const memberIds = structureNode.structure.memberIds.filter(memberId =>
+    graph.nodes.some(node => node.id === memberId && !isStructureNode(node)),
+  );
+  const fallbackMemberId = memberIds[0] ?? null;
+  const members = new Set(memberIds);
+  for (const node of graph.nodes) {
+    if (members.has(node.id) && node.structureParentId === structureId) delete node.structureParentId;
+  }
+  graph.nodes.splice(index, 1);
+  for (let edgeIndex = graph.edges.length - 1; edgeIndex >= 0; edgeIndex--) {
+    const edge = graph.edges[edgeIndex];
+    const source = endpointId(edge.source);
+    const target = endpointId(edge.target);
+    if (source !== structureId && target !== structureId) continue;
+    if (!fallbackMemberId) {
+      graph.edges.splice(edgeIndex, 1);
+      continue;
+    }
+    edge.source = source === structureId ? fallbackMemberId : source;
+    edge.target = target === structureId ? fallbackMemberId : target;
+    if (edge.source === edge.target) graph.edges.splice(edgeIndex, 1);
+  }
+  return true;
+}
+
+// Keep MCP-authored graphs compatible with the UI's flat structure model.
+function normalizeStructureRelations(graph) {
+  graph.nodes ||= [];
+  graph.edges ||= [];
+  const ordinaryNodeIds = new Set();
+  const structures = graph.nodes.filter(isStructureNode);
+  for (const node of graph.nodes) {
+    delete node.structureParentId;
+    if (!isStructureNode(node) && typeof node.id === 'string') ordinaryNodeIds.add(node.id);
+  }
+
+  const claimedMemberIds = new Set();
+  const validMembersByStructure = new Map();
+  for (const structureNode of structures) {
+    const seenMemberIds = new Set();
+    const memberIds = structureNode.structure.memberIds.filter(memberId => {
+      if (typeof memberId !== 'string' || seenMemberIds.has(memberId) || claimedMemberIds.has(memberId)) return false;
+      if (!ordinaryNodeIds.has(memberId)) return false;
+      seenMemberIds.add(memberId);
+      return true;
+    });
+    structureNode.structure.memberIds = memberIds;
+    if (memberIds.length >= 2) {
+      validMembersByStructure.set(structureNode, memberIds);
+      memberIds.forEach(memberId => claimedMemberIds.add(memberId));
+    }
+  }
+
+  for (const structureNode of structures) {
+    if (!graph.nodes.includes(structureNode)) continue;
+    const memberIds = validMembersByStructure.get(structureNode);
+    if (!memberIds) {
+      dissolveStructureNode(graph, structureNode.id);
+      continue;
+    }
+    for (const memberId of memberIds) {
+      const member = graph.nodes.find(node => node.id === memberId && !isStructureNode(node));
+      if (member) member.structureParentId = structureNode.id;
+    }
+  }
+}
+
 async function readGraph(name) {
   const p = graphPath(name);
   if (!existsSync(p)) return null;
-  const raw = await readFile(p, 'utf-8');
-  return JSON.parse(raw);
+  const data = JSON.parse(await readFile(p, 'utf-8'));
+  repairCreatedOrders(data.nodes);
+  return data;
 }
 
 // ---- 图操作串行锁（在 tools/call dispatch 层使用，保证每个图只有一个操作执行） ----
@@ -827,7 +971,7 @@ const handlers = {
     return { created: r.node };
   },
 
-  _createNode(data, { label, x, y, headingLevel = 1, tags, note, color, radius, hyperlink, fixed = false, collapsed }) {
+  _createNode(data, { label, x, y, headingLevel = 1, tags, note, color, radius, hyperlink, fixed = false, collapsed }, assignOrder = true) {
     const id = label.replace(/\s+/g, '-').replace(/[^\w\u4e00-\u9fff\-]/g, '').slice(0, 40) + '-' + randomUUID().slice(0, 6);
     const h = Math.max(1, Math.min(6, headingLevel));
     const defaultRadius = [0, 20, 17, 14, 12, 10, 8][Math.min(6, h)];
@@ -855,6 +999,7 @@ const handlers = {
       mediaUrl: null,
       radiusMode: 'level',
     };
+    if (assignOrder) assignCreatedOrder(node, data.nodes);
     data.nodes.push(node);
     return { node };
   },
@@ -863,11 +1008,14 @@ const handlers = {
     const data = await readGraph(graph);
     if (!data) {
       const newData = { nodes: [], edges: [], groups: [], settings: {} };
-      const created = nodes.map(n => handlers._createNode(newData, n).node);
+      const created = nodes.map(n => handlers._createNode(newData, n, false).node);
+      assignCreatedOrders(created, []);
       await writeGraph(graph, newData);
       return { created, count: created.length, message: `已在新图 "${graph}" 中批量创建 ${created.length} 个节点。` };
     }
-    const created = nodes.map(n => handlers._createNode(data, n).node);
+    const created = nodes.map(n => handlers._createNode(data, n, false).node);
+    const existingNodes = data.nodes.slice(0, -created.length);
+    assignCreatedOrders(created, existingNodes);
     await writeGraph(graph, data);
     return { created, count: created.length };
   },
@@ -895,8 +1043,10 @@ const handlers = {
     const idx = (data.nodes || []).findIndex(n => n.id === nodeId);
     if (idx < 0) return { error: `节点 "${nodeId}" 不存在。` };
 
-    const removed = data.nodes.splice(idx, 1)[0];
-    // 同时删除关联边
+    const removed = data.nodes[idx];
+    if (isStructureNode(removed)) dissolveStructureNode(data, nodeId);
+    else data.nodes.splice(idx, 1);
+    // 同时删除关联边；结构节点已按 dissolveStructureNode 语义改接。
     const beforeEdgeCount = (data.edges || []).length;
     data.edges = (data.edges || []).filter(e => {
       const s = typeof e.source === 'string' ? e.source : e.source?.id;
@@ -904,6 +1054,7 @@ const handlers = {
       return s !== nodeId && t !== nodeId;
     });
     const removedEdges = beforeEdgeCount - data.edges.length;
+    normalizeStructureRelations(data);
 
     await writeGraph(graph, data);
     return { removed, removedEdges, message: removedEdges > 0 ? `同时删除了 ${removedEdges} 条关联边。` : '' };
@@ -1365,6 +1516,11 @@ const handlers = {
     if (matched.length === 0) return { message: '没有节点匹配筛选条件。' };
 
     const removeIds = new Set(matched.map(n => n.id));
+    // Match single-node deletion: dissolve selected structures before removing
+    // the remainder so their external edges can be redirected to a member.
+    for (const node of matched) {
+      if (isStructureNode(node)) dissolveStructureNode(data, node.id);
+    }
     const beforeEdges = (data.edges || []).length;
     data.nodes = (data.nodes || []).filter(n => !removeIds.has(n.id));
     data.edges = (data.edges || []).filter(e => {
@@ -1372,6 +1528,7 @@ const handlers = {
       const t = typeof e.target === 'string' ? e.target : e.target?.id;
       return !removeIds.has(s) && !removeIds.has(t);
     });
+    normalizeStructureRelations(data);
 
     await writeGraph(graph, data);
     return { ok: true, deletedNodes: matched.length, deletedEdges: beforeEdges - data.edges.length };
@@ -1395,15 +1552,24 @@ const handlers = {
     }
 
     // 复制节点（偏移坐标）
-    const newNodes = sourceNodes.map(n => ({
-      ...JSON.parse(JSON.stringify(n)),
-      id: idMap[n.id],
-      x: (n.x || 0) + offsetX,
-      y: (n.y || 0) + offsetY,
-      fx: n.fx != null ? (n.fx + offsetX) : null,
-      fy: n.fy != null ? (n.fy + offsetY) : null,
-      _createdAt: performance.now(),
-    }));
+    const newNodes = [];
+    for (const n of sourceNodes) {
+      const copy = {
+        ...JSON.parse(JSON.stringify(n)),
+        id: idMap[n.id],
+        x: (n.x || 0) + offsetX,
+        y: (n.y || 0) + offsetY,
+        fx: n.fx != null ? (n.fx + offsetX) : null,
+        fy: n.fy != null ? (n.fy + offsetY) : null,
+        _createdAt: performance.now(),
+      };
+      delete copy.structure;
+      delete copy.structureParentId;
+      delete copy.createdOrder;
+      newNodes.push(copy);
+    }
+    assignCreatedOrders(newNodes, data.nodes);
+    data.nodes.push(...newNodes);
 
     // 复制副本之间的边
     const sourceSet = new Set(ids);
@@ -1420,7 +1586,6 @@ const handlers = {
         return { ...JSON.parse(JSON.stringify(e)), source: idMap[s], target: idMap[t] };
       });
 
-    data.nodes = (data.nodes || []).concat(newNodes);
     data.edges = (data.edges || []).concat(newEdges);
     await writeGraph(graph, data);
 

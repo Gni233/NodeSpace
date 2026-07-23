@@ -38,6 +38,9 @@ export interface PaneState {
   canvasContainer: HTMLElement;
   nodeSprites: Map<string, NodeSprite>;
   readyToDraw: boolean;
+  textViewActive: boolean;
+  /** Releases canvas/window listeners and interaction UI for this pane. */
+  disposeCanvasEvents: (() => void) | null;
 
   // --- Simulation ---
   simManager: any; // ReturnType<typeof createSimManager>
@@ -164,6 +167,8 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     canvasContainer: container,
     nodeSprites: new Map(),
     readyToDraw: false,
+    textViewActive: false,
+    disposeCanvasEvents: null,
     get simManager() { return this.runtime.simManager; },
     set simManager(value: any) { this.runtime.simManager = value; },
     selNode: null, selEdge: null, selGroup: null,
