@@ -163,32 +163,34 @@ function isStructureNode(node) {
   return Array.isArray(node?.structure?.memberIds);
 }
 
+function getDirectStructureEdges(graph, structureId) {
+  return (graph.edges || []).flatMap((edge, originalIndex) => {
+    if (edge?._structureMembership) return [];
+    const sourceId = endpointId(edge?.source);
+    const targetId = endpointId(edge?.target);
+    return sourceId === structureId || targetId === structureId
+      ? [{ edge, originalIndex, sourceId, targetId }]
+      : [];
+  });
+}
+
+function canDissolveStructure(graph, structureId) {
+  return (graph.nodes || []).some(node => node?.id === structureId && isStructureNode(node))
+    && getDirectStructureEdges(graph, structureId).length === 0;
+}
+
 function dissolveStructureNode(graph, structureId) {
   const index = graph.nodes.findIndex(node => node.id === structureId && isStructureNode(node));
-  if (index < 0) return false;
+  if (index < 0 || !canDissolveStructure(graph, structureId)) return false;
   const structureNode = graph.nodes[index];
   const memberIds = structureNode.structure.memberIds.filter(memberId =>
     graph.nodes.some(node => node.id === memberId && !isStructureNode(node)),
   );
-  const fallbackMemberId = memberIds[0] ?? null;
   const members = new Set(memberIds);
   for (const node of graph.nodes) {
     if (members.has(node.id) && node.structureParentId === structureId) delete node.structureParentId;
   }
   graph.nodes.splice(index, 1);
-  for (let edgeIndex = graph.edges.length - 1; edgeIndex >= 0; edgeIndex--) {
-    const edge = graph.edges[edgeIndex];
-    const source = endpointId(edge.source);
-    const target = endpointId(edge.target);
-    if (source !== structureId && target !== structureId) continue;
-    if (!fallbackMemberId) {
-      graph.edges.splice(edgeIndex, 1);
-      continue;
-    }
-    edge.source = source === structureId ? fallbackMemberId : source;
-    edge.target = target === structureId ? fallbackMemberId : target;
-    if (edge.source === edge.target) graph.edges.splice(edgeIndex, 1);
-  }
   return true;
 }
 
@@ -220,11 +222,14 @@ function normalizeStructureRelations(graph) {
     }
   }
 
+  const dissolvedStructureIds = [];
+  const protectedStructureIds = [];
   for (const structureNode of structures) {
     if (!graph.nodes.includes(structureNode)) continue;
     const memberIds = validMembersByStructure.get(structureNode);
     if (!memberIds) {
-      dissolveStructureNode(graph, structureNode.id);
+      if (dissolveStructureNode(graph, structureNode.id)) dissolvedStructureIds.push(structureNode.id);
+      else protectedStructureIds.push(structureNode.id);
       continue;
     }
     for (const memberId of memberIds) {
@@ -232,6 +237,7 @@ function normalizeStructureRelations(graph) {
       if (member) member.structureParentId = structureNode.id;
     }
   }
+  return { dissolvedStructureIds, protectedStructureIds };
 }
 
 async function readGraph(name) {
@@ -410,7 +416,7 @@ const TOOLS = [
   },
   {
     name: 'delete_node',
-    description: '删除一个节点。同时会删除关联该节点的所有边。',
+    description: '删除一个节点。同时会删除关联该节点的所有边；带有直接整体关系边的结构节点会被安全拒绝。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -770,7 +776,7 @@ const TOOLS = [
   },
   {
     name: 'delete_nodes_batch',
-    description: '按条件批量删除节点。会同时删除关联的边。',
+    description: '按条件批量删除节点。会同时删除关联的边；匹配到带直接整体关系边的结构节点时整批安全拒绝。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1044,9 +1050,13 @@ const handlers = {
     if (idx < 0) return { error: `节点 "${nodeId}" 不存在。` };
 
     const removed = data.nodes[idx];
+    if (isStructureNode(removed) && !canDissolveStructure(data, nodeId)) {
+      const directEdges = getDirectStructureEdges(data, nodeId);
+      return { error: `结构节点 "${nodeId}" 存在 ${directEdges.length} 条直接连接的持久边，无法安全删除；请先删除或改写这些整体关系。` };
+    }
     if (isStructureNode(removed)) dissolveStructureNode(data, nodeId);
     else data.nodes.splice(idx, 1);
-    // 同时删除关联边；结构节点已按 dissolveStructureNode 语义改接。
+    // 同时删除关联边；结构节点本身没有直接持久边时才可以安全解散。
     const beforeEdgeCount = (data.edges || []).length;
     data.edges = (data.edges || []).filter(e => {
       const s = typeof e.source === 'string' ? e.source : e.source?.id;
@@ -1515,9 +1525,17 @@ const handlers = {
     const matched = this._filterNodes(data.nodes || [], { ids, tags, headingLevel, labelContains });
     if (matched.length === 0) return { message: '没有节点匹配筛选条件。' };
 
+    const protectedStructures = matched.filter(node =>
+      isStructureNode(node) && !canDissolveStructure(data, node.id),
+    );
+    if (protectedStructures.length > 0) {
+      return {
+        error: `以下结构节点存在直接连接的持久边，无法安全删除：${protectedStructures.map(node => node.id).join(', ')}。请先删除或改写这些整体关系。`,
+      };
+    }
+
     const removeIds = new Set(matched.map(n => n.id));
-    // Match single-node deletion: dissolve selected structures before removing
-    // the remainder so their external edges can be redirected to a member.
+    // Match single-node deletion: only edge-free structures may be dissolved.
     for (const node of matched) {
       if (isStructureNode(node)) dissolveStructureNode(data, node.id);
     }

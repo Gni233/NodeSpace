@@ -231,8 +231,9 @@ test('structure nodes collapse and restore a node group without rewriting source
   const copiedStructure = sanitizeCopiedNode(linkedStructure);
   assert.equal(copiedStructure.structure, undefined);
   assert.equal(copiedStructure.structureParentId, undefined);
-  dissolveStructureNode(linkedGraph, linkedStructure.id);
-  assert.deepEqual(linkedGraph.edges, [{ source: 'x', target: 'z', label: 'later link' }]);
+  assert.equal(dissolveStructureNode(linkedGraph, linkedStructure.id), false);
+  assert.deepEqual(linkedGraph.edges, [{ source: linkedStructure.id, target: 'z', label: 'later link' }]);
+  assert.ok(linkedGraph.nodes.some(node => node.id === linkedStructure.id));
 });
 
 test('graph snapshots freeze clean data and recovery metadata tracks unsynced writes', async () => {
@@ -395,9 +396,9 @@ test('save flow only clears dirty tabs after a successful frozen write', async (
   assert.match(source, /onBeforeClose/);
   assert.match(source, /function clearPaneLayout\(pane: Pick<PaneState, 'layout' \| 'pixi' \| 'activeMode'>\)/);
   assert.match(source, /pane\.layout\.clear\(\);\s*pane\.activeMode = 'default'[\s\S]*?clearBlobLayer\(pane\.pixi\)/);
-  assert.match(source, /async function loadGraphData\(fileName: string\) \{\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane0\)/);
-  assert.match(source, /async function loadGraphForPane\(pane: PaneState, fileName: string\) \{\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane\)/);
-  assert.match(source, /if \(isCardMode && st\.layout\.current\) st\.layout\.update\(\);\s*const structureProjection = getStructureProjection\(graph\);\s*const nodes = isCardMode/);
+  assert.match(source, /async function loadGraphData\(fileName: string\) \{\s*exitStructureForPane\(pane0 as unknown as PaneState\);\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane0\)/);
+  assert.match(source, /async function loadGraphForPane\(pane: PaneState, fileName: string\) \{\s*exitStructureForPane\(pane\);\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane\)/);
+  assert.match(source, /if \(isCardMode && st\.layout\.current\) st\.layout\.update\(\);\s*const structureProjection = st\.structureView[\s\S]*?: getStructureProjection\(graph\);\s*const nodes = isCardMode/);
   assert.doesNotMatch(source, /let cardGridCtrl/);
   assert.match(source, /targetPane\.layout\.set\(controller\)/);
   assert.match(source, /const scheduleSaveForPane = \(pane: PaneState\)/);
@@ -484,7 +485,7 @@ test('mobile toolbar routes focused-pane commands and keeps touch state synchron
   assert.match(main, /const targetPane = focusedExtraPane\(\);[\s\S]*?createNodeInFocusedPane/);
   assert.match(main, /const runFocusedHistory = \(direction: 'undo' \| 'redo'\)/);
   assert.match(main, /const toggleFocusedLinkMode = \(\)/);
-  assert.match(main, /const fitFocusedPane = \(\)/);
+  assert.match(main, /function fitFocusedPane\(\)/);
   assert.match(main, /appShell\.appendChild\(mobileToolbar\.element\)/);
   assert.match(main, /syncFocusedCommands = \(\) => \{[\s\S]*?mobileToolbar\.sync\(\)/);
   assert.match(main, /switchFocusedPane\([\s\S]*?syncFocusedCommands\(\)/);

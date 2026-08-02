@@ -4,14 +4,30 @@ import { NodeSprite } from './pixi-nodes';
 import { UndoManager } from './undo-redo';
 import { LayoutSlot } from './layout-controller';
 import { GraphRuntime } from './graph-runtime';
+import { PaneStructureView, StructureBreadcrumb, StructureNavigationState } from './structure-view';
 
 /**
  * Maximum number of simultaneous split panes (left + right).
  * @see PANE_LEFT, PANE_RIGHT
  */
-export const MAX_PANES = 2;
+export const MAX_PANES = Number.POSITIVE_INFINITY;
 export const PANE_LEFT = 0;
 export const PANE_RIGHT = 1;
+
+/** Global pane 0 is primary; every extra pane uses its array index plus one. */
+export const paneIndexForExtra = (extraIndex: number): number => extraIndex + 1;
+
+export const extraIndexForPane = (paneIndex: number): number | null =>
+  Number.isInteger(paneIndex) && paneIndex > PANE_LEFT ? paneIndex - 1 : null;
+
+export function paneAtGlobalIndex<T>(primary: T, extras: readonly T[], paneIndex: number): T | undefined {
+  const extraIndex = extraIndexForPane(paneIndex);
+  return extraIndex === null ? (paneIndex === PANE_LEFT ? primary : undefined) : extras[extraIndex];
+}
+
+export function reindexExtraPanes<T extends { index: number }>(extras: readonly T[]): void {
+  extras.forEach((pane, extraIndex) => { pane.index = paneIndexForExtra(extraIndex); });
+}
 
 /**
  * Central per-pane state object. Holds graph data, PixiJS references, simulation,
@@ -41,6 +57,18 @@ export interface PaneState {
   textViewActive: boolean;
   /** Releases canvas/window listeners and interaction UI for this pane. */
   disposeCanvasEvents: (() => void) | null;
+
+  // --- Structure navigation ---
+  /** Stack of entered structure IDs; V1 permits zero or one item. */
+  structurePath: string[];
+  /** Pane-owned internal-structure view, initialized by the main integration. */
+  structureView: PaneStructureView | null;
+  /** Pane-owned structure navigation controller (V1 maxDepth=1). */
+  structureController: StructureNavigationState;
+  /** Releases the pane-local structure breadcrumb when attached. */
+  disposeStructureBreadcrumb: (() => void) | null;
+  /** Pane-local breadcrumb UI, kept separate from graph data. */
+  structureBreadcrumb: StructureBreadcrumb | null;
 
   // --- Simulation ---
   simManager: any; // ReturnType<typeof createSimManager>
@@ -153,6 +181,25 @@ const P_DEFAULTS = {
   cardBorderStyle: 'straight' as 'straight' | 'rounded',
 };
 
+export function paneGraph(pane: PaneState): GraphData {
+  return pane.structureView?.graph ?? pane.runtime.graph;
+}
+
+export function paneSimulationManager(pane: PaneState): any {
+  return pane.structureView?.simManager ?? pane.runtime.simManager;
+}
+
+/** Stable event-context facade that follows pane scope changes after binding. */
+export function paneGraphFacade(
+  pane: PaneState,
+  resolveGraph: (pane: PaneState) => GraphData = paneGraph,
+): GraphData {
+  return new Proxy({} as GraphData, {
+    get: (_, property) => (resolveGraph(pane) as any)[property],
+    set: (_, property, value) => { (resolveGraph(pane) as any)[property] = value; return true; },
+  });
+}
+
 export function createPaneState(index: number, container: HTMLElement): PaneState {
   const runtime = new GraphRuntime('demo', { nodes: [], edges: [], groups: [] }, new UndoManager());
   const state: PaneState = {
@@ -169,6 +216,11 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     readyToDraw: false,
     textViewActive: false,
     disposeCanvasEvents: null,
+    structurePath: [],
+    structureView: null,
+    structureController: new StructureNavigationState({ maxDepth: 1 }),
+    disposeStructureBreadcrumb: null,
+    structureBreadcrumb: null,
     get simManager() { return this.runtime.simManager; },
     set simManager(value: any) { this.runtime.simManager = value; },
     selNode: null, selEdge: null, selGroup: null,

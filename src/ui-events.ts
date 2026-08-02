@@ -5,7 +5,7 @@ import { sharedState } from "./shared-state";
 import { Z_TOOLTIP, V } from "./layout-constants";
 import { PRESET_COLORS } from "./utils/color";
 import { CanvasGestureState } from "./canvas-gesture-state";
-import { detachNodeFromStructure, isStructureNode } from './structure-nodes';
+import { isStructureNode } from './structure-nodes';
 
 const DRAG_THRESHOLD = 3;
 const TOUCH_DRAG_THRESHOLD = 10;
@@ -64,6 +64,16 @@ export interface EventsContext {
   clampNodeDrag?: (id: string, x: number, y: number) => [number, number];
   /** 将框选节点收束为一个结构节点 */
   createStructure?: (ids: string[]) => Promise<void> | void;
+  /** Deletes nodes through the runtime-level structure guard and transaction. */
+  deleteNodes?: (ids: string[]) => Promise<boolean> | boolean;
+  /** 桌面端双击节点，由调用方决定是否进入结构视图。 */
+  onNodeDoubleClick?: (id: string) => void;
+  /** Pane-private proxies may be selected but cannot be mutated or linked. */
+  isReadOnlyNode?: (id: string) => boolean;
+  isReadOnlyEdge?: (index: number) => boolean;
+  getOriginalEdgeIndex?: (projectedIndex: number) => number | null;
+  deleteEdges?: (projectedIndexes: number[]) => Promise<boolean> | boolean;
+  onReadOnlySelection?: (kind: 'node' | 'edge') => void;
 }
 
 export type CanvasEventsDisposer = () => void;
@@ -198,8 +208,10 @@ export function setupCanvasEvents(
   const showBoxMenu = (selNodes: any[], selEdges: { edge: any; idx: number }[], clientX: number, clientY: number) => {
     // 仅选中一根边、无节点 → 直接进编辑栏
     if (selNodes.length === 0 && selEdges.length === 1) {
-      ctx.setSelEdge?.(selEdges[0].idx);
-      ctx.fillEdge?.(selEdges[0].idx);
+      const index = selEdges[0].idx;
+      ctx.setSelEdge?.(index);
+      if (ctx.isReadOnlyEdge?.(index)) ctx.onReadOnlySelection?.('edge');
+      else ctx.fillEdge?.(index);
       return;
     }
     // 无节点且无边不弹菜单
@@ -212,46 +224,24 @@ export function setupCanvasEvents(
     const unfixedCount = selNodes.length - fixedCount;
     const items: { label: string; action: () => void }[] = [];
     if (selNodes.length > 0) {
-      const structureEligible = ids.length >= 2 && selNodes.every((node: any) => !isStructureNode(node) && !node.structureParentId);
+      const mutableIds = ids.filter(id => !ctx.isReadOnlyNode?.(id));
+      const hasReadOnlyNodes = mutableIds.length !== ids.length;
+      const structureEligible = !hasReadOnlyNodes && ids.length >= 2 && selNodes.every((node: any) => !isStructureNode(node) && !node.structureParentId);
       if (structureEligible && ctx.createStructure) {
         items.push({ label: `收束为结构 (${ids.length})`, action: () => { void ctx.createStructure?.([...ids]); } });
       }
-      items.push({ label: `固定 (${unfixedCount})`, action: () => { ctx.fixNodes?.(ids); selectedNodeIds = []; draw(); } });
-      items.push({ label: `解除固定 (${fixedCount})`, action: () => { ctx.unfixNodes?.(ids); selectedNodeIds = []; draw(); } });
-      items.push({ label: `删除节点 (${ids.length})`, action: () => {
-        const sim = ctx.getSimulation?.();
-        if (sim) {
-          const simNodes = sim.nodes();
-          for (const id of ids) {
-            const sn = simNodes.find((s: any) => s.id === id);
-            if (sn) (sn as any)._dying = true;
-          }
-        }
-        for (const id of ids) {
-          detachNodeFromStructure(ctx.graph, id);
-          const idx = ctx.graph.nodes.findIndex((n: any) => n.id === id);
-          if (idx >= 0) ctx.graph.nodes.splice(idx, 1);
-          for (const e of ctx.graph.edges) {
-            const src = typeof e.source === 'object' ? e.source.id : e.source;
-            const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-            if (src === id || tgt === id) (e as any)._dyingAt = performance.now();
-          }
-        }
-        selectedNodeIds = [];
-        ctx.triggerSave?.();
-        ctx.clearEd?.();
-        draw();
-        scheduleTimeout(() => {
-          for (let i = ctx.graph.edges.length - 1; i >= 0; i--) {
-            const e2: any = ctx.graph.edges[i];
-            if (e2._dyingAt && performance.now() - e2._dyingAt >= 400) ctx.graph.edges.splice(i, 1);
-          }
-          ctx.initSim?.();
+      if (!hasReadOnlyNodes) items.push({ label: `固定 (${unfixedCount})`, action: () => { ctx.fixNodes?.(ids); selectedNodeIds = []; draw(); } });
+      if (!hasReadOnlyNodes) items.push({ label: `解除固定 (${fixedCount})`, action: () => { ctx.unfixNodes?.(ids); selectedNodeIds = []; draw(); } });
+      if (!hasReadOnlyNodes && ctx.deleteNodes) items.push({ label: `删除节点 (${ids.length})`, action: () => {
+        void Promise.resolve(ctx.deleteNodes?.([...ids])).then(deleted => {
+          if (!deleted) return;
+          selectedNodeIds = [];
+          ctx.clearEd?.();
           draw();
-        }, 400);
+        });
       }});
       // 复制所选
-      items.push({
+      if (!hasReadOnlyNodes) items.push({
         label: `复制所选 (${ids.length})`,
         action: () => {
           const selIds = new Set(ids);
@@ -269,7 +259,7 @@ export function setupCanvasEvents(
           if (sharedState.clearSelection) sharedState.clearSelection();
         },
       });
-      items.push({ label: '批量标签', action: async () => {
+      if (!hasReadOnlyNodes) items.push({ label: '批量标签', action: async () => {
         const { safePrompt } = await import('./dialog');
         const tag = await safePrompt('标签名：');
         if (!tag) return;
@@ -313,27 +303,16 @@ export function setupCanvasEvents(
         });
         menuEl.appendChild(colorSub);
       }} as any;
-      items.push(batchColorItem);
+      if (!hasReadOnlyNodes) items.push(batchColorItem);
     }
-    if (selEdges.length > 0) {
+    if (selEdges.length > 0 && selEdges.every(edge => !ctx.isReadOnlyEdge?.(edge.idx)) && ctx.deleteEdges) {
       items.push({ label: `删除连线 (${selEdges.length})`, action: () => {
-        const edgeIdxSet = new Set(selEdges.map(e => e.idx));
-        for (const idx of edgeIdxSet) {
-          const e = ctx.graph.edges[idx] as any;
-          if (e) e._dyingAt = performance.now();
-        }
-        selectedNodeIds = [];
-        ctx.triggerSave?.();
-        ctx.clearEd?.();
-        draw();
-        scheduleTimeout(() => {
-          for (let i = ctx.graph.edges.length - 1; i >= 0; i--) {
-            const e2: any = ctx.graph.edges[i];
-            if (e2._dyingAt && performance.now() - e2._dyingAt >= 400) ctx.graph.edges.splice(i, 1);
-          }
-          ctx.initSim?.();
+        void Promise.resolve(ctx.deleteEdges?.(selEdges.map(edge => edge.idx))).then(deleted => {
+          if (!deleted) return;
+          selectedNodeIds = [];
+          ctx.clearEd?.();
           draw();
-        }, 400);
+        });
       }});
     }
     const appShellRect = ctx.appShell!.getBoundingClientRect();
@@ -359,6 +338,17 @@ export function setupCanvasEvents(
     if (g) { onAppContextMenu?.('group', g.id, screenX, screenY); return; }
     onAppContextMenu?.('blank', null, screenX, screenY);
   };
+
+  const onDoubleClick = (e: MouseEvent) => {
+    // Touch interactions intentionally use the long-press menu rather than dblclick.
+    const [x, y] = toWorldPos(e);
+    const node = hitTestNode(x, y, [...visibleNodes()].reverse(), getNodeExpand());
+    if (!node || ctx.isReadOnlyNode?.(node.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    ctx.onNodeDoubleClick?.(node.id);
+  };
+  canvas.addEventListener("dblclick", onDoubleClick);
 
   const handleTap = (x: number, y: number, nodeId?: string) => {
     selectedNodeIds = [];
@@ -398,7 +388,7 @@ export function setupCanvasEvents(
       // 右键点到节点 → 开始拖拽连线
       const nodes = visibleNodes();
       const hit = hitTestNode(x, y, nodes, getNodeExpand());
-      if (hit) {
+      if (hit && !ctx.isReadOnlyNode?.(hit.id)) {
         rightDragSource = hit.id;
         rightDragged = false;
         suppressContextMenu = true;
@@ -472,7 +462,7 @@ export function setupCanvasEvents(
       clearLongPress();
     }, LONG_PRESS_DURATION);
 
-    if (node) {
+    if (node && !ctx.isReadOnlyNode?.(node.id)) {
       if (ctx.viewport) ctx.viewport.pause = true;
       e.preventDefault();
       try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
@@ -500,7 +490,7 @@ export function setupCanvasEvents(
         rightDragged = true;
       }
       sharedState.rightDragLink = { sourceId: rightDragSource, x: mx, y: my };
-      canvas.style.cursor = rightDragged && hoverNode && hoverNode.id !== rightDragSource ? "copy" : "crosshair";
+      canvas.style.cursor = rightDragged && hoverNode && hoverNode.id !== rightDragSource && !ctx.isReadOnlyNode?.(hoverNode.id) ? "copy" : "crosshair";
       draw();
       return;
     }
@@ -592,7 +582,7 @@ export function setupCanvasEvents(
       const [mx, my] = toWorldPos(e);
       const nodes = visibleNodes();
       const target = hitTestNode(mx, my, nodes, getNodeExpand());
-      if (rightDragged && target && target.id !== rightDragSource) {
+      if (rightDragged && target && target.id !== rightDragSource && !ctx.isReadOnlyNode?.(target.id)) {
         const exists = graph.edges.some((ed: any) => {
           const src = typeof ed.source === 'object' ? ed.source.id : ed.source;
           const tgt = typeof ed.target === 'object' ? ed.target.id : ed.target;
@@ -763,7 +753,7 @@ export function setupCanvasEvents(
         const nodes2 = visibleNodes();
         const target2 = hitTestNode(mx, my, nodes2, getNodeExpand());
         // contextmenu 触发时直接尝试连线：有目标节点且不是源节点 → 连线；否则弹菜单
-        if (target2 && target2.id !== rightDragSource) {
+        if (target2 && target2.id !== rightDragSource && !ctx.isReadOnlyNode?.(target2.id)) {
           const exists2 = graph.edges.some((ed: any) => {
             const src = typeof ed.source === 'object' ? ed.source.id : ed.source;
             const tgt = typeof ed.target === 'object' ? ed.target.id : ed.target;
@@ -836,6 +826,7 @@ export function setupCanvasEvents(
     canvas.removeEventListener("pointermove", onPointerMove);
     canvas.removeEventListener("pointercancel", onPointerCancel);
     canvas.removeEventListener("pointerleave", onPointerLeave);
+    canvas.removeEventListener("dblclick", onDoubleClick);
     canvas.removeEventListener("contextmenu", onContextMenu);
     window.removeEventListener("pointerup", onPointerUp, { capture: true });
     ctx.viewport?.off?.('drag-start', onViewportDragStart);

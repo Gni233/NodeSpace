@@ -38,34 +38,50 @@ const structure = (id, memberIds, collapsed = true) => ({
   structure: { memberIds, collapsed },
 });
 
-test('normalization dissolves a structure after a member deletion and reconnects its edges', () => {
+test('normalization retains an invalid structure with direct edges and reports protection', () => {
   const graph = {
-    nodes: [ordinary('a'), ordinary('b'), structure('s', ['a', 'b'])],
+    nodes: [ordinary('a'), ordinary('b'), ordinary('outside'), structure('s', ['a', 'b'])],
     edges: [{ source: 's', target: 'outside' }, { source: 'a', target: 's' }],
     groups: [],
   };
 
   graph.nodes = graph.nodes.filter(node => node.id !== 'b');
-  normalizeStructureRelations(graph);
+  const result = normalizeStructureRelations(graph);
 
-  assert.deepEqual(graph.nodes.map(node => node.id), ['a']);
-  assert.deepEqual(graph.edges, [{ source: 'a', target: 'outside' }]);
-  assert.equal(graph.nodes[0].structureParentId, undefined);
+  assert.deepEqual(graph.nodes.map(node => node.id), ['a', 'outside', 's']);
+  assert.deepEqual(graph.edges, [{ source: 's', target: 'outside' }, { source: 'a', target: 's' }]);
+  assert.equal(graph.nodes.find(node => node.id === 'a').structureParentId, undefined);
+  assert.deepEqual(result, { dissolvedStructureIds: [], protectedStructureIds: ['s'] });
 });
 
-test('dissolving a deleted structure clears members and preserves its external connection', () => {
+test('dissolving an edge-free structure clears members without changing persistent edges', () => {
   const graph = {
-    nodes: [ordinary('a'), ordinary('b'), structure('s', ['a', 'b'])],
-    edges: [{ source: 'outside', target: 's' }],
+    nodes: [ordinary('a'), ordinary('b'), ordinary('outside'), structure('s', ['a', 'b'])],
+    edges: [{ source: 'a', target: 'outside' }],
     groups: [],
   };
 
   normalizeStructureRelations(graph);
+  assert.equal(structureNodes.canDissolveStructure(graph, 's'), true);
   assert.equal(structureNodes.dissolveStructureNode(graph, 's'), true);
 
-  assert.deepEqual(graph.nodes.map(node => node.id), ['a', 'b']);
-  assert.deepEqual(graph.edges, [{ source: 'outside', target: 'a' }]);
+  assert.deepEqual(graph.nodes.map(node => node.id), ['a', 'b', 'outside']);
+  assert.deepEqual(graph.edges, [{ source: 'a', target: 'outside' }]);
   assert.ok(graph.nodes.every(node => node.structureParentId === undefined));
+});
+
+test('direct structure edges prevent dissolution without any mutation', () => {
+  const graph = {
+    nodes: [ordinary('a'), ordinary('b'), ordinary('outside'), structure('s', ['a', 'b'])],
+    edges: [{ source: 'outside', target: 's' }],
+    groups: [],
+  };
+  const before = structuredClone(graph);
+
+  assert.equal(structureNodes.canDissolveStructure(graph, 's'), false);
+  assert.deepEqual(structureNodes.getDirectStructureEdges(graph, 's').map(item => item.originalIndex), [0]);
+  assert.equal(structureNodes.dissolveStructureNode(graph, 's'), false);
+  assert.deepEqual(graph, before);
 });
 
 test('normalization removes invalid members, resolves ownership by graph order, and clears stale parents', () => {
@@ -108,11 +124,13 @@ test('text graph application normalizes relations before runtime replacement', a
   assert.match(main, /repairGraphCreatedOrders\(compiled\);\s*\n\s*normalizeStructureRelations\(repaired\);/);
 });
 
-test('MCP deletion paths normalize and copied nodes are sanitized', async () => {
+test('MCP deletion paths guard direct structure edges and copied nodes are sanitized', async () => {
   const server = await readFile(path.join(root, 'mcp-server', 'server.js'), 'utf8');
 
-  assert.match(server, /function normalizeStructureRelations\(graph\)/);
-  assert.match(server, /async delete_node[\s\S]*?normalizeStructureRelations\(data\)/);
+  assert.match(server, /function getDirectStructureEdges\(graph, structureId\)/);
+  assert.match(server, /function canDissolveStructure\(graph, structureId\)/);
+  assert.match(server, /async delete_node[\s\S]*?!canDissolveStructure\(data, nodeId\)[\s\S]*?return \{ error:/);
+  assert.match(server, /async delete_nodes_batch[\s\S]*?protectedStructures[\s\S]*?return \{[\s\S]*?error:/);
   assert.match(server, /async delete_nodes_batch[\s\S]*?dissolveStructureNode\(data, node\.id\)[\s\S]*?normalizeStructureRelations\(data\)/);
   assert.match(server, /delete copy\.structure;\s*\n\s*delete copy\.structureParentId;/);
 });

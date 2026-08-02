@@ -3,7 +3,54 @@ import { GraphData } from "./data/storage";
 import { safePrompt } from './dialog';
 import { confirmAction } from './toast';
 import {Z_EDIT_PANEL, V } from "./layout-constants";
-import { detachNodeFromStructure } from './structure-nodes';
+import { detachNodeFromStructure, isStructureNode } from './structure-nodes';
+
+export type StructureReflectionField = 'purpose' | 'summary';
+
+export interface StructureReflectionEditorContext {
+  getGraph: () => GraphData;
+  getSelectedNode: () => any | null;
+  saveUndo?: () => void;
+  triggerSave: () => void;
+  syncGraphToOtherPanes?: () => void;
+  draw: () => void;
+}
+
+/** Keeps one undo snapshot per focused structure-reflection field. */
+export function createStructureReflectionEditor(ctx: StructureReflectionEditorContext) {
+  let edit: { graphRef: GraphData; nodeRef: any; nodeId: string; field: StructureReflectionField; undoSaved: boolean } | null = null;
+
+  const begin = (field: StructureReflectionField) => {
+    const graph = ctx.getGraph();
+    const node = ctx.getSelectedNode();
+    edit = isStructureNode(node) && graph.nodes.find(candidate => candidate.id === node.id) === node
+      ? { graphRef: graph, nodeRef: node, nodeId: node.id, field, undoSaved: false }
+      : null;
+  };
+
+  const update = (field: StructureReflectionField, value: string): boolean => {
+    if (!edit || edit.field !== field) return false;
+    const graph = ctx.getGraph();
+    const node = graph.nodes.find(candidate => candidate.id === edit!.nodeId);
+    if (graph !== edit.graphRef || node !== edit.nodeRef || ctx.getSelectedNode() !== edit.nodeRef || !isStructureNode(node)) {
+      edit = null;
+      return false;
+    }
+    if (node.structure[field] === value) return false;
+    if (!edit.undoSaved) {
+      ctx.saveUndo?.();
+      edit.undoSaved = true;
+    }
+    node.structure[field] = value;
+    ctx.triggerSave();
+    ctx.syncGraphToOtherPanes?.();
+    ctx.draw();
+    return true;
+  };
+
+  const end = () => { edit = null; };
+  return { begin, update, end };
+}
 
 export interface EditPanelContext {
   graph: GraphData;
@@ -413,6 +460,17 @@ export function createEditPanel(
   nodeTitleRow.appendChild(nodeDelBtn);
   nodeEdit.appendChild(nodeTitleRow);
   const nName = el("input", { type: "text", style: "width:100%;" }) as HTMLInputElement;
+  const structureReflectionEditor = createStructureReflectionEditor({
+    getGraph: () => ctx.graph,
+    getSelectedNode: () => {
+      const id = getSelNode();
+      return id === null ? null : ctx.graph.nodes.find(node => node.id === id) ?? null;
+    },
+    saveUndo: ctx.saveUndo,
+    triggerSave: ctx.triggerSave,
+    syncGraphToOtherPanes: ctx.syncGraphToOtherPanes,
+    draw: ctx.draw,
+  });
   nName.addEventListener('focus', () => {
     const selectedNodeId = getSelNode();
     if (selectedNodeId === null) return;
@@ -427,6 +485,30 @@ export function createEditPanel(
   nNote.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { nNote.blur(); } });
   makeRow(nodeEdit, '内容', nNote);
   bindAutoSave(nNote);
+
+  const structureReflection = el("div", { style: "display:none;flex-direction:column;gap:6px;margin-top:4px;" });
+  const purpose = el("textarea", { attrs: { rows: "3" }, style: `width:100%;resize:vertical;font-size:${V('--fg-font-md', '0.85em')};` }) as HTMLTextAreaElement;
+  const summary = el("textarea", { attrs: { rows: "3" }, style: `width:100%;resize:vertical;font-size:${V('--fg-font-md', '0.85em')};` }) as HTMLTextAreaElement;
+  const bindStructureReflection = (field: StructureReflectionField, input: HTMLTextAreaElement) => {
+    let composing = false;
+    const update = () => { if (!composing) structureReflectionEditor.update(field, input.value); };
+    input.addEventListener('focus', () => structureReflectionEditor.begin(field));
+    input.addEventListener('compositionstart', () => { composing = true; });
+    input.addEventListener('compositionend', () => { composing = false; update(); });
+    input.addEventListener('input', update);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !composing && !(e as KeyboardEvent).isComposing && (e.ctrlKey || !e.shiftKey)) {
+        e.preventDefault();
+        input.blur();
+      }
+    });
+    input.addEventListener('blur', () => { update(); structureReflectionEditor.end(); });
+  };
+  bindStructureReflection('purpose', purpose);
+  bindStructureReflection('summary', summary);
+  makeRow(structureReflection, '结构目的', purpose);
+  makeRow(structureReflection, '当前总结', summary);
+  nodeEdit.appendChild(structureReflection);
   // 标签 pill 编辑器
   const nTagsContainer = el("div", { style: "display:flex;gap:4px;flex-wrap:wrap;align-items:center;flex:1;" });
   makeRow(nodeEdit, '标签', nTagsContainer);
@@ -798,10 +880,15 @@ export function createEditPanel(
   };
   const fillNode = (id: string) => {
     commitNameEdit();
+    structureReflectionEditor.end();
     const n = ctx.graph.nodes.find(n => n.id === id); if (!n) { clearEd(); return; }
     showSection('node');
     setSelNode(id); setSelEdge(null); setSelGroup(null);
     nName.value = n.label || ''; nNote.value = n.note || '';
+    const structureNode = isStructureNode(n);
+    structureReflection.style.display = structureNode ? 'flex' : 'none';
+    purpose.value = structureNode ? n.structure.purpose || '' : '';
+    summary.value = structureNode ? n.structure.summary || '' : '';
     refreshTagPills(); nCol.value = n.color || '#000000';
     nMediaType.value = n.mediaType || ''; nMediaUrl.value = n.mediaUrl || '';
     nRad.value = n.radius ? String(n.radius) : '9';
@@ -865,6 +952,7 @@ export function createEditPanel(
   };
   const clearEd = () => {
     commitNameEdit();
+    structureReflectionEditor.end();
     setSelNode(null); setSelEdge(null); setSelGroup(null);
     nTagsContainer.innerHTML = '';
     if (ctx.clearLinkMode) ctx.clearLinkMode();

@@ -4,6 +4,8 @@ import { assignCreatedOrder } from './node-order';
 export interface StructureNodeData {
   memberIds: string[];
   collapsed: boolean;
+  purpose?: string;
+  summary?: string;
 }
 
 export interface StructureProjection {
@@ -12,19 +14,89 @@ export interface StructureProjection {
   hiddenNodeIds: Set<string>;
 }
 
+export interface StructureProxyNode {
+  readonly id: string;
+  readonly label: string;
+  readonly x: number;
+  readonly y: number;
+  readonly _structureInteriorProxy: true;
+  readonly _externalNodeId: string;
+}
+
+export interface StructureProxyEdge {
+  readonly source: string;
+  readonly target: string;
+  readonly _originalIndex: number;
+  readonly _structureInteriorProxy: true;
+  readonly _externalNodeId: string;
+  readonly _direction: 'outbound' | 'inbound';
+  readonly originalEdge: any;
+}
+
+export interface DirectStructureEdge {
+  readonly edge: any;
+  readonly originalIndex: number;
+  readonly sourceId: string;
+  readonly targetId: string;
+}
+
+export interface StructureInteriorProjection {
+  readonly structureId: string;
+  /** Original, valid ordinary-node objects belonging to the structure. */
+  readonly memberNodes: readonly any[];
+  /** Original edge objects whose two endpoints are members. */
+  readonly internalEdges: readonly any[];
+  /** Immutable stand-ins for real nodes outside the structure, including structures. */
+  readonly externalProxyNodes: readonly StructureProxyNode[];
+  /** Immutable edge views from a member to an external proxy. */
+  readonly externalProxyEdges: readonly StructureProxyEdge[];
+  readonly metadata: Readonly<{
+    memberIds: readonly string[];
+    invalidMemberIds: readonly string[];
+    externalNodeIds: readonly string[];
+    boundaryEdgeIndexes: readonly number[];
+    directStructureEdges: readonly DirectStructureEdge[];
+  }>;
+}
+
+export interface StructureNormalizationResult {
+  readonly dissolvedStructureIds: readonly string[];
+  /** Invalid structures retained because a persistent direct edge protects them. */
+  readonly protectedStructureIds: readonly string[];
+}
+
 export const isStructureNode = (node: any): boolean =>
   Array.isArray(node?.structure?.memberIds);
 
-const endpointId = (endpoint: any): string =>
-  typeof endpoint === 'object' ? endpoint.id : endpoint;
+const endpointId = (endpoint: any): string | undefined =>
+  typeof endpoint === 'object' ? endpoint?.id : endpoint;
+
+const graphNodes = (graph: GraphData): any[] => Array.isArray(graph.nodes) ? graph.nodes : [];
+const graphEdges = (graph: GraphData): any[] => Array.isArray(graph.edges) ? graph.edges : [];
+
+export function getDirectStructureEdges(graph: GraphData, structureId: string): DirectStructureEdge[] {
+  return graphEdges(graph).flatMap((edge, originalIndex) => {
+    if (edge?._structureMembership) return [];
+    const sourceId = endpointId(edge?.source);
+    const targetId = endpointId(edge?.target);
+    return sourceId === structureId || targetId === structureId
+      ? [{ edge, originalIndex, sourceId: sourceId ?? '', targetId: targetId ?? '' }]
+      : [];
+  });
+}
+
+export function canDissolveStructure(graph: GraphData, structureId: string): boolean {
+  const structureNode = graphNodes(graph).find(node => node?.id === structureId);
+  return isStructureNode(structureNode) && getDirectStructureEdges(graph, structureId).length === 0;
+}
 
 /**
  * Restores the flat, non-nested structure invariant after an external edit.
  * Structures are considered in graph order, so the first valid structure owns
- * a shared member. Invalid structures are dissolved without recursively
- * re-processing the graph.
+ * a shared member. Invalid structures with direct persistent edges are retained:
+ * deleting one would discard an intentional relationship or require unsafe rewiring.
  */
-export function normalizeStructureRelations(graph: GraphData): void {
+export function normalizeStructureRelations(graph: GraphData): StructureNormalizationResult {
   graph.nodes ||= [];
   graph.edges ||= [];
 
@@ -52,11 +124,14 @@ export function normalizeStructureRelations(graph: GraphData): void {
     }
   }
 
+  const dissolvedStructureIds: string[] = [];
+  const protectedStructureIds: string[] = [];
   for (const structureNode of structures) {
     if (!graph.nodes.includes(structureNode)) continue;
     const memberIds = validMembersByStructure.get(structureNode);
     if (!memberIds) {
-      dissolveStructureNode(graph, structureNode.id);
+      if (dissolveStructureNode(graph, structureNode.id)) dissolvedStructureIds.push(structureNode.id);
+      else protectedStructureIds.push(structureNode.id);
       continue;
     }
     for (const memberId of memberIds) {
@@ -64,6 +139,125 @@ export function normalizeStructureRelations(graph: GraphData): void {
       if (member) member.structureParentId = structureNode.id;
     }
   }
+  return { dissolvedStructureIds, protectedStructureIds };
+}
+
+function validStructureMembers(graph: GraphData, structureNode: any): { memberIds: string[]; invalidMemberIds: string[] } {
+  const ordinaryNodes = new Map(
+    graphNodes(graph)
+      .filter(node => !isStructureNode(node) && typeof node?.id === 'string')
+      .map(node => [node.id, node]),
+  );
+  const seen = new Set<string>();
+  const memberIds: string[] = [];
+  const invalidMemberIds: string[] = [];
+  for (const memberId of structureNode.structure.memberIds) {
+    if (typeof memberId !== 'string' || seen.has(memberId) || !ordinaryNodes.has(memberId)) {
+      invalidMemberIds.push(typeof memberId === 'string' ? memberId : String(memberId));
+      continue;
+    }
+    seen.add(memberId);
+    memberIds.push(memberId);
+  }
+  return { memberIds, invalidMemberIds };
+}
+
+/**
+ * Builds a V1, one-level read-only view of a structure's members and boundary.
+ * It never changes graph nodes, edges, or their endpoints.
+ */
+export function getStructureInteriorProjection(graph: GraphData, structureId: string): StructureInteriorProjection | null {
+  const structureNode = graphNodes(graph).find(node => node?.id === structureId);
+  if (!isStructureNode(structureNode)) return null;
+
+  const { memberIds, invalidMemberIds } = validStructureMembers(graph, structureNode);
+  const memberIdSet = new Set(memberIds);
+  const ordinaryNodesById = new Map(
+    graphNodes(graph)
+      .filter(node => !isStructureNode(node) && typeof node?.id === 'string')
+      .map(node => [node.id, node]),
+  );
+  // Interior members remain ordinary nodes, but boundary endpoints can be any
+  // real graph node. Structures are represented only by this proxy and never
+  // recursively expanded.
+  const graphNodesById = new Map(
+    graphNodes(graph)
+      .filter(node => typeof node?.id === 'string')
+      .map(node => [node.id, node]),
+  );
+  const memberNodes = memberIds.map(memberId => ordinaryNodesById.get(memberId)!);
+  const internalEdges: any[] = [];
+  const boundaryEdges: Array<{ edge: any; originalIndex: number; memberId: string; externalId: string; direction: 'outbound' | 'inbound' }> = [];
+
+  graphEdges(graph).forEach((edge, originalIndex) => {
+    const sourceId = endpointId(edge?.source);
+    const targetId = endpointId(edge?.target);
+    const sourceIsMember = sourceId !== undefined && memberIdSet.has(sourceId);
+    const targetIsMember = targetId !== undefined && memberIdSet.has(targetId);
+    if (sourceIsMember && targetIsMember) {
+      internalEdges.push(edge);
+      return;
+    }
+    if (sourceIsMember === targetIsMember) return;
+    const externalId = sourceIsMember ? targetId : sourceId;
+    if (typeof externalId !== 'string' || !graphNodesById.has(externalId)) return;
+    boundaryEdges.push({
+      edge,
+      originalIndex,
+      memberId: sourceIsMember ? sourceId! : targetId!,
+      externalId,
+      direction: sourceIsMember ? 'outbound' : 'inbound',
+    });
+  });
+
+  const realNodeIds = new Set(graphNodes(graph).map(node => node?.id).filter((id): id is string => typeof id === 'string'));
+  const proxyIdByExternalId = new Map<string, string>();
+  for (const externalId of [...new Set(boundaryEdges.map(item => item.externalId))]) {
+    const encodedExternalId = encodeURIComponent(externalId);
+    const baseId = `__structure_proxy__${encodeURIComponent(structureId)}__${encodedExternalId}`;
+    let proxyId = baseId;
+    let suffix = 1;
+    while (realNodeIds.has(proxyId) || [...proxyIdByExternalId.values()].includes(proxyId)) proxyId = `${baseId}__${suffix++}`;
+    proxyIdByExternalId.set(externalId, proxyId);
+  }
+
+  const externalProxyNodes = [...proxyIdByExternalId].map(([externalId, id]) => {
+    const externalNode = graphNodesById.get(externalId)!;
+    return Object.freeze({
+      id,
+      label: typeof externalNode.label === 'string' ? externalNode.label : externalId,
+      x: Number.isFinite(externalNode.x) ? externalNode.x : 0,
+      y: Number.isFinite(externalNode.y) ? externalNode.y : 0,
+      _structureInteriorProxy: true as const,
+      _externalNodeId: externalId,
+    });
+  });
+  const externalProxyEdges = boundaryEdges.map(({ edge, originalIndex, memberId, externalId, direction }) => Object.freeze({
+    ...edge,
+    source: direction === 'outbound' ? memberId : proxyIdByExternalId.get(externalId)!,
+    target: direction === 'outbound' ? proxyIdByExternalId.get(externalId)! : memberId,
+    _originalIndex: originalIndex,
+    _structureInteriorProxy: true as const,
+    _externalNodeId: externalId,
+    _direction: direction,
+    originalEdge: edge,
+  }));
+  const directStructureEdges = getDirectStructureEdges(graph, structureId);
+
+  return Object.freeze({
+    structureId,
+    memberNodes: Object.freeze(memberNodes),
+    internalEdges: Object.freeze(internalEdges),
+    externalProxyNodes: Object.freeze(externalProxyNodes),
+    externalProxyEdges: Object.freeze(externalProxyEdges),
+    metadata: Object.freeze({
+      memberIds: Object.freeze(memberIds),
+      invalidMemberIds: Object.freeze(invalidMemberIds),
+      externalNodeIds: Object.freeze([...proxyIdByExternalId.keys()]),
+      boundaryEdgeIndexes: Object.freeze(boundaryEdges.map(item => item.originalIndex)),
+      directStructureEdges: Object.freeze(directStructureEdges),
+    }),
+  });
 }
 
 export function getStructureProjection(graph: GraphData): StructureProjection {
@@ -110,6 +304,7 @@ export function getStructureProjection(graph: GraphData): StructureProjection {
   (graph.edges || []).forEach((edge: any, originalIndex: number) => {
     const originalSource = endpointId(edge.source);
     const originalTarget = endpointId(edge.target);
+    if (typeof originalSource !== 'string' || typeof originalTarget !== 'string') return;
     const source = collapsedParentByMember.get(originalSource) ?? originalSource;
     const target = collapsedParentByMember.get(originalTarget) ?? originalTarget;
     if (source === target || !nodeIds.has(source) || !nodeIds.has(target)) return;
@@ -185,31 +380,18 @@ export function setStructureCollapsed(graph: GraphData, structureId: string, col
 }
 
 export function dissolveStructureNode(graph: GraphData, structureId: string): boolean {
-  const index = graph.nodes.findIndex(node => node.id === structureId);
+  const index = graphNodes(graph).findIndex(node => node?.id === structureId);
   const structureNode = graph.nodes[index];
-  if (index < 0 || !isStructureNode(structureNode)) return false;
-  const memberIds: string[] = structureNode.structure.memberIds.filter((memberId: string) =>
-    graph.nodes.some(node => node.id === memberId),
-  );
-  const fallbackMemberId = memberIds[0] ?? null;
-  const members = new Set<string>(memberIds);
+  // Check before every mutation: direct edges express a relationship to the
+  // structure as a whole and cannot safely be assigned to an arbitrary member.
+  if (index < 0 || !isStructureNode(structureNode) || !canDissolveStructure(graph, structureId)) return false;
+
+  const memberIds = validStructureMembers(graph, structureNode).memberIds;
+  const members = new Set(memberIds);
   for (const node of graph.nodes) {
     if (members.has(node.id) && node.structureParentId === structureId) delete node.structureParentId;
   }
   graph.nodes.splice(index, 1);
-  for (let edgeIndex = graph.edges.length - 1; edgeIndex >= 0; edgeIndex--) {
-    const edge = graph.edges[edgeIndex];
-    const source = endpointId(edge.source);
-    const target = endpointId(edge.target);
-    if (source !== structureId && target !== structureId) continue;
-    if (!fallbackMemberId) {
-      graph.edges.splice(edgeIndex, 1);
-      continue;
-    }
-    edge.source = source === structureId ? fallbackMemberId : source;
-    edge.target = target === structureId ? fallbackMemberId : target;
-    if (edge.source === edge.target) graph.edges.splice(edgeIndex, 1);
-  }
   return true;
 }
 

@@ -8,9 +8,10 @@
  * - 统一 drawAll() 循环渲染所有窗格
  */
 
-import { PaneState, createPaneState, onFocusChange } from './pane-state';
+import { PaneState, createPaneState, onFocusChange, paneGraph, paneGraphFacade, paneSimulationManager } from './pane-state';
 import { createPixiApp, PixiLayers } from './pixi-app';
 import { createSimManager } from './graph-sim';
+import { getCollapsedHierarchyHiddenNodeIds } from './graph-visibility';
 import { setupCanvasEvents, EventsContext } from './ui-events';
 import { sharedState } from './shared-state';
 import { NodeSprite } from './pixi-nodes';
@@ -34,6 +35,9 @@ export interface PaneExternals {
   handleLinkTap: (x: number, y: number) => boolean;
   showToast: (msg: string, type?: string, duration?: number) => void;
   createStructure?: (pane: PaneState, ids: string[]) => Promise<void> | void;
+  deleteNodes?: (pane: PaneState, ids: string[]) => Promise<boolean> | boolean;
+  deleteEdges?: (pane: PaneState, projectedIndexes: number[]) => Promise<boolean> | boolean;
+  enterStructure?: (pane: PaneState, id: string) => void;
 }
 
 // ---- PaneManager ----
@@ -107,6 +111,12 @@ export class PaneManager {
     pane.disposeCanvasEvents?.();
     pane.disposeCanvasEvents = null;
     pane.layout.clear();
+    pane.structureView?.simManager?.getSim?.()?.stop?.();
+    pane.structureView = null;
+    pane.structureController.exitTo(-1);
+    pane.structurePath = [];
+    pane.disposeStructureBreadcrumb?.();
+    pane.disposeStructureBreadcrumb = null;
     pane.pixi?.viewport.off('moved');
     pane.pixi?.viewport.off('zoomed-end');
     if (pane.pixi) pane.pixi.onContextRestored = null;
@@ -144,7 +154,7 @@ export class PaneManager {
       () => pane.groupBound,
       () => pane.alphaTarget,
       () => pane.heatingTime,
-      () => sharedState.hiddenNodeIds?.() ?? new Set(),
+      () => getCollapsedHierarchyHiddenNodeIds(pane.graph),
       () => ext.onDraw(),
     );
 
@@ -181,7 +191,7 @@ export class PaneManager {
       const pane = this.panes[i];
       const px = pane.pixi;
       if (!px || !pane.centerMode || !pane.selNode || sharedState.viewportDragging) continue;
-      const sim = pane.simManager?.getSim();
+      const sim = paneSimulationManager(pane)?.getSim();
       if (!sim) continue;
       const sn = sim.nodes()?.find((n: any) => n.id === pane.selNode);
       if (sn) {
@@ -192,16 +202,16 @@ export class PaneManager {
     for (let i = 0; i < this.panes.length; i++) {
       const pane = this.panes[i];
       const px = pane.pixi;
-      if (!px || !pane.simManager) continue;
+      if (!px || !paneSimulationManager(pane)) continue;
 
       // 非聚焦窗格降频绘制
       if (i !== this._focusedIdx && frameCount % this.idleFrameSkip !== 0) {
         // 检查 sim 是否还在活跃
-        const sim = pane.simManager.getSim();
+        const sim = paneSimulationManager(pane)?.getSim();
         if (sim && sim.alpha() < 0.01) continue;
       }
 
-      renderPaneFn(px, pane.graph, pane.simManager, pane.nodeSprites, pane);
+      renderPaneFn(px, paneGraph(pane), paneSimulationManager(pane), pane.nodeSprites, pane);
     }
 
     // 休眠非聚焦窗格的模拟
@@ -245,12 +255,13 @@ function createEventsContextForPane(
   lastDragId: { v: string | null },
   ext: PaneExternals,
 ): EventsContext {
-  const sm = pi.simManager;
-  const getSim = () => sm?.getSim();
+  const sm = () => paneSimulationManager(pi);
+  const getSim = () => sm()?.getSim();
+  const scopedGraph = paneGraphFacade(pi);
 
   const interactionAllowed = () => pi.runtime.canInteract(pi);
   return {
-    graph: pi.graph,
+    graph: scopedGraph,
     isInteractionEnabled: interactionAllowed,
     onInteractionBlocked: () => ext.showToast('此图正在另一窗格的文字视图中编辑', 'warning', 3500),
     getSelNode: () => pi.selNode,
@@ -260,6 +271,12 @@ function createEventsContextForPane(
     getSelGroup: () => pi.selGroup,
     setSelGroup: (v: string | null) => { pi.selGroup = v; },
     getSimulation: () => getSim(),
+    isReadOnlyNode: (id: string) => !!pi.structureView?.proxyNodeIds.has(id),
+    isReadOnlyEdge: (index: number) => !!pi.structureView?.isReadOnlyEdge(index),
+    getOriginalEdgeIndex: (index: number) => pi.structureView?.getOriginalEdgeIndex(index) ?? index,
+    deleteNodes: (ids: string[]) => ext.deleteNodes?.(pi, ids) ?? false,
+    deleteEdges: (indexes: number[]) => ext.deleteEdges?.(pi, indexes) ?? false,
+    onReadOnlySelection: kind => ext.showToast(kind === 'node' ? '这是结构外部的只读入口' : '这是只读代理关系', 'info', 3000),
     getTransform: () => px ? { k: px.viewport.scale.x, x: px.viewport.x, y: px.viewport.y } : { k: 1, x: 0, y: 0 },
     viewport: px.viewport,
     getCanvas: () => px.app.canvas as any,
@@ -312,7 +329,7 @@ function createEventsContextForPane(
     triggerSave: () => ext.onScheduleSave(pi),
 
     onDragStart: (id: string) => {
-      sm.setDragNode(id);
+      sm()?.setDragNode(id);
       lastDragId.v = id;
     },
     onDragEnd: () => {
@@ -327,7 +344,7 @@ function createEventsContextForPane(
         }
         lastDragId.v = null;
       }
-      sm.setDragNode(null);
+      sm()?.setDragNode(null);
     },
 
     getLinkMode: () => pi.linkMode,
@@ -340,13 +357,14 @@ function createEventsContextForPane(
       else ext.onDraw();
     },
 
-    initSim: () => sm.initSim(),
+    initSim: () => sm()?.initSim(),
     clearEd: () => { pi.selNode = null; pi.selEdge = null; pi.selGroup = null; },
 
     getGridSnapEnabled: () => pi.gridSnapEnabled || pi.partialGridSnap,
     getGridSp: () => pi.gridSp,
     getHiddenNodeIds: () => sharedState.hiddenNodeIds?.() ?? new Set(),
     createStructure: (ids: string[]) => ext.createStructure?.(pi, ids),
+    onNodeDoubleClick: (id: string) => ext.enterStructure?.(pi, id),
 
     setDragScale: (nodeId: string | null, scale: number) => {
       if (nodeId) {
