@@ -39,7 +39,7 @@ const LEVEL_RADII = [22, 19, 16, 13, 10, 7]; // headingLevel 1~6
 const LEVEL_WIDTHS = [5, 4, 3, 2.5, 2, 1.5]; // headingLevel 1~6
 const GRADIENT_SEGMENTS = 3;
 
-function getNodeVisualRadius(n: any): number {
+export function getNodeVisualRadius(n: any): number {
   if (n.radiusMode === 'custom' || (!n.radiusMode && n.radius)) return n.radius || 9;
   return LEVEL_RADII[(n.headingLevel || 6) - 1] || 9;
 }

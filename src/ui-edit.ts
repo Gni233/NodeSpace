@@ -344,8 +344,9 @@ export function createEditPanel(
         n.color = nCol.value;
         n.mediaType = nMediaType.value || null;
         n.mediaUrl = nMediaUrl.value || null;
-        n.radiusMode = radModeSelect.value as 'level' | 'custom';
-        if (radModeSelect.value === 'level') {
+        const structureNode = isStructureNode(n);
+        n.radiusMode = structureNode ? 'level' : radModeSelect.value as 'level' | 'custom';
+        if (structureNode || radModeSelect.value === 'level') {
           n.headingLevel = parseInt(radLevelSlider.value);
           n.radius = undefined; // 级别模式不存硬编码半径，由 draw 循环动态计算
         } else {
@@ -892,8 +893,10 @@ export function createEditPanel(
     refreshTagPills(); nCol.value = n.color || '#000000';
     nMediaType.value = n.mediaType || ''; nMediaUrl.value = n.mediaUrl || '';
     nRad.value = n.radius ? String(n.radius) : '9';
-    radModeSelect.value = n.radiusMode || 'level';
-    if ((n.radiusMode || 'level') === 'level') {
+    radModeSelect.disabled = structureNode;
+    radModeSelect.title = structureNode ? '结构节点大小按等级决定' : '';
+    radModeSelect.value = structureNode ? 'level' : n.radiusMode || 'level';
+    if (structureNode || (n.radiusMode || 'level') === 'level') {
       const level = n.headingLevel || 6;
       const clamped = Math.min(6, Math.max(1, level));
       radLevelSlider.value = String(clamped);

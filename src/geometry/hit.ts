@@ -35,6 +35,7 @@ export function hitTestNode(x: number, y: number, nodes: any[], expand: number =
 export function hitTestEdge(x: number, y: number, edges: any[], nodes: any[], expand: number = 0): number | null {
   for (let i = 0; i < edges.length; i++) {
     const e = edges[i];
+    if (e?._structureMembership) continue;
     const s = nodes.find(n => n.id === (typeof e.source === 'object' ? e.source.id : e.source));
     const t = nodes.find(n => n.id === (typeof e.target === 'object' ? e.target.id : e.target));
     if (!s || !t) continue;

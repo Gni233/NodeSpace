@@ -75,7 +75,8 @@ test('canvas double-click forwards the topmost visible node and disposer unregis
   assert.ok(hasCall(setup.body, 'canvas', 'onDoubleClick'));
   assert.ok(hasRemoval(setup.body, 'canvas', 'onDoubleClick'));
   assert.equal(body.getText(file).includes('[...visibleNodes()].reverse()'), true);
-  assert.equal(body.getText(file).includes('ctx.onNodeDoubleClick?.(node.id)'), true);
+  assert.equal(body.getText(file).includes('const targetId = node?.id ?? structureId'), true);
+  assert.equal(body.getText(file).includes('ctx.onNodeDoubleClick?.(targetId)'), true);
   assert.equal(body.getText(file).includes('e.preventDefault()'), true);
   assert.equal(body.getText(file).includes('e.stopPropagation()'), true);
 });

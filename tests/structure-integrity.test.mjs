@@ -117,10 +117,53 @@ test('copied structure and member nodes lose all structure relations', () => {
   assert.deepEqual(sanitizeCopiedNode(originalMember), { id: 'a', label: 'a' });
 });
 
+test('structure sizing always follows heading level and migrates legacy custom radii', () => {
+  const graph = {
+    nodes: [
+      { ...ordinary('a'), headingLevel: 3 },
+      { ...ordinary('b'), headingLevel: 5 },
+      { ...structure('legacy', ['a', 'b']), radiusMode: 'custom', radius: 19 },
+      { ...structure('missing-level', ['a', 'b']), radiusMode: 'custom', radius: 24 },
+    ],
+    edges: [],
+    groups: [],
+  };
+  graph.nodes.find(node => node.id === 'legacy').headingLevel = 4;
+
+  structureNodes.normalizeStructureNodeSizing(graph);
+
+  const legacy = graph.nodes.find(node => node.id === 'legacy');
+  assert.equal(legacy.headingLevel, 4);
+  assert.equal(legacy.radiusMode, 'level');
+  assert.equal(legacy.radius, undefined);
+  const missing = graph.nodes.find(node => node.id === 'missing-level');
+  assert.equal(missing.headingLevel, 2);
+  assert.equal(missing.radiusMode, 'level');
+  assert.equal(missing.radius, undefined);
+});
+
+test('new structures use one level above their highest-ranked member without a custom radius', () => {
+  const graph = {
+    nodes: [
+      { ...ordinary('a'), headingLevel: 3, x: 0, y: 0 },
+      { ...ordinary('b'), headingLevel: 5, x: 40, y: 0 },
+    ],
+    edges: [],
+    groups: [],
+  };
+
+  const created = structureNodes.createStructureNode(graph, ['a', 'b'], 'S');
+
+  assert.equal(created.headingLevel, 2);
+  assert.equal(created.radiusMode, 'level');
+  assert.equal(created.radius, undefined);
+});
+
 test('text graph application normalizes relations before runtime replacement', async () => {
   const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
 
   assert.match(main, /normalizeStructureRelations\(repaired\)/);
+  assert.match(main, /repairCreatedOrders\(data\.nodes \|\| \[\]\);\s*\n\s*normalizeStructureNodeSizing\(data\);/);
   assert.match(main, /repairGraphCreatedOrders\(compiled\);\s*\n\s*normalizeStructureRelations\(repaired\);/);
 });
 

@@ -4,7 +4,7 @@ import { GraphData } from "./data/storage";
 import { sharedState } from "./shared-state";
 import { Z_TOOLTIP, V } from "./layout-constants";
 import { PRESET_COLORS } from "./utils/color";
-import { CanvasGestureState } from "./canvas-gesture-state";
+import { CanvasGestureState, NodeMembershipDragState } from "./canvas-gesture-state";
 import { isStructureNode } from './structure-nodes';
 
 const DRAG_THRESHOLD = 3;
@@ -36,6 +36,12 @@ export interface EventsContext {
   triggerSave?: () => void;
   onDragStart?: (id: string) => void;
   onDragEnd?: () => void;
+  /** Starts only after a real node drag crosses its pointer-type threshold. Coordinates are world-space. */
+  onNodeMembershipDragStart?: (id: string, x: number, y: number) => void;
+  /** Reports world-space movement while a node-membership drag is active. */
+  onNodeMembershipDragMove?: (id: string, x: number, y: number) => void;
+  /** Completes a node-membership drag exactly once; cancelled is true for cancellation or disposal. */
+  onNodeMembershipDragEnd?: (id: string, x: number, y: number, cancelled: boolean) => void;
   appShell?: HTMLElement;
   viewport?: any;
   getLinkMode?: () => boolean;
@@ -55,6 +61,10 @@ export interface EventsContext {
   getGridSnapEnabled?: () => boolean;
   getGridSp?: () => number;
   getHiddenNodeIds?: () => Set<string>;
+  /** True when an expanded structure's ordinary simulation circle is replaced by a boundary. */
+  isStructureBoundaryNode?: (id: string) => boolean;
+  /** Boundary title anchors used only as persistent-edge endpoints. */
+  getStructureBoundaryEndpoints?: () => any[];
   /** 移动端工具栏框选模式 */
   getBoxSelectMode?: () => boolean;
   setBoxSelectMode?: (v: boolean) => void;
@@ -66,7 +76,13 @@ export interface EventsContext {
   createStructure?: (ids: string[]) => Promise<void> | void;
   /** Deletes nodes through the runtime-level structure guard and transaction. */
   deleteNodes?: (ids: string[]) => Promise<boolean> | boolean;
-  /** 桌面端双击节点，由调用方决定是否进入结构视图。 */
+  /** Expanded-structure boundary hit test; the interior deliberately returns null. */
+  hitStructureBoundary?: (worldX: number, worldY: number) => string | null;
+  /** Updates pane-local boundary hover state. */
+  onStructureBoundaryHover?: (id: string | null) => void;
+  /** Selects an expanded structure through its boundary body. */
+  onStructureBoundaryTap?: (id: string) => void;
+  /** 桌面端双击节点或边界，由调用方决定是否进入结构视图。 */
   onNodeDoubleClick?: (id: string) => void;
   /** Pane-private proxies may be selected but cannot be mutated or linked. */
   isReadOnlyNode?: (id: string) => boolean;
@@ -95,10 +111,11 @@ export function setupCanvasEvents(
   const _rawSimNodes = () => getSimulation()?.nodes() || [];
   const visibleNodes = () => {
     const all = _rawSimNodes();
-    const hidden = ctx.getHiddenNodeIds?.() ?? new Set();
-    if (hidden.size === 0) return all;
-    return all.filter((n: any) => !hidden.has(n.id));
+    const hidden = ctx.getHiddenNodeIds?.();
+    if (!hidden?.size && !ctx.isStructureBoundaryNode) return all;
+    return all.filter((n: any) => !hidden?.has(n.id) && !ctx.isStructureBoundaryNode?.(n.id));
   };
+  const edgeNodes = () => visibleNodes().concat(ctx.getStructureBoundaryEndpoints?.() ?? []);
 
   const toWorldPos = (e: { clientX: number; clientY: number }): [number, number] => {
     const rect = canvas.getBoundingClientRect();
@@ -138,6 +155,18 @@ export function setupCanvasEvents(
 
   let downPoint: [number, number] | null = null;
   const pointerGesture = new CanvasGestureState();
+  const membershipDrag = new NodeMembershipDragState();
+  // This tracks only a drag that crossed the node threshold; pending-node and other
+  // gestures must never cause the runtime drag cleanup callback.
+  let nodeDragStarted = false;
+  const endMembershipDrag = (cancelled: boolean, event?: { clientX: number; clientY: number }) => {
+    const result = event
+      ? (() => { const [x, y] = toWorldPos(event); return membershipDrag.end(x, y, cancelled); })()
+      : cancelled
+        ? membershipDrag.cancel()
+        : null;
+    if (result) ctx.onNodeMembershipDragEnd?.(result.nodeId, result.x, result.y, result.cancelled);
+  };
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   const clearLongPress = () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } };
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -332,7 +361,9 @@ export function setupCanvasEvents(
     const nodes = visibleNodes() || [];
     const n = hitTestNode(cx, cy, nodes, getNodeExpand());
     if (n) { onAppContextMenu?.('node', n.id, screenX, screenY); return; }
-    const eIdx = hitTestEdge(cx, cy, graph.edges, nodes, getLineExpand());
+    const structureId = ctx.hitStructureBoundary?.(cx, cy);
+    if (structureId) { onAppContextMenu?.('node', structureId, screenX, screenY); return; }
+    const eIdx = hitTestEdge(cx, cy, graph.edges, edgeNodes(), getLineExpand());
     if (eIdx !== null) { onAppContextMenu?.('edge', String(eIdx), screenX, screenY); return; }
     const g = hitTestGroup(cx, cy, graph.groups, nodes);
     if (g) { onAppContextMenu?.('group', g.id, screenX, screenY); return; }
@@ -343,21 +374,31 @@ export function setupCanvasEvents(
     // Touch interactions intentionally use the long-press menu rather than dblclick.
     const [x, y] = toWorldPos(e);
     const node = hitTestNode(x, y, [...visibleNodes()].reverse(), getNodeExpand());
-    if (!node || ctx.isReadOnlyNode?.(node.id)) return;
+    const structureId = node ? null : ctx.hitStructureBoundary?.(x, y);
+    const targetId = node?.id ?? structureId;
+    if (!targetId || ctx.isReadOnlyNode?.(targetId)) return;
     e.preventDefault();
     e.stopPropagation();
-    ctx.onNodeDoubleClick?.(node.id);
+    ctx.onNodeDoubleClick?.(targetId);
   };
   canvas.addEventListener("dblclick", onDoubleClick);
 
   const handleTap = (x: number, y: number, nodeId?: string) => {
     selectedNodeIds = [];
-    // 如果外部提供了 onTap 回调，使用它（集成编辑面板等）
-    if (ctx.onTap) { ctx.onTap(x, y, nodeId); return; }
     const nodes = visibleNodes() || [];
-    const n = hitTestNode(x, y, nodes, getNodeExpand());
+    const n = nodeId ? nodes.find((candidate: any) => candidate.id === nodeId) ?? null : hitTestNode(x, y, nodes, getNodeExpand());
+    const structureId = n ? null : ctx.hitStructureBoundary?.(x, y);
+    if (structureId) {
+      ctx.onStructureBoundaryTap?.(structureId);
+      if (!ctx.onStructureBoundaryTap) {
+        setSelNode(structureId); setSelEdge(null); setSelGroup(null); draw();
+      }
+      return;
+    }
+    // 如果外部提供了 onTap 回调，使用它（集成编辑面板等）
+    if (ctx.onTap) { ctx.onTap(x, y, n?.id); return; }
     if (n) { setSelNode(n.id); setSelEdge(null); setSelGroup(null); draw(); return; }
-    const eIdx = hitTestEdge(x, y, graph.edges, nodes, getLineExpand());
+    const eIdx = hitTestEdge(x, y, graph.edges, edgeNodes(), getLineExpand());
     if (eIdx !== null) { setSelNode(null); setSelEdge(eIdx); setSelGroup(null); draw(); return; }
     const g = hitTestGroup(x, y, graph.groups, nodes);
     if (g) { setSelNode(null); setSelEdge(null); setSelGroup(g.id); draw(); return; }
@@ -424,7 +465,9 @@ export function setupCanvasEvents(
         draggingNode.fx = null; draggingNode.fy = null;
         setDraggingNode(null);
         getSimulation()?.alphaTarget(0);
+        endMembershipDrag(true);
         ctx.onDragEnd?.();
+        nodeDragStarted = false;
         setWasDragged(false);
         draw();
       }
@@ -475,7 +518,9 @@ export function setupCanvasEvents(
     sharedState.mouseWorldX = mx; sharedState.mouseWorldY = my;
     const nodes = visibleNodes();
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
+    const hoverStructureId = hoverNode ? null : ctx.hitStructureBoundary?.(mx, my) ?? null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
+    ctx.onStructureBoundaryHover?.(hoverStructureId);
     if (hoverNode) sharedState.focusHoverNodeId = hoverNode.id;
     if (hoverNode?.mediaType) {
       ctx.onMediaHover?.(hoverNode.id);
@@ -521,6 +566,11 @@ export function setupCanvasEvents(
         ctx.setDragScale?.(node.id, 1.1);
         if (!ctx.isCardGridMode?.()) getSimulation()?.alphaTarget(0.3).restart();
         ctx.onDragStart?.(node.id);
+        const membershipStart = membershipDrag.start(node.id, mx, my);
+        if (membershipStart) {
+          nodeDragStarted = true;
+          ctx.onNodeMembershipDragStart?.(membershipStart.nodeId, membershipStart.x, membershipStart.y);
+        }
       }
     }
     if (gestureMove?.mode === 'pending-node' || gestureMove?.mode === 'node-drag') {
@@ -530,13 +580,15 @@ export function setupCanvasEvents(
     if (getDraggingNode()) { canvas.style.cursor = "grabbing"; }
     else if (inLinkMode && hoverNode) { canvas.style.cursor = "crosshair"; }
     else if (inLinkMode) { canvas.style.cursor = "crosshair"; }
-    else if (hoverNode) { canvas.style.cursor = "pointer"; }
+    else if (hoverNode || hoverStructureId) { canvas.style.cursor = "pointer"; }
     else { canvas.style.cursor = "grab"; }
     if (getDraggingNode()) {
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
       const clamped = ctx.clampNodeDrag ? ctx.clampNodeDrag(getDraggingNode().id, mx, my) : [mx, my];
       getDraggingNode().fx = clamped[0]; getDraggingNode().fy = clamped[1];
       if (!ctx.isCardGridMode?.()) getSimulation()?.alpha(0.3).restart();
+      const membershipMove = membershipDrag.move(getDraggingNode().id, mx, my);
+      if (membershipMove) ctx.onNodeMembershipDragMove?.(membershipMove.nodeId, membershipMove.x, membershipMove.y);
     }
     // 空白区域拖动由 viewport 处理；这里只取消候选长按。
     if (gestureMove?.mode === 'viewport-pan' && gestureMove.moved) clearLongPress();
@@ -666,7 +718,9 @@ export function setupCanvasEvents(
       setDraggingNode(null);
       getSimulation()?.alphaTarget(0);
       canvas.style.cursor = "grab";
+      endMembershipDrag(false, e);
       ctx.onDragEnd?.();
+      nodeDragStarted = false;
       draw();
     } else if (gestureEnd.tap) {
       // 卡片局部 simulation 在按下和松开之间仍可能移动节点；优先使用按下时锁定的节点。
@@ -702,7 +756,9 @@ export function setupCanvasEvents(
       node.fx = null; node.fy = null;
       setDraggingNode(null);
       getSimulation()?.alphaTarget(0);
+      endMembershipDrag(true, e);
       ctx.onDragEnd?.();
+      nodeDragStarted = false;
     }
     setWasDragged(false);
     if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
@@ -713,6 +769,7 @@ export function setupCanvasEvents(
 
   const onPointerLeave = () => {
     sharedState.hoverNodeId = null;
+    ctx.onStructureBoundaryHover?.(null);
     ctx.onMediaHover?.(null);
     if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
   };
@@ -722,9 +779,11 @@ export function setupCanvasEvents(
   const reevaluateHover = () => {
     const mx = sharedState.mouseWorldX, my = sharedState.mouseWorldY;
     const nodes = visibleNodes();
-    if (nodes && nodes.length > 0) {
+    if (nodes) {
       const hn = hitTestNode(mx, my, nodes, getNodeExpand());
+      const structureId = hn ? null : ctx.hitStructureBoundary?.(mx, my) ?? null;
       sharedState.hoverNodeId = hn ? hn.id : null;
+      ctx.onStructureBoundaryHover?.(structureId);
       if (hn) sharedState.focusHoverNodeId = hn.id;
       ctx.onMediaHover?.(hn?.mediaType ? hn.id : null);
     }
@@ -805,6 +864,7 @@ export function setupCanvasEvents(
     isRightButtonDown = false;
     isBoxSelecting = false;
     sharedState.rightDragLink = null;
+    ctx.onStructureBoundaryHover?.(null);
     if (activePointerId !== null) {
       try { canvas.releasePointerCapture(activePointerId); } catch (_) { /* ignore */ }
     }
@@ -814,6 +874,11 @@ export function setupCanvasEvents(
       node.fx = null; node.fy = null;
       setDraggingNode(null);
       getSimulation()?.alphaTarget(0);
+    }
+    endMembershipDrag(true);
+    if (nodeDragStarted) {
+      ctx.onDragEnd?.();
+      nodeDragStarted = false;
     }
     setWasDragged(false);
     if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;

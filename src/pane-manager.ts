@@ -8,7 +8,7 @@
  * - 统一 drawAll() 循环渲染所有窗格
  */
 
-import { PaneState, createPaneState, onFocusChange, paneGraph, paneGraphFacade, paneSimulationManager } from './pane-state';
+import { clearMembershipDragPreview, clearPaneStructureBoundaries, PaneState, createPaneState, hitPaneStructureBoundary, onFocusChange, paneGraph, paneGraphFacade, paneSimulationManager, paneStructureBoundaryEndpoints } from './pane-state';
 import { createPixiApp, PixiLayers } from './pixi-app';
 import { createSimManager } from './graph-sim';
 import { getCollapsedHierarchyHiddenNodeIds } from './graph-visibility';
@@ -23,7 +23,7 @@ export interface PaneExternals {
   onDraw: () => void;
   onGridDraw: () => void;
   onScheduleSave: (pane: PaneState) => void;
-  onContextMenu: (type: 'blank' | 'node' | 'edge' | 'group', id: string | null, x: number, y: number) => void;
+  onContextMenu: (pane: PaneState, type: 'blank' | 'node' | 'edge' | 'group', id: string | null, x: number, y: number) => void;
   appShell: HTMLElement;
   selectionBox: HTMLDivElement;
   snapPosToGrid: (x: number, y: number) => [number, number];
@@ -38,6 +38,9 @@ export interface PaneExternals {
   deleteNodes?: (pane: PaneState, ids: string[]) => Promise<boolean> | boolean;
   deleteEdges?: (pane: PaneState, projectedIndexes: number[]) => Promise<boolean> | boolean;
   enterStructure?: (pane: PaneState, id: string) => void;
+  onNodeMembershipDragStart?: (pane: PaneState, id: string, x: number, y: number) => void;
+  onNodeMembershipDragMove?: (pane: PaneState, id: string, x: number, y: number) => void;
+  onNodeMembershipDragEnd?: (pane: PaneState, id: string, x: number, y: number, cancelled: boolean) => void;
 }
 
 // ---- PaneManager ----
@@ -110,6 +113,8 @@ export class PaneManager {
     // ---- cleanup before destroy ----
     pane.disposeCanvasEvents?.();
     pane.disposeCanvasEvents = null;
+    clearMembershipDragPreview(pane);
+    clearPaneStructureBoundaries(pane, true);
     pane.layout.clear();
     pane.structureView?.simManager?.getSim?.()?.stop?.();
     pane.structureView = null;
@@ -288,7 +293,7 @@ function createEventsContextForPane(
     setWasDragged: (v: boolean) => { pi.wasDragged = v; },
 
     draw: () => ext.onDraw(),
-    onContextMenu: ext.onContextMenu,
+    onContextMenu: (type, id, x, y) => ext.onContextMenu(pi, type, id, x, y),
 
     fixNode: (id: string) => {
       const n = pi.graph.nodes.find(gn => gn.id === id);
@@ -333,19 +338,24 @@ function createEventsContextForPane(
       lastDragId.v = id;
     },
     onDragEnd: () => {
-      if ((pi.gridSnapEnabled || pi.partialGridSnap) && lastDragId.v) {
+      const draggedId = lastDragId.v;
+      if ((pi.gridSnapEnabled || pi.partialGridSnap) && draggedId) {
         const sim = getSim();
-        const sn = sim?.nodes()?.find((n: any) => n.id === lastDragId.v);
+        const sn = sim?.nodes()?.find((n: any) => n.id === draggedId);
         if (sn && (pi.gridSnapEnabled || sn.fixed)) {
           const [sx, sy] = ext.snapPosToGrid(sn.x, sn.y);
           sn.x = sx; sn.y = sy; sn.fx = sx; sn.fy = sy;
-          const gn = pi.graph.nodes.find((gn2: any) => gn2.id === lastDragId.v);
+          const gn = pi.graph.nodes.find((gn2: any) => gn2.id === draggedId);
           if (gn) { gn.x = sx; gn.y = sy; gn.fx = sx; gn.fy = sy; }
         }
-        lastDragId.v = null;
       }
+      if (draggedId) ext.onScheduleSave(pi);
+      lastDragId.v = null;
       sm()?.setDragNode(null);
     },
+    onNodeMembershipDragStart: (id: string, x: number, y: number) => ext.onNodeMembershipDragStart?.(pi, id, x, y),
+    onNodeMembershipDragMove: (id: string, x: number, y: number) => ext.onNodeMembershipDragMove?.(pi, id, x, y),
+    onNodeMembershipDragEnd: (id: string, x: number, y: number, cancelled: boolean) => ext.onNodeMembershipDragEnd?.(pi, id, x, y, cancelled),
 
     getLinkMode: () => pi.linkMode,
     getLinkSrc: () => pi.linkSrc,
@@ -363,6 +373,21 @@ function createEventsContextForPane(
     getGridSnapEnabled: () => pi.gridSnapEnabled || pi.partialGridSnap,
     getGridSp: () => pi.gridSp,
     getHiddenNodeIds: () => sharedState.hiddenNodeIds?.() ?? new Set(),
+    isStructureBoundaryNode: (id: string) => pi.structureBoundaryShapes.has(id),
+    getStructureBoundaryEndpoints: () => paneStructureBoundaryEndpoints(pi),
+    hitStructureBoundary: (x: number, y: number) => hitPaneStructureBoundary(pi, x, y, Math.max(4, pi.lineExpand)),
+    onStructureBoundaryHover: (id: string | null) => {
+      if (pi.hoverStructureId === id) return;
+      pi.hoverStructureId = id;
+      ext.onDraw();
+    },
+    onStructureBoundaryTap: (id: string) => {
+      pi.selNode = id;
+      pi.selEdge = null;
+      pi.selGroup = null;
+      ext.fillNode(id);
+      ext.onDraw();
+    },
     createStructure: (ids: string[]) => ext.createStructure?.(pi, ids),
     onNodeDoubleClick: (id: string) => ext.enterStructure?.(pi, id),
 

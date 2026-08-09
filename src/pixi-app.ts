@@ -6,6 +6,8 @@ export interface PixiLayers {
   viewport: Viewport;
   gridLayer: Container;
   groupLayer: Container;
+  /** Structure boundary overlays; independent from group redraw/clearing. */
+  structureLayer: Container;
   edgeLayer: Container;
   blobLayer: Container;
   nodeLayer: Container;
@@ -68,6 +70,8 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
   // 图层（从后到前）
   const gridLayer = new Container({ label: 'grid' });
   const groupLayer = new Container({ label: 'groups' });
+  // Kept outside groupLayer so updateGroups may clear its own children safely.
+  const structureLayer = new Container({ label: 'structure-boundaries' });
   const edgeLayer = new Container({ label: 'edges' });
   const blobLayer = new Container({ label: 'blobs' });
   const nodeLayer = new Container({ label: 'nodes' });
@@ -75,6 +79,7 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
 
   viewport.addChild(gridLayer);
   viewport.addChild(groupLayer);
+  viewport.addChild(structureLayer);
   viewport.addChild(edgeLayer);
   viewport.addChild(blobLayer);
   viewport.addChild(nodeLayer);
@@ -86,7 +91,7 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
 
   // WebGL context loss recovery
   let contextLost = false;
-  const result: PixiLayers = { app, viewport, gridLayer, groupLayer, edgeLayer, blobLayer, nodeLayer, labelLayer, cardLayer };
+  const result: PixiLayers = { app, viewport, gridLayer, groupLayer, structureLayer, edgeLayer, blobLayer, nodeLayer, labelLayer, cardLayer };
   app.canvas.addEventListener('webglcontextlost', (e) => {
     e.preventDefault();
     contextLost = true;

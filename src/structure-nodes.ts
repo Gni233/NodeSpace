@@ -14,6 +14,20 @@ export interface StructureProjection {
   hiddenNodeIds: Set<string>;
 }
 
+/** Read-only metadata used to render an expanded structure's boundary. */
+export interface ExpandedStructureBoundaryModel {
+  readonly structureId: string;
+  readonly memberIds: readonly string[];
+  readonly label: string;
+  readonly summary?: string;
+  readonly color?: string;
+  readonly memberCount: number;
+  /** Persistent edges with exactly one valid member endpoint (never projection edges). */
+  readonly externalEdgeCount: number;
+  /** Persistent edges attached directly to the structure node itself. */
+  readonly directEdgeCount: number;
+}
+
 export interface StructureProxyNode {
   readonly id: string;
   readonly label: string;
@@ -65,6 +79,17 @@ export interface StructureNormalizationResult {
   readonly protectedStructureIds: readonly string[];
 }
 
+/** A single, non-nesting membership edit for an existing structure. */
+export type StructureMembershipRequest =
+  | { action: 'add'; structureId: string; nodeId: string }
+  | { action: 'remove'; structureId: string; nodeId: string; confirmDissolve?: boolean };
+
+export type StructureMembershipTransactionResult =
+  | { status: 'changed'; action: 'add' | 'remove' | 'dissolve' }
+  | { status: 'noop'; action: 'add' }
+  | { status: 'needs-confirmation'; action: 'remove'; remainingMemberIds: string[]; directEdgeCount: number }
+  | { status: 'rejected'; action: 'add' | 'remove'; reason: string; ownerId?: string; directEdgeCount?: number };
+
 export const isStructureNode = (node: any): boolean =>
   Array.isArray(node?.structure?.memberIds);
 
@@ -96,9 +121,32 @@ export function canDissolveStructure(graph: GraphData, structureId: string): boo
  * a shared member. Invalid structures with direct persistent edges are retained:
  * deleting one would discard an intentional relationship or require unsafe rewiring.
  */
+export function normalizeStructureNodeSizing(graph: GraphData): void {
+  const nodes = graphNodes(graph);
+  const ordinaryNodesById = new Map(
+    nodes
+      .filter(node => !isStructureNode(node) && typeof node?.id === 'string')
+      .map(node => [node.id, node]),
+  );
+  for (const structureNode of nodes.filter(isStructureNode)) {
+    const currentLevel = Number(structureNode.headingLevel);
+    if (!Number.isInteger(currentLevel) || currentLevel < 1 || currentLevel > 6) {
+      const memberLevels = structureNode.structure.memberIds
+        .map((memberId: string) => ordinaryNodesById.get(memberId)?.headingLevel)
+        .filter((level: unknown): level is number => Number.isInteger(level) && (level as number) >= 1 && (level as number) <= 6);
+      structureNode.headingLevel = memberLevels.length > 0
+        ? Math.max(1, Math.min(...memberLevels) - 1)
+        : 6;
+    }
+    structureNode.radiusMode = 'level';
+    delete structureNode.radius;
+  }
+}
+
 export function normalizeStructureRelations(graph: GraphData): StructureNormalizationResult {
   graph.nodes ||= [];
   graph.edges ||= [];
+  normalizeStructureNodeSizing(graph);
 
   const ordinaryNodeIds = new Set<string>();
   const structures = graph.nodes.filter(isStructureNode);
@@ -142,6 +190,54 @@ export function normalizeStructureRelations(graph: GraphData): StructureNormaliz
   return { dissolvedStructureIds, protectedStructureIds };
 }
 
+/**
+ * Returns metadata for expanded structures with at least one existing ordinary member.
+ * Counts are based only on original persistent edges and leave the graph untouched.
+ */
+export function getExpandedStructureBoundaryModels(graph: GraphData): ExpandedStructureBoundaryModel[] {
+  const ordinaryNodeIds = new Set(
+    graphNodes(graph)
+      .filter(node => !isStructureNode(node) && typeof node?.id === 'string')
+      .map(node => node.id),
+  );
+
+  return graphNodes(graph).flatMap(structureNode => {
+    if (!isStructureNode(structureNode) || structureNode.structure.collapsed) return [];
+
+    const seenMemberIds = new Set<string>();
+    const memberIds = structureNode.structure.memberIds.filter((memberId: unknown): memberId is string => {
+      if (typeof memberId !== 'string' || seenMemberIds.has(memberId) || !ordinaryNodeIds.has(memberId)) return false;
+      seenMemberIds.add(memberId);
+      return true;
+    });
+    if (memberIds.length === 0) return [];
+
+    const memberIdSet = new Set(memberIds);
+    let externalEdgeCount = 0;
+    let directEdgeCount = 0;
+    for (const edge of graphEdges(graph)) {
+      if (edge?._structureMembership) continue;
+      const sourceId = endpointId(edge?.source);
+      const targetId = endpointId(edge?.target);
+      if (sourceId === structureNode.id || targetId === structureNode.id) directEdgeCount++;
+      if (memberIdSet.has(sourceId ?? '') !== memberIdSet.has(targetId ?? '')) externalEdgeCount++;
+    }
+
+    return [{
+      structureId: structureNode.id,
+      memberIds: Object.freeze(memberIds),
+      label: typeof structureNode.label === 'string' ? structureNode.label : structureNode.id,
+      summary: typeof structureNode.structure.summary === 'string'
+        ? structureNode.structure.summary
+        : typeof structureNode.summary === 'string' ? structureNode.summary : undefined,
+      color: typeof structureNode.color === 'string' ? structureNode.color : undefined,
+      memberCount: memberIds.length,
+      externalEdgeCount,
+      directEdgeCount,
+    }];
+  });
+}
+
 function validStructureMembers(graph: GraphData, structureNode: any): { memberIds: string[]; invalidMemberIds: string[] } {
   const ordinaryNodes = new Map(
     graphNodes(graph)
@@ -160,6 +256,162 @@ function validStructureMembers(graph: GraphData, structureNode: any): { memberId
     memberIds.push(memberId);
   }
   return { memberIds, invalidMemberIds };
+}
+
+type StructureMembershipPreflight =
+  | { valid: true; structureNode: any; node: any; memberIds: string[] }
+  | { valid: false; reason: string; node?: any };
+
+/**
+ * Validates the current structure relation without repairing it. Transactions use
+ * this instead of normalization so a rejected edit cannot change unrelated data.
+ */
+function preflightStructureMembership(
+  graph: GraphData,
+  structureId: string,
+  nodeId: string,
+): StructureMembershipPreflight {
+  const structureNode = graphNodes(graph).find(node => node?.id === structureId);
+  if (!structureNode) return { valid: false, reason: 'missing-structure' };
+  if (!isStructureNode(structureNode)) return { valid: false, reason: 'invalid-structure' };
+
+  const node = graphNodes(graph).find(candidate => candidate?.id === nodeId);
+  if (!node) return { valid: false, reason: 'missing-node' };
+  if (isStructureNode(node)) return { valid: false, reason: 'structure-node', node };
+
+  const { memberIds, invalidMemberIds } = validStructureMembers(graph, structureNode);
+  if (invalidMemberIds.length > 0 || memberIds.length < 2) {
+    return { valid: false, reason: 'invalid-structure', node };
+  }
+  for (const memberId of memberIds) {
+    const member = graphNodes(graph).find(candidate => candidate?.id === memberId);
+    if (member?.structureParentId !== structureId) return { valid: false, reason: 'stale', node };
+  }
+  return { valid: true, structureNode, node, memberIds };
+}
+
+export type StructureMembershipBeforeChange = (result: Extract<StructureMembershipTransactionResult, { status: 'changed' }>) => void;
+
+function runStructureMembershipTransaction(
+  graph: GraphData,
+  request: StructureMembershipRequest,
+  apply: boolean,
+  beforeChange?: StructureMembershipBeforeChange,
+): StructureMembershipTransactionResult {
+  const action = request?.action;
+  if ((action !== 'add' && action !== 'remove') || typeof request.structureId !== 'string' || typeof request.nodeId !== 'string') {
+    return { status: 'rejected', action: action === 'remove' ? 'remove' : 'add', reason: 'invalid-request' };
+  }
+
+  const preflight = preflightStructureMembership(graph, request.structureId, request.nodeId);
+  if (!preflight.valid) return { status: 'rejected', action, reason: preflight.reason };
+
+  const isMember = preflight.memberIds.includes(request.nodeId);
+  if (action === 'add') {
+    if (isMember) {
+      return preflight.node.structureParentId === request.structureId
+        ? { status: 'noop', action: 'add' }
+        : { status: 'rejected', action: 'add', reason: 'stale' };
+    }
+    const ownerId = preflight.node.structureParentId;
+    if (ownerId === request.structureId) {
+      return { status: 'rejected', action: 'add', reason: 'stale' };
+    }
+    if (typeof ownerId === 'string' && ownerId.length > 0) {
+      return { status: 'rejected', action: 'add', reason: 'owned-by-other', ownerId };
+    }
+
+    const result = { status: 'changed', action: 'add' } as const;
+    if (apply) {
+      beforeChange?.(result);
+      preflight.structureNode.structure.memberIds.push(request.nodeId);
+      preflight.node.structureParentId = request.structureId;
+    }
+    return result;
+  }
+
+  if (!isMember || preflight.node.structureParentId !== request.structureId) {
+    return { status: 'rejected', action: 'remove', reason: 'stale' };
+  }
+
+  const remainingMemberIds = preflight.memberIds.filter(memberId => memberId !== request.nodeId);
+  if (remainingMemberIds.length >= 2) {
+    const result = { status: 'changed', action: 'remove' } as const;
+    if (apply) {
+      beforeChange?.(result);
+      preflight.structureNode.structure.memberIds = remainingMemberIds;
+      delete preflight.node.structureParentId;
+    }
+    return result;
+  }
+
+  const directEdgeCount = getDirectStructureEdges(graph, request.structureId).length;
+  if (!request.confirmDissolve) {
+    return { status: 'needs-confirmation', action: 'remove', remainingMemberIds, directEdgeCount };
+  }
+
+  // Re-read all membership facts immediately before the only destructive path.
+  const confirmed = preflightStructureMembership(graph, request.structureId, request.nodeId);
+  if (!confirmed.valid || !confirmed.memberIds.includes(request.nodeId) || confirmed.node.structureParentId !== request.structureId) {
+    return { status: 'rejected', action: 'remove', reason: confirmed.valid ? 'stale' : confirmed.reason };
+  }
+  const confirmedRemainingIds = confirmed.memberIds.filter(memberId => memberId !== request.nodeId);
+  if (confirmedRemainingIds.length >= 2) {
+    return { status: 'rejected', action: 'remove', reason: 'stale' };
+  }
+  const confirmedDirectEdgeCount = getDirectStructureEdges(graph, request.structureId).length;
+  if (confirmedDirectEdgeCount > 0) {
+    return { status: 'rejected', action: 'remove', reason: 'direct-edges', directEdgeCount: confirmedDirectEdgeCount };
+  }
+
+  const result = { status: 'changed', action: 'dissolve' } as const;
+  if (apply) {
+    beforeChange?.(result);
+    // All dissolve guards were checked synchronously above, before the undo snapshot.
+    if (!dissolveStructureNode(graph, request.structureId)) {
+      throw new Error('Structure membership transaction changed after preflight');
+    }
+  }
+  return result;
+}
+
+/**
+ * Computes exactly the result a membership transaction would return without
+ * changing nodes, edges, coordinates, or ownership metadata.
+ */
+export function previewStructureMembershipTransaction(
+  graph: GraphData,
+  request: StructureMembershipRequest,
+): StructureMembershipTransactionResult {
+  return runStructureMembershipTransaction(graph, request, false);
+}
+
+/**
+ * Atomically adds or removes a single ordinary node from a structure. It never
+ * normalizes the graph: every rejected or confirmation result leaves it intact.
+ * `beforeChange` runs only after final validation and immediately before mutation.
+ */
+export function transactStructureMembership(
+  graph: GraphData,
+  request: StructureMembershipRequest,
+  beforeChange?: StructureMembershipBeforeChange,
+): StructureMembershipTransactionResult {
+  return runStructureMembershipTransaction(graph, request, true, beforeChange);
+}
+
+/** Lightweight compatibility entry point for add-only callers. */
+export function addNodeToStructure(graph: GraphData, structureId: string, nodeId: string): StructureMembershipTransactionResult {
+  return transactStructureMembership(graph, { action: 'add', structureId, nodeId });
+}
+
+/** Lightweight compatibility entry point for remove-only callers. */
+export function removeNodeFromStructure(
+  graph: GraphData,
+  structureId: string,
+  nodeId: string,
+  confirmDissolve = false,
+): StructureMembershipTransactionResult {
+  return transactStructureMembership(graph, { action: 'remove', structureId, nodeId, confirmDissolve });
 }
 
 /**
@@ -358,9 +610,11 @@ export function createStructureNode(graph: GraphData, memberIds: string[], label
     label: label.trim() || `结构 (${members.length})`,
     x,
     y,
+    // A structure is the semantic parent of its members, so it starts one
+    // heading level above the highest-ranked member. Its size then follows the
+    // same level scale as every other node instead of encoding member count.
     headingLevel: Math.max(1, Math.min(...levels) - 1),
-    radiusMode: 'custom',
-    radius: Math.min(28, 14 + Math.sqrt(members.length) * 2.5),
+    radiusMode: 'level',
     tags: commonTags,
     structure: { memberIds: members.map(node => node.id), collapsed: true } as StructureNodeData,
     _isNew: true,

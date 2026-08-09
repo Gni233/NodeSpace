@@ -5,6 +5,8 @@ import { UndoManager } from './undo-redo';
 import { LayoutSlot } from './layout-controller';
 import { GraphRuntime } from './graph-runtime';
 import { PaneStructureView, StructureBreadcrumb, StructureNavigationState } from './structure-view';
+import { containsPoint, hitTestStructureBoundary, type StructureBoundaryShape } from './geometry/structure-boundary';
+import { clearStructureBoundaries, destroyStructureBoundaries } from './pixi-structure-boundaries';
 
 /**
  * Maximum number of simultaneous split panes (left + right).
@@ -13,6 +15,38 @@ import { PaneStructureView, StructureBreadcrumb, StructureNavigationState } from
 export const MAX_PANES = Number.POSITIVE_INFINITY;
 export const PANE_LEFT = 0;
 export const PANE_RIGHT = 1;
+
+export type MembershipDragPreviewMode = 'add' | 'remove' | 'reject' | 'none';
+
+/**
+ * Pane-local, non-persistent feedback while a node is dragged across structure
+ * boundaries. It deliberately describes intent only; graph membership is changed
+ * by the caller after the drag completes.
+ */
+export interface MembershipDragPreview {
+  nodeId: string;
+  sourceStructureId: string | null;
+  targetStructureId: string | null;
+  mode: MembershipDragPreviewMode;
+  message: string;
+  sourceBoundaryShape?: StructureBoundaryShape;
+}
+
+export interface MembershipDragSourceSnapshot {
+  /** Boundary computed without the dragged member, when other positions exist. */
+  shape?: StructureBoundaryShape;
+  /** Fallback center/radius used when no exclusion shape can be computed. */
+  center: Readonly<{ x: number; y: number }>;
+  escapeRadius: number;
+}
+
+export interface MembershipDragSession {
+  runtime: GraphRuntime;
+  nodeId: string;
+  sourceStructureId: string | null;
+  sourceExpanded: boolean;
+  sourceSnapshot: MembershipDragSourceSnapshot | null;
+}
 
 /** Global pane 0 is primary; every extra pane uses its array index plus one. */
 export const paneIndexForExtra = (extraIndex: number): number => extraIndex + 1;
@@ -69,6 +103,14 @@ export interface PaneState {
   disposeStructureBreadcrumb: (() => void) | null;
   /** Pane-local breadcrumb UI, kept separate from graph data. */
   structureBreadcrumb: StructureBreadcrumb | null;
+  /** Current root-view boundary geometry. Rebuilt from this pane's simulation only. */
+  structureBoundaryShapes: Map<string, StructureBoundaryShape>;
+  /** Expanded structure currently hovered through its header or outline. */
+  hoverStructureId: string | null;
+  /** Non-persistent membership feedback for a drag in this pane only. */
+  membershipDragPreview: MembershipDragPreview | null;
+  /** Captured pane/runtime membership context for the active node drag. */
+  membershipDragSession: MembershipDragSession | null;
 
   // --- Simulation ---
   simManager: any; // ReturnType<typeof createSimManager>
@@ -189,6 +231,75 @@ export function paneSimulationManager(pane: PaneState): any {
   return pane.structureView?.simManager ?? pane.runtime.simManager;
 }
 
+export function clearMembershipDragPreview(
+  pane: Pick<PaneState, 'membershipDragPreview'> & Partial<Pick<PaneState, 'membershipDragSession'>>,
+): void {
+  pane.membershipDragPreview = null;
+  if ('membershipDragSession' in pane) pane.membershipDragSession = null;
+}
+
+/** Stable overlap resolution: nearest shape center, then supplied graph order. */
+export function pickMembershipBoundaryTarget(
+  shapes: ReadonlyMap<string, StructureBoundaryShape>,
+  structureIdsInGraphOrder: readonly string[],
+  worldX: number,
+  worldY: number,
+  excludedStructureId: string | null = null,
+): string | null {
+  const graphOrder = new Map(structureIdsInGraphOrder.map((id, index) => [id, index]));
+  return [...shapes]
+    .filter(([id, shape]) => id !== excludedStructureId && graphOrder.has(id) && containsPoint(worldX, worldY, shape))
+    .map(([id, shape]) => ({
+      id,
+      distance: Math.hypot(worldX - shape.center.x, worldY - shape.center.y),
+      order: graphOrder.get(id)!,
+    }))
+    .sort((a, b) => a.distance - b.distance || a.order - b.order)[0]?.id ?? null;
+}
+
+export function isOutsideMembershipSourceSnapshot(
+  snapshot: MembershipDragSourceSnapshot,
+  worldX: number,
+  worldY: number,
+): boolean {
+  if (snapshot.shape) return !containsPoint(worldX, worldY, snapshot.shape);
+  return Math.hypot(worldX - snapshot.center.x, worldY - snapshot.center.y) > snapshot.escapeRadius;
+}
+
+export function clearPaneStructureBoundaries(
+  pane: Pick<PaneState, 'structureBoundaryShapes' | 'hoverStructureId' | 'pixi'>,
+  destroy = false,
+): void {
+  pane.structureBoundaryShapes.clear();
+  pane.hoverStructureId = null;
+  if (!pane.pixi) return;
+  if (destroy) destroyStructureBoundaries(pane.pixi.structureLayer);
+  else clearStructureBoundaries(pane.pixi.structureLayer);
+}
+
+export function hitPaneStructureBoundary(
+  pane: Pick<PaneState, 'structureBoundaryShapes'>,
+  worldX: number,
+  worldY: number,
+  outlineTolerance = 6,
+): string | null {
+  for (const [structureId, shape] of pane.structureBoundaryShapes) {
+    if (hitTestStructureBoundary(worldX, worldY, shape, { outlineTolerance })) return structureId;
+  }
+  return null;
+}
+
+export function paneStructureBoundaryEndpoints(
+  pane: Pick<PaneState, 'structureBoundaryShapes'>,
+): Array<{ id: string; x: number; y: number; radius: number }> {
+  return [...pane.structureBoundaryShapes].map(([id, shape]) => ({
+    id,
+    x: shape.headerAnchor.x,
+    y: shape.headerAnchor.y,
+    radius: 0,
+  }));
+}
+
 /** Stable event-context facade that follows pane scope changes after binding. */
 export function paneGraphFacade(
   pane: PaneState,
@@ -221,6 +332,10 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     structureController: new StructureNavigationState({ maxDepth: 1 }),
     disposeStructureBreadcrumb: null,
     structureBreadcrumb: null,
+    structureBoundaryShapes: new Map(),
+    hoverStructureId: null,
+    membershipDragPreview: null,
+    membershipDragSession: null,
     get simManager() { return this.runtime.simManager; },
     set simManager(value: any) { this.runtime.simManager = value; },
     selNode: null, selEdge: null, selGroup: null,

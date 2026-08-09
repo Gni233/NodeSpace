@@ -19,6 +19,56 @@ export interface CanvasGestureEnd {
   moved: boolean;
 }
 
+export interface NodeMembershipDragPosition {
+  nodeId: string;
+  x: number;
+  y: number;
+}
+
+export interface NodeMembershipDragEnd extends NodeMembershipDragPosition {
+  cancelled: boolean;
+}
+
+/**
+ * Tracks the callback lifecycle for a single node-membership drag independently
+ * from pointer cleanup. Its end operation is idempotent so pointer cancellation,
+ * a second touch, and event disposal cannot report duplicate endings.
+ */
+export class NodeMembershipDragState {
+  private active: NodeMembershipDragPosition | null = null;
+
+  start(nodeId: string, x: number, y: number): NodeMembershipDragPosition | null {
+    if (this.active) return null;
+    this.active = { nodeId, x, y };
+    return { ...this.active };
+  }
+
+  move(nodeId: string, x: number, y: number): NodeMembershipDragPosition | null {
+    if (!this.active || this.active.nodeId !== nodeId) return null;
+    this.active.x = x;
+    this.active.y = y;
+    return { ...this.active };
+  }
+
+  end(x: number, y: number, cancelled: boolean): NodeMembershipDragEnd | null {
+    if (!this.active) return null;
+    this.active.x = x;
+    this.active.y = y;
+    const result = { ...this.active, cancelled };
+    this.active = null;
+    return result;
+  }
+
+  cancel(): NodeMembershipDragEnd | null {
+    if (!this.active) return null;
+    return this.end(this.active.x, this.active.y, true);
+  }
+
+  get isActive(): boolean {
+    return this.active !== null;
+  }
+}
+
 export class CanvasGestureState {
   private active: {
     pointerId: number;

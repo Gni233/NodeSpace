@@ -128,4 +128,6 @@ test('editor wires structure-only fields and IME-safe input lifecycle', async ()
   assert.match(source, /compositionstart/);
   assert.match(source, /compositionend/);
   assert.match(source, /structureReflectionEditor\.end\(\)/);
+  assert.match(source, /radModeSelect\.disabled = structureNode/);
+  assert.match(source, /n\.radiusMode = structureNode \? 'level'/);
 });

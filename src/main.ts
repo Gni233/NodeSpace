@@ -42,7 +42,7 @@ import { UndoManager } from './undo-redo';
 import { showToast, confirmAction } from './toast';
 import { startNodeAnimation } from './utils/animate-nodes';
 import { EASING, DURATION } from './utils/easing';
-import { createPaneState, paneAtGlobalIndex, paneGraphFacade, paneIndexForExtra, PANE_LEFT, PANE_RIGHT, PaneState, reindexExtraPanes } from './pane-state';
+import { clearMembershipDragPreview, clearPaneStructureBoundaries, createPaneState, hitPaneStructureBoundary, isOutsideMembershipSourceSnapshot, paneAtGlobalIndex, paneGraphFacade, paneIndexForExtra, paneStructureBoundaryEndpoints, pickMembershipBoundaryTarget, PANE_LEFT, PANE_RIGHT, PaneState, reindexExtraPanes, type MembershipDragSourceSnapshot } from './pane-state';
 import { LayoutSlot } from './layout-controller';
 import { GraphRuntime, GraphRuntimeRegistry } from './graph-runtime';
 import { serializeGraphSnapshot } from './graph-snapshot';
@@ -52,12 +52,14 @@ import { SIDEBAR_LEFT, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH
 const ANIM_DURATION = 500;
 (window as any).__triggerSave = () => {};
 import { clearBlobLayer, createPixiApp, PixiLayers } from './pixi-app';
-import { canDissolveStructure, createStructureNode, detachNodeFromStructure, dissolveStructureNode, getDirectStructureEdges, getStructureProjection, isStructureNode, normalizeStructureRelations, sanitizeCopiedNode, setStructureCollapsed } from './structure-nodes';
+import { canDissolveStructure, createStructureNode, detachNodeFromStructure, dissolveStructureNode, getDirectStructureEdges, getExpandedStructureBoundaryModels, getStructureProjection, isStructureNode, normalizeStructureNodeSizing, normalizeStructureRelations, previewStructureMembershipTransaction, sanitizeCopiedNode, setStructureCollapsed, transactStructureMembership, type StructureMembershipRequest, type StructureMembershipTransactionResult } from './structure-nodes';
 import { createPaneStructureView, createStructureBreadcrumb, getPaneOriginalEdgeIndex, isPaneStructureProxyEdge, isPaneStructureProxyNode, PaneStructureView, StructureNavigationState } from './structure-view';
 import { assignCreatedOrder, assignCreatedOrders, repairCreatedOrders } from './node-order';
 import { createTextViewEditor, TextViewEditor } from './text-view/editor';
 import { createNodeSprite, updateNodePosition, applyNodeVisual, getHeadingColor, getSpectrumColor, getNarrowSpectrumColor, NodeSprite, NodeVisualState, setNodeFontFamily } from './pixi-nodes';
-import { updateEdges } from './pixi-edges';
+import { getNodeVisualRadius, updateEdges } from './pixi-edges';
+import { computeStructureBoundary } from './geometry/structure-boundary';
+import { resolveMembershipDragBoundaryModel, updateStructureBoundaries } from './pixi-structure-boundaries';
 import { updateGroups } from './pixi-groups';
 import { updateGrid, clearGridCache } from './pixi-grid';
 
@@ -816,6 +818,7 @@ async function main() {
 
   const repairGraphCreatedOrders = (data: GraphData): GraphData => {
     repairCreatedOrders(data.nodes || []);
+    normalizeStructureNodeSizing(data);
     return data;
   };
 
@@ -1423,9 +1426,11 @@ async function main() {
     }
   }
 
-  function clearPaneLayout(pane: Pick<PaneState, 'layout' | 'pixi' | 'activeMode'>) {
+  function clearPaneLayout(pane: Pick<PaneState, 'layout' | 'pixi' | 'activeMode' | 'structureBoundaryShapes' | 'hoverStructureId' | 'membershipDragPreview' | 'membershipDragSession'>) {
+    clearMembershipDragPreview(pane);
     pane.layout.clear();
     pane.activeMode = 'default';
+    clearPaneStructureBoundaries(pane);
     if (pane.pixi) {
       clearCards(pane.pixi.cardLayer);
       clearBlobLayer(pane.pixi);
@@ -1452,6 +1457,7 @@ async function main() {
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {
     exitStructureForPane(pane0 as unknown as PaneState);
+    clearPaneStructureBoundaries(pane0 as unknown as PaneState);
     sharedState.hoverNodeId = null;
     sharedState.focusHoverNodeId = null;
     clearPaneLayout(pane0);
@@ -1563,6 +1569,7 @@ async function main() {
   // Pane 1 加载文件
   async function loadGraphDataPane1(fileName: string) {
     exitStructureForPane(pane1);
+    clearPaneStructureBoundaries(pane1);
     sharedState.hoverNodeId = null;
     sharedState.focusHoverNodeId = null;
     clearPaneLayout(pane1);
@@ -1660,6 +1667,7 @@ async function main() {
   /** 通用：加载图到指定窗格 */
   async function loadGraphForPane(pane: PaneState, fileName: string) {
     exitStructureForPane(pane);
+    clearPaneStructureBoundaries(pane);
     sharedState.hoverNodeId = null;
     sharedState.focusHoverNodeId = null;
     clearPaneLayout(pane);
@@ -2380,6 +2388,10 @@ async function main() {
   structureController: new StructureNavigationState({ maxDepth: 1 }),
   disposeStructureBreadcrumb: null as (() => void) | null,
   structureBreadcrumb: null as ReturnType<typeof createStructureBreadcrumb> | null,
+  structureBoundaryShapes: new Map(),
+  hoverStructureId: null as string | null,
+  membershipDragPreview: null,
+  membershipDragSession: null,
 };
 
   // --- 存储辅助函数 ---
@@ -2434,20 +2446,29 @@ async function main() {
     return result.saved && result.current;
   };
 
-  const scheduleSaveForPane = (pane: PaneState) => {
+  const scheduleSaveForRuntime = (runtime: GraphRuntime) => {
     if (externalChangeCooldown) return;
     syncFocusedCommands();
-    pane.layout.onGraphChanged();
-    pane.runtime.cancelPendingSave();
-    pane.runtime.markDirty();
-    pane.dirtyTabs.add(pane.activeTab);
-    const runtime = pane.runtime;
+    if (runtime === primaryRuntime) {
+      pane0.layout.onGraphChanged();
+      dirtyTabs.add(activeTab);
+    }
+    for (const owner of extraPanes) {
+      if (owner.runtime !== runtime) continue;
+      owner.layout.onGraphChanged();
+      owner.dirtyTabs.add(owner.activeTab);
+    }
+    runtime.cancelPendingSave();
+    runtime.markDirty();
     if (runtime.externalConflict || runtime.fileOperationActive) return;
     runtime.saveTimeout = setTimeout(async () => {
       runtime.saveTimeout = null;
       await persistRuntimeSnapshot(runtime, collectRuntimeSettings(runtime));
     }, 300);
+    if (runtime === primaryRuntime) saveTimeout = runtime.saveTimeout;
   };
+
+  const scheduleSaveForPane = (pane: PaneState) => scheduleSaveForRuntime(pane.runtime);
 
   const reinitializeRuntimeViews = (runtime: GraphRuntime) => {
     const initialized = new Set<any>();
@@ -2461,6 +2482,98 @@ async function main() {
       initialized.add(owner.simManager);
     }
     refreshStructureViews(runtime);
+  };
+
+  const clearRuntimeMembershipDragState = (runtime: GraphRuntime) => {
+    if (runtime === primaryRuntime) clearMembershipDragPreview(pane0 as unknown as PaneState);
+    for (const owner of extraPanes) {
+      if (owner.runtime === runtime) clearMembershipDragPreview(owner);
+    }
+  };
+
+  const applyStructureMembershipTransaction = async (
+    runtime: GraphRuntime,
+    request: StructureMembershipRequest,
+  ): Promise<StructureMembershipTransactionResult> => {
+    const graph = runtime.graph;
+    const structureLabel = graph.nodes.find(node => node.id === request.structureId)?.label || request.structureId;
+    let executionRequest = request;
+    let preview = previewStructureMembershipTransaction(graph, executionRequest);
+
+    if (preview.status === 'needs-confirmation') {
+      if (preview.directEdgeCount > 0) {
+        showToast(`请先删除或改接 ${preview.directEdgeCount} 条结构整体关系`, 'warning', 4500);
+        clearRuntimeMembershipDragState(runtime);
+        draw();
+        return preview;
+      }
+      const confirmed = await confirmAction(
+        '移出后结构不足两个成员，将解散结构',
+        { confirm: '移出并解散', cancel: '取消' },
+      );
+      if (!confirmed) {
+        clearRuntimeMembershipDragState(runtime);
+        draw();
+        return preview;
+      }
+      // Confirmation is asynchronous: revalidate the captured runtime, never the focused pane.
+      executionRequest = {
+        action: 'remove',
+        structureId: request.structureId,
+        nodeId: request.nodeId,
+        confirmDissolve: true,
+      };
+      preview = previewStructureMembershipTransaction(graph, executionRequest);
+    }
+
+    if (preview.status !== 'changed') {
+      clearRuntimeMembershipDragState(runtime);
+      if (preview.status === 'rejected' && preview.reason === 'direct-edges') {
+        showToast(`请先删除或改接 ${preview.directEdgeCount ?? 0} 条结构整体关系`, 'warning', 4500);
+      } else if (preview.status === 'rejected') {
+        showToast('结构成员关系已变化，本次操作未执行', 'warning', 3000);
+      }
+      draw();
+      return preview;
+    }
+
+    let snapshotPushed = false;
+    const result = transactStructureMembership(graph, executionRequest, () => {
+      // The transaction invokes this only after its final synchronous validation and before mutation.
+      runtime.undoManager.pushSnapshot(graph);
+      snapshotPushed = true;
+    });
+    clearRuntimeMembershipDragState(runtime);
+    if (result.status !== 'changed') {
+      // No callback means no empty undo entry was created if facts diverged from the preview.
+      if (!snapshotPushed) showToast('结构成员关系已变化，本次操作未执行', 'warning', 3000);
+      draw();
+      return result;
+    }
+
+    if (result.action === 'dissolve') {
+      for (const owner of [pane0 as unknown as PaneState, ...extraPanes]) {
+        const ownerRuntime = owner.index === PANE_LEFT ? primaryRuntime : owner.runtime;
+        if (ownerRuntime !== runtime || owner.selNode !== request.structureId) continue;
+        owner.selNode = null;
+        owner.selEdge = null;
+        owner.selGroup = null;
+      }
+      if (runtime === primaryRuntime && selNode === request.structureId) clearEd();
+    }
+    reinitializeRuntimeViews(runtime);
+    scheduleSaveForRuntime(runtime);
+    draw();
+    showToast(
+      result.action === 'add'
+        ? `已加入「${structureLabel}」`
+        : result.action === 'remove'
+          ? `已移出「${structureLabel}」`
+          : `已移出并解散「${structureLabel}」`,
+      'success',
+      2500,
+    );
+    return result;
   };
 
   const applyCompiledTextGraph = (runtime: GraphRuntime, compiled: GraphData) => {
@@ -2528,27 +2641,8 @@ async function main() {
   };
 
   const scheduleSave = () => {
-    // 外部变更冷却期内跳过自动保存（防止覆盖 MCP Server 等外部工具的修改）
-    if (externalChangeCooldown) return;
-    syncFocusedCommands();
-
-    if (focusedPaneIndex > PANE_LEFT) {
-      const ep = extraPanes[focusedPaneIndex - 1];
-      if (ep) scheduleSaveForPane(ep);
-      return;
-    }
-    pane0.layout.onGraphChanged();
-    primaryRuntime.cancelPendingSave();
-    primaryRuntime.markDirty();
-    dirtyTabs.add(activeTab);
-    const runtime = primaryRuntime;
-    if (runtime.externalConflict) return;
-    if (runtime.fileOperationActive) return;
-    runtime.saveTimeout = setTimeout(async () => {
-      runtime.saveTimeout = null;
-      await persistRuntimeSnapshot(runtime, collectRuntimeSettings(runtime));
-    }, 300);
-    saveTimeout = primaryRuntime.saveTimeout;
+    const focusedOwner = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1] : null;
+    scheduleSaveForRuntime(focusedOwner?.runtime ?? primaryRuntime);
   };
   (window as any).__triggerSave = () => scheduleSave();
   (window as any).__graphNodes = graph.nodes;
@@ -2740,7 +2834,10 @@ async function main() {
   };
 
 function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeSprite>, st: PaneState) {
-    if (st.textViewActive) return;
+    if (st.textViewActive) {
+      clearPaneStructureBoundaries(st);
+      return;
+    }
     const graph = st.structureView?.graph ?? g;
     const pixi = px;
     const simManager = st.structureView?.simManager ?? sm;
@@ -2761,6 +2858,62 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       ? { nodes: graph.nodes || [], edges: graph.edges || [], hiddenNodeIds: new Set<string>() }
       : getStructureProjection(graph);
     const nodes = isCardMode ? (graph.nodes || []) : (sim.nodes() || []);
+    const theme = getTheme(st.graphTheme);
+    const lblColor = parseInt(theme.labelColor.replace('#', ''), 16);
+    const defColor = parseInt(theme.nodeDefaultColor.replace('#', ''), 16);
+    const isDarkTheme = ((c: string) => {
+      const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(c);
+      if (!m) return true;
+      return (parseInt(m[1], 16) * 299 + parseInt(m[2], 16) * 587 + parseInt(m[3], 16) * 114) / 1000 < 128;
+    })(theme.canvasBackground);
+    const expandedBoundaryIds = new Set<string>();
+    if (st.structureView || isCardMode) {
+      if (st.structureBoundaryShapes.size > 0 || st.hoverStructureId) clearPaneStructureBoundaries(st);
+    } else {
+      const simNodesById = new Map<string, any>(nodes.map((node: any) => [node.id, node]));
+      const boundaryModels = getExpandedStructureBoundaryModels(graph).flatMap(model => {
+        const memberPositions = model.memberIds.flatMap(memberId => {
+          const member = simNodesById.get(memberId);
+          return member && Number.isFinite(member.x) && Number.isFinite(member.y)
+            ? [{ id: memberId, x: member.x, y: member.y, visualRadius: getNodeVisualRadius(member) }]
+            : [];
+        });
+        const shape = computeStructureBoundary(memberPositions);
+        if (!shape) return [];
+        st.structureBoundaryShapes.set(model.structureId, shape);
+        expandedBoundaryIds.add(model.structureId);
+        return [resolveMembershipDragBoundaryModel({
+          id: model.structureId,
+          label: model.label,
+          summary: model.summary,
+          color: model.color,
+          shape,
+          memberCount: model.memberCount,
+          externalLinkCount: model.externalEdgeCount,
+          selected: st.selNode === model.structureId,
+          hovered: st.hoverStructureId === model.structureId,
+          memberPositions,
+        }, st.membershipDragPreview)];
+      });
+      for (const structureId of [...st.structureBoundaryShapes.keys()]) {
+        if (!expandedBoundaryIds.has(structureId)) st.structureBoundaryShapes.delete(structureId);
+      }
+      if (st.hoverStructureId && !expandedBoundaryIds.has(st.hoverStructureId)) st.hoverStructureId = null;
+      const selectedStructure = st.selNode
+        ? graph.nodes.find((node: any) => node.id === st.selNode && isStructureNode(node))
+        : null;
+      if (selectedStructure && !selectedStructure.structure.collapsed && !expandedBoundaryIds.has(selectedStructure.id)) st.selNode = null;
+      updateStructureBoundaries(pixi.structureLayer, boundaryModels, {
+        theme: {
+          accent: st.themeAccentColor,
+          labelColor: lblColor,
+          isDark: isDarkTheme,
+          zoom: pixi.viewport.scale.x,
+        },
+        membershipDragPreview: st.membershipDragPreview,
+        drawMembershipLines: true,
+      });
+    }
 
     // 居中模式：视口跟随选中节点
     // 居中模式：视口平滑跟随选中节点（per-viewport 状态存在 viewport 对象上）
@@ -2805,15 +2958,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       grp.destroy({ children: true });
       (pixi.nodeLayer as any)._emptyGroup = null;
     }
-    const theme = getTheme(st.graphTheme);
-    const lblColor = parseInt(theme.labelColor.replace('#', ''), 16);
-    const defColor = parseInt(theme.nodeDefaultColor.replace('#', ''), 16);
-    // 根据画布背景明度判断暗/亮主题
-    const isDarkTheme = ((c: string) => {
-      const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(c);
-      if (!m) return true;
-      return (parseInt(m[1], 16) * 299 + parseInt(m[2], 16) * 587 + parseInt(m[3], 16) * 114) / 1000 < 128;
-    })(theme.canvasBackground);
     const accentHex = '#' + st.themeAccentColor.toString(16).padStart(6, '0');
     const defaultNodeColor = (lv: number) =>
       '#' + getHeadingColor(lv || 6, accentHex, isDarkTheme).toString(16).padStart(6, '0');
@@ -2929,7 +3073,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
       bg.clear();
       for (const n of nodes) {
-        if (hiddenNodes.has(n.id)) continue;
+        if (hiddenNodes.has(n.id) || expandedBoundaryIds.has(n.id)) continue;
         const levelR = [22, 19, 16, 13, 10, 7][(n.headingLevel || 6) - 1] || 9;
         const nr = (n.radiusMode === 'custom' || (!n.radiusMode && n.radius)) ? (n.radius || 9) : levelR;
         const colorStr = resolveNodeColor(n);
@@ -2990,7 +3134,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     // 先清理隐藏/不存在节点的 sprite（避免旧光晕残留）
     const aliveIds = new Set(nodes.map((n: any) => n.id));
     for (const [id, sprite] of nodeSprites) {
-      if (!aliveIds.has(id) || (hiddenNodes.has(id) && !animatingIds.has(id))) {
+      if (!aliveIds.has(id) || expandedBoundaryIds.has(id) || (hiddenNodes.has(id) && !animatingIds.has(id))) {
         pixi.nodeLayer.removeChild(sprite.container);
         sprite.container.destroy({ children: true });
         nodeSprites.delete(id);
@@ -3008,7 +3152,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const finishedCollapsing = new Set<string>();
 
     for (const n of nodes) {
-      if (hiddenNodes.has(n.id)) continue;
+      if (hiddenNodes.has(n.id) || expandedBoundaryIds.has(n.id)) continue;
       const id = n.id;
       const collapseAnim = (n as any)._collapseAnim;
       const expandAnim = (n as any)._expandAnim;
@@ -3194,14 +3338,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       if (mult < 1) collapseEdgeFade.set(idx, mult);
     });
 
-    const edgeGraph = { ...graph, edges: structureProjection.edges };
-    const hasProjectedEdges = structureProjection.edges.some((edge: any) =>
-      edge._structureMembership || edge._originalIndex !== undefined,
+    const renderEdgesWithIndexes = structureProjection.edges.flatMap((edge: any, projectionIndex: number) =>
+      edge._structureMembership ? [] : [{ edge, projectionIndex }],
     );
-    updateEdges(pixi.edgeLayer, edgeGraph, nodes, {
+    const renderEdges = renderEdgesWithIndexes.map(item => item.edge);
+    const edgeGraph = { ...graph, edges: renderEdges };
+    const hasProjectedEdges = renderEdges.some((edge: any) => edge._originalIndex !== undefined);
+    const renderFocusEdgeIndices = focusActive
+      ? new Set(renderEdgesWithIndexes.flatMap((item, renderIndex) => focusEdgeIndices.has(item.projectionIndex) ? [renderIndex] : []))
+      : undefined;
+    const edgeRenderNodes = expandedBoundaryIds.size === 0
+      ? nodes
+      : nodes
+        .filter((node: any) => !expandedBoundaryIds.has(node.id))
+        .concat(paneStructureBoundaryEndpoints(st));
+    updateEdges(pixi.edgeLayer, edgeGraph, edgeRenderNodes, {
       hiddenNodes,
       focusNeighborIds: focusActive ? focusNeighborIds : undefined,
-      focusEdgeIndices: focusActive ? focusEdgeIndices : undefined,
+      focusEdgeIndices: renderFocusEdgeIndices,
       collapsedEdgeIndices: !hasProjectedEdges && collapsedEdgeIndices.size > 0 ? collapsedEdgeIndices : undefined,
       collapseEdgeFade: !hasProjectedEdges && collapseEdgeFade.size > 0 ? collapseEdgeFade : undefined,
       selectedEdgeIndex: hasProjectedEdges ? null : st.selEdge,
@@ -3434,7 +3588,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     s.structureView = pane0.structureView;
     s.structureController = pane0.structureController;
     s.structurePath = [...pane0.structurePath];
+    s.structureBoundaryShapes = pane0.structureBoundaryShapes;
+    s.hoverStructureId = pane0.hoverStructureId;
     renderPane(pixi!, scopedPaneGraph(s), scopedPaneSimulationManager(s), nodeSprites, s);
+    pane0.hoverStructureId = s.hoverStructureId;
   };
 
   function pixiDrawPane1() {
@@ -4679,6 +4836,148 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const scopedPaneGraph = (pane: PaneState): GraphData => pane.structureView?.graph ?? paneRuntimeGraph(pane);
   const scopedPaneSimulationManager = (pane: PaneState): any => pane.structureView?.simManager
     ?? (pane.index === PANE_LEFT ? simManager : pane.simManager);
+
+  const canStartMembershipDrag = (pane: PaneState, runtime: GraphRuntime, nodeId: string): boolean => {
+    if (pane.structureView || pane.textViewActive || runtime.textEditActive || coordinateLayoutModes.has(pane.activeMode)) return false;
+    if (isPaneStructureProxyNode(pane.structureView, nodeId)) return false;
+    const node = runtime.graph.nodes.find(candidate => candidate.id === nodeId);
+    return Boolean(node && !isStructureNode(node) && !node._structureInteriorProxy);
+  };
+
+  const beginMembershipDrag = (pane: PaneState, nodeId: string, worldX: number, worldY: number) => {
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    clearMembershipDragPreview(pane);
+    if (!canStartMembershipDrag(pane, runtime, nodeId)) return;
+
+    const node = runtime.graph.nodes.find(candidate => candidate.id === nodeId)!;
+    const sourceStructureId = typeof node.structureParentId === 'string' && node.structureParentId.length > 0
+      ? node.structureParentId
+      : null;
+    const expandedModels = getExpandedStructureBoundaryModels(runtime.graph);
+    const sourceModel = sourceStructureId
+      ? expandedModels.find(model => model.structureId === sourceStructureId && model.memberIds.includes(nodeId))
+      : null;
+    let sourceSnapshot: MembershipDragSourceSnapshot | null = null;
+    if (sourceModel) {
+      const simNodes = scopedPaneSimulationManager(pane)?.getSim?.()?.nodes?.() ?? [];
+      const simNodesById = new Map<string, any>(simNodes.map((candidate: any) => [candidate.id, candidate]));
+      const otherMembers = sourceModel.memberIds.flatMap(memberId => {
+        if (memberId === nodeId) return [];
+        const member = simNodesById.get(memberId);
+        return member && Number.isFinite(member.x) && Number.isFinite(member.y)
+          ? [{ x: member.x, y: member.y, visualRadius: getNodeVisualRadius(member) }]
+          : [];
+      });
+      const shape = computeStructureBoundary(otherMembers) ?? undefined;
+      const currentShape = pane.structureBoundaryShapes.get(sourceStructureId!);
+      const center = shape?.center ?? currentShape?.center ?? { x: worldX, y: worldY };
+      const fallbackRadius = currentShape
+        ? Math.max(48, Math.hypot(currentShape.bounds.maxX - currentShape.bounds.minX, currentShape.bounds.maxY - currentShape.bounds.minY) / 2)
+        : 64;
+      sourceSnapshot = { shape, center, escapeRadius: fallbackRadius };
+    }
+
+    pane.hoverStructureId = null;
+    pane.membershipDragSession = {
+      runtime,
+      nodeId,
+      sourceStructureId,
+      sourceExpanded: Boolean(sourceModel),
+      sourceSnapshot,
+    };
+    pane.membershipDragPreview = {
+      nodeId,
+      sourceStructureId,
+      targetStructureId: null,
+      mode: 'none',
+      message: sourceStructureId && !sourceModel ? '当前归属结构未展开' : '拖动以调整结构成员',
+      sourceBoundaryShape: sourceSnapshot?.shape,
+    };
+    draw();
+  };
+
+  const resolveMembershipDragPreview = (pane: PaneState, nodeId: string, worldX: number, worldY: number) => {
+    const session = pane.membershipDragSession;
+    if (!session || session.nodeId !== nodeId) return null;
+    const expandedIds = getExpandedStructureBoundaryModels(session.runtime.graph).map(model => model.structureId);
+    if (!session.sourceStructureId) {
+      const targetStructureId = pickMembershipBoundaryTarget(
+        pane.structureBoundaryShapes,
+        expandedIds,
+        worldX,
+        worldY,
+      );
+      return {
+        nodeId,
+        sourceStructureId: null,
+        targetStructureId,
+        mode: targetStructureId ? 'add' as const : 'none' as const,
+        message: targetStructureId ? '松手加入结构' : '未命中展开结构',
+      };
+    }
+
+    const otherTargetId = pickMembershipBoundaryTarget(
+      pane.structureBoundaryShapes,
+      expandedIds,
+      worldX,
+      worldY,
+      session.sourceStructureId,
+    );
+    if (otherTargetId) {
+      return {
+        nodeId,
+        sourceStructureId: session.sourceStructureId,
+        targetStructureId: otherTargetId,
+        mode: 'reject' as const,
+        message: '节点已属于其他结构，不能直接转移',
+        sourceBoundaryShape: session.sourceSnapshot?.shape,
+      };
+    }
+    if (!session.sourceExpanded || !session.sourceSnapshot) {
+      return {
+        nodeId,
+        sourceStructureId: session.sourceStructureId,
+        targetStructureId: null,
+        mode: 'none' as const,
+        message: '仅可从展开结构移出成员',
+      };
+    }
+    const remove = isOutsideMembershipSourceSnapshot(session.sourceSnapshot, worldX, worldY);
+    return {
+      nodeId,
+      sourceStructureId: session.sourceStructureId,
+      targetStructureId: null,
+      mode: remove ? 'remove' as const : 'none' as const,
+      message: remove ? '松手移出结构' : '仍在结构边界内',
+      sourceBoundaryShape: session.sourceSnapshot.shape,
+    };
+  };
+
+  const moveMembershipDrag = (pane: PaneState, nodeId: string, worldX: number, worldY: number) => {
+    const preview = resolveMembershipDragPreview(pane, nodeId, worldX, worldY);
+    if (!preview) return;
+    pane.membershipDragPreview = preview;
+    pane.hoverStructureId = null;
+    draw();
+  };
+
+  const endMembershipDrag = (pane: PaneState, nodeId: string, worldX: number, worldY: number, cancelled: boolean) => {
+    const session = pane.membershipDragSession;
+    if (!session || session.nodeId !== nodeId) {
+      clearMembershipDragPreview(pane);
+      draw();
+      return;
+    }
+    const finalPreview = cancelled ? null : resolveMembershipDragPreview(pane, nodeId, worldX, worldY);
+    clearMembershipDragPreview(pane);
+    draw();
+    if (!finalPreview || finalPreview.mode === 'none' || finalPreview.mode === 'reject') return;
+    const request: StructureMembershipRequest = finalPreview.mode === 'add'
+      ? { action: 'add', structureId: finalPreview.targetStructureId!, nodeId }
+      : { action: 'remove', structureId: finalPreview.sourceStructureId!, nodeId };
+    void applyStructureMembershipTransaction(session.runtime, request);
+  };
+
   const structureNodeForPane = (pane: PaneState) => {
     const id = pane.structureController.currentId;
     return id ? paneRuntimeGraph(pane).nodes.find(node => node.id === id && isStructureNode(node)) ?? null : null;
@@ -4716,8 +5015,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     reinitializeRuntimeViews(pane.index === PANE_LEFT ? primaryRuntime : pane.runtime);
   };
   exitStructureForPane = (pane: PaneState, fit = false): boolean => {
+    clearMembershipDragPreview(pane);
     if (!pane.structureView) return false;
     pane.structureView.simManager?.getSim?.()?.stop?.();
+    clearPaneStructureBoundaries(pane);
     pane.structureView = null;
     pane.structureController.exitTo(-1);
     pane.structurePath = [];
@@ -4783,6 +5084,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       return;
     }
     if (pane.structureView || !pane.structureController.enter(id)) return;
+    clearPaneStructureBoundaries(pane);
     pane.currentAnimationCancel?.();
     pane.currentAnimationCancel = null;
     if (pane.index === PANE_LEFT && activeMode === 'radial') stopStarLoop();
@@ -4933,8 +5235,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const paneRuntime = (pane: object) => pane === pane0 ? primaryRuntime : (pane as PaneState).runtime;
   const paneContainer = (pane: object) => pane === pane0 ? pixiContainer : (pane as PaneState).canvasContainer;
   const setPaneTextActive = (pane: object, active: boolean) => {
-    if (pane === pane0) pane0St.textViewActive = active;
-    else (pane as PaneState).textViewActive = active;
+    const paneState = pane === pane0 ? pane0St as unknown as PaneState : pane as PaneState;
+    if (active) clearMembershipDragPreview(paneState);
+    paneState.textViewActive = active;
   };
   const setRuntimeInteractionLock = (runtime: GraphRuntime, editingPane: object, locked: boolean) => {
     const owners: object[] = [pane0, ...extraPanes];
@@ -5137,7 +5440,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       s.structureView = pane0.structureView;
       s.structureController = pane0.structureController;
       s.structurePath = [...pane0.structurePath];
-      if (render) renderPane(pixi!, scopedPaneGraph(s), scopedPaneSimulationManager(s), nodeSprites, s);
+      s.structureBoundaryShapes = pane0.structureBoundaryShapes;
+      s.hoverStructureId = pane0.hoverStructureId;
+      if (render) {
+        renderPane(pixi!, scopedPaneGraph(s), scopedPaneSimulationManager(s), nodeSprites, s);
+        pane0.hoverStructureId = s.hoverStructureId;
+      }
     };
 
     // 左窗格被其他窗格共享 → 同步主题 + 重绘
@@ -5211,6 +5519,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (idx === 0 && extraPanes.length === 1) {
       // 仅剩 pane1 → 隐藏分屏（复用 pane1 数据）
       exitStructureForPane(extraPanes[0]);
+      clearPaneStructureBoundaries(extraPanes[0]);
       clearPaneLayout(extraPanes[0]);
       dualPane.paneContainers[PANE_RIGHT].style.display = 'none';
       dualPane.layoutPanes();
@@ -5235,6 +5544,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     textEditors.get(np)?.dispose();
     np.disposeCanvasEvents?.();
     np.disposeCanvasEvents = null;
+    clearPaneStructureBoundaries(np, true);
     clearPaneLayout(np);
     runtimeRegistry.release(np.runtime, np);
     if (np.pixi) np.pixi.app.destroy(true);
@@ -6510,14 +6820,15 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // --- 缩放/平移由 pixi-viewport 处理 ---
 
   // --- 右键菜单 ---
-  const onContextMenu = (type: 'blank'|'node'|'edge'|'group', id: string | null, screenX: number, screenY: number) => {
+  const onContextMenu = (menuPane: PaneState, type: 'blank'|'node'|'edge'|'group', id: string | null, screenX: number, screenY: number) => {
     const items: ContextMenuItem[] = [];
     const mx = screenX, my = screenY;
-    const targetPane = focusedExtraPane();
-    const focusedPane = targetPane ?? pane0 as unknown as PaneState;
-    const isExtra = !!targetPane;
+    const focusedPane = menuPane;
+    const targetPane = menuPane.index === PANE_LEFT ? null : menuPane;
+    const isExtra = menuPane.index !== PANE_LEFT;
     const _g = scopedPaneGraph(focusedPane);
-    const _runtimeGraph = paneRuntimeGraph(focusedPane);
+    const _runtime = targetPane?.runtime ?? primaryRuntime;
+    const _runtimeGraph = _runtime.graph;
     const _px = targetPane?.pixi ?? pixi!;
     const _sm = scopedPaneSimulationManager(focusedPane);
     if ((type === 'node' && isPaneStructureProxyNode(focusedPane.structureView, id))
@@ -6776,6 +7087,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
             return;
           }
           _saveUndo();
+          clearPaneStructureBoundaries(focusedPane);
           setStructureCollapsed(_g, id, collapsed);
           reinitializeRuntimeViews(targetPane?.runtime ?? primaryRuntime);
           if (targetPane) scheduleSaveForPane(targetPane); else scheduleSave();
@@ -6802,6 +7114,35 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           draw();
         }});
       } else {
+        const membershipMenuEnabled = !focusedPane.structureView
+          && !focusedPane.textViewActive
+          && !_runtime.textEditActive
+          && !coordinateLayoutModes.has(focusedPane.activeMode)
+          && !isPaneStructureProxyNode(focusedPane.structureView, id);
+        if (membershipMenuEnabled && nodeForCollapse) {
+          const ownerId = typeof nodeForCollapse.structureParentId === 'string' ? nodeForCollapse.structureParentId : null;
+          const owner = ownerId
+            ? _runtimeGraph.nodes.find(candidate => candidate.id === ownerId && isStructureNode(candidate))
+            : null;
+          if (owner && owner.structure.memberIds.includes(id)) {
+            addItem({
+              label: `移出「${owner.label || owner.id}」`,
+              action: () => { void applyStructureMembershipTransaction(_runtime, { action: 'remove', structureId: owner.id, nodeId: id }); },
+            });
+          } else if (!ownerId) {
+            const expandedStructures = getExpandedStructureBoundaryModels(_runtimeGraph);
+            if (expandedStructures.length > 0) {
+              addItem({
+                label: '加入展开结构',
+                children: expandedStructures.map(model => ({
+                  label: model.label,
+                  action: () => { void applyStructureMembershipTransaction(_runtime, { action: 'add', structureId: model.structureId, nodeId: id }); },
+                })),
+              });
+            }
+          }
+        }
+
         // 检查当前节点是否有子节点（至少一条以它为 source 的边）
         const hasChild = _g.edges.some(e => {
           const src = typeof e.source === 'object' ? e.source.id : e.source;
@@ -6888,7 +7229,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
       const highFrequencyLabels = new Set(['编辑', '新建子节点', '提升层级', '降低层级', '打开链接']);
       const isStructureAction = (label = '') =>
-        label.startsWith('收束为结构') || label.startsWith('展开结构') || label === '进入结构' || label === '收束结构' ||
+        label.startsWith('收束为结构') || label.startsWith('展开结构') || label.startsWith('移出「') || label === '加入展开结构' || label === '进入结构' || label === '收束结构' ||
         label === '解散结构' || label === '展开一级' || label === '全部展开' ||
         label === '折叠一级' || label === '逐级折叠' || label === '连线';
       const highFrequencyItems = items.filter(item => highFrequencyLabels.has(item.label ?? ''));
@@ -6942,7 +7283,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       return true;
     }
     const sim = pi ? scopedPaneSimulationManager(pi).getSim() : scopedPaneSimulationManager(pane0 as unknown as PaneState).getSim();
-    const nodes = sim?.nodes() || [];
+    const nodes = (sim?.nodes() || []).filter((node: any) => !activePane.structureBoundaryShapes.has(node.id));
     const g = pi ? paneRuntimeGraph(pi) : graph;
     const ne = pi ? pi.nodeExpand : nodeExpand;
     const finishCurrentLinkMode = () => finishLinkMode(pi);
@@ -7055,7 +7396,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getNodeExpand: () => pi.nodeExpand, getLineExpand: () => pi.lineExpand,
     getDraggingNode: () => pi.draggingNode, setDraggingNode: (v: any) => { pi.draggingNode = v; },
     getWasDragged: () => pi.wasDragged, setWasDragged: (v: boolean) => { pi.wasDragged = v; },
-    draw, onContextMenu,
+    draw, onContextMenu: (type: 'blank'|'node'|'edge'|'group', id: string | null, x: number, y: number) => onContextMenu(pi, type, id, x, y),
     isReadOnlyNode,
     isReadOnlyEdge,
     getOriginalEdgeIndex,
@@ -7072,18 +7413,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     unfixNodes: (ids: string[]) => { const sim = getSM().getSim(); for (const id of ids) { const n = runtimeGraph().nodes.find(gn => gn.id === id); if (n) { n.fixed = false; n.fx = null; n.fy = null; } if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = false; sn.fx = null; sn.fy = null; } } } if (sim) { sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); } scheduleSave(); draw(); },
     appShell, triggerSave: () => scheduleSave(),
     onDragStart: (id: string) => { getSM().setDragNode(id); lastDragId.v = id; dragCount++; appShell.classList.add('is-dragging-node'); },
+    onNodeMembershipDragStart: (id: string, x: number, y: number) => beginMembershipDrag(pi, id, x, y),
+    onNodeMembershipDragMove: (id: string, x: number, y: number) => moveMembershipDrag(pi, id, x, y),
+    onNodeMembershipDragEnd: (id: string, x: number, y: number, cancelled: boolean) => endMembershipDrag(pi, id, x, y, cancelled),
     onDragEnd: () => {
-      if ((pi.gridSnapEnabled || pi.partialGridSnap) && lastDragId.v) {
-        const sn = getSM().getSim()?.nodes()?.find((n2: any) => n2.id === lastDragId.v);
+      const draggedId = lastDragId.v;
+      if ((pi.gridSnapEnabled || pi.partialGridSnap) && draggedId) {
+        const sn = getSM().getSim()?.nodes()?.find((n2: any) => n2.id === draggedId);
         if (sn && (pi.gridSnapEnabled || sn.fixed)) {
           const [sx, sy] = snapPosToGrid(sn.x, sn.y, pi.gridSp);
           sn.x = sx; sn.y = sy; sn.fx = sx; sn.fy = sy;
-          const gn = runtimeGraph().nodes.find((gn2: any) => gn2.id === lastDragId.v);
+          const gn = runtimeGraph().nodes.find((gn2: any) => gn2.id === draggedId);
           if (gn) { gn.x = sx; gn.y = sy; gn.fx = sx; gn.fy = sy; }
         }
-        lastDragId.v = null;
       }
-      if (lastDragId.v) commitStructureMemberDrag(pi, lastDragId.v);
+      if (draggedId) {
+        if (pi.structureView) commitStructureMemberDrag(pi, draggedId);
+        else scheduleSaveForRuntime(pi.index === PANE_LEFT ? primaryRuntime : pi.runtime);
+      }
       lastDragId.v = null;
       getSM().setDragNode(null);
       dragCount = Math.max(0, dragCount - 1);
@@ -7095,6 +7442,22 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     clearEd: () => { pi.selNode = null; pi.selEdge = null; pi.selGroup = null; },
     getGridSnapEnabled: () => pi.gridSnapEnabled || pi.partialGridSnap, getGridSp: () => pi.gridSp,
     getHiddenNodeIds: () => sharedState.hiddenNodeIds?.() ?? new Set(),
+    isStructureBoundaryNode: (id: string) => pi.structureBoundaryShapes.has(id),
+    getStructureBoundaryEndpoints: () => paneStructureBoundaryEndpoints(pi),
+    hitStructureBoundary: (x: number, y: number) => hitPaneStructureBoundary(pi, x, y, Math.max(4, pi.lineExpand)),
+    onStructureBoundaryHover: (id: string | null) => {
+      const nextId = pi.membershipDragSession ? null : id;
+      if (pi.hoverStructureId === nextId) return;
+      pi.hoverStructureId = nextId;
+      draw();
+    },
+    onStructureBoundaryTap: (id: string) => {
+      pi.selNode = id;
+      pi.selEdge = null;
+      pi.selGroup = null;
+      fillNode(id);
+      draw();
+    },
     createStructure: (ids: string[]) => createStructureForPane(pi, pi.index === PANE_LEFT ? primaryRuntime : pi.runtime, ids),
     setDragScale: (nodeId: string | null, scale: number) => { if (nodeId) { const sprite = sprites.get(nodeId); if (sprite) sprite.container.scale.set(scale); } },
     onTap: (x: number, y: number, nodeId?: string) => {
@@ -7117,11 +7480,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
       if (handleLinkTap(x, y, pi)) return;
       if (pi.linkMode && !pi.linkSrc) {
-        const ns = getSM().getSim()?.nodes() || [];
+        const ns = (getSM().getSim()?.nodes() || []).filter((node: any) => !pi.structureBoundaryShapes.has(node.id));
         const hit = ns.find((nd: any) => (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + pi.nodeExpand) ** 2);
         if (hit) { pi.linkSrc = hit.id; showToast(`源: ${hit.label || hit.id}，请点击目标节点`, 'info', 2000); return; }
       }
-      const nodes = getSM().getSim()?.nodes() || [];
+      const nodes = (getSM().getSim()?.nodes() || []).filter((node: any) => !pi.structureBoundaryShapes.has(node.id));
       const n = nodes.find((nd: any) => (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + pi.nodeExpand) ** 2);
       if (n) { pi.selNode = n.id; fillNode(n.id); draw(); return; }
       const scopedGraph = scopedPaneGraph(pi);

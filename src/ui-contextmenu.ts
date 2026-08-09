@@ -1,7 +1,47 @@
 import { sharedState } from "./shared-state";
 import {Z_CONTEXT_MENU, V } from "./layout-constants";
 
+export interface ContextMenuTreeElement {
+  contains(target: Node | null): boolean;
+  remove(): void;
+}
+
+/** Tracks every element in one context-menu tree, including submenus. */
+export class ContextMenuTree<T extends ContextMenuTreeElement = ContextMenuTreeElement> {
+  private readonly menus = new Set<T>();
+
+  get size(): number {
+    return this.menus.size;
+  }
+
+  register(menu: T): void {
+    this.menus.add(menu);
+  }
+
+  unregister(menu: T): void {
+    this.menus.delete(menu);
+  }
+
+  contains(target: Node | null): boolean {
+    return [...this.menus].some(menu => menu.contains(target));
+  }
+
+  closeAll(): void {
+    for (const menu of this.menus) menu.remove();
+    this.menus.clear();
+  }
+
+  closeAllExcept(menu: T): void {
+    for (const openMenu of this.menus) {
+      if (openMenu !== menu) openMenu.remove();
+    }
+    this.menus.clear();
+    this.menus.add(menu);
+  }
+}
+
 let currentMenu: HTMLElement | null = null;
+const openMenus = new ContextMenuTree<HTMLElement>();
 
 export interface ContextMenuItem {
   label?: string;
@@ -12,17 +52,15 @@ export interface ContextMenuItem {
 }
 
 export function closeContextMenu() {
-  if (currentMenu) {
-    currentMenu.remove();
-    currentMenu = null;
-  }
+  openMenus.closeAll();
+  currentMenu = null;
   document.removeEventListener("pointerdown", onDocPointerDown);
   document.removeEventListener("touchstart", onDocTouchStart);
   window.removeEventListener("keydown", onKeyDown);
 }
 
 function onDocPointerDown(e: PointerEvent) {
-  if (currentMenu && !currentMenu.contains(e.target as Node)) {
+  if (currentMenu && !openMenus.contains(e.target as Node | null)) {
     closeContextMenu();
     if (sharedState.clearSelection) {
       sharedState.clearSelection();
@@ -31,7 +69,7 @@ function onDocPointerDown(e: PointerEvent) {
 }
 
 function onDocTouchStart(e: TouchEvent) {
-  if (currentMenu && !currentMenu.contains(e.target as Node)) {
+  if (currentMenu && !openMenus.contains(e.target as Node | null)) {
     closeContextMenu();
     if (sharedState.clearSelection) {
       sharedState.clearSelection();
@@ -104,14 +142,10 @@ export function showContextMenu(
           const sub = document.createElement("div");
           sub.style.cssText = menuStyle + `left:${mx + parent.offsetWidth}px;top:${my + mi.offsetTop}px;`;
           buildItems(sub, item.children, mx + parent.offsetWidth, my + mi.offsetTop);
+          // Keep one submenu branch open and register it with the root's outside-click tree.
+          openMenus.closeAllExcept(menu);
           container.appendChild(sub);
-          // 点击子菜单外关闭全部
-          const onSubClose = (e: PointerEvent) => {
-            if (!sub.contains(e.target as Node) && e.target !== mi) {
-              sub.remove(); document.removeEventListener('pointerdown', onSubClose);
-            }
-          };
-          setTimeout(() => document.addEventListener('pointerdown', onSubClose), 0);
+          openMenus.register(sub);
         } else {
           item.action?.();
           closeContextMenu();
@@ -125,6 +159,7 @@ export function showContextMenu(
 
   container.appendChild(menu);
   currentMenu = menu;
+  openMenus.register(menu);
 
   // Screen-edge clamping
   requestAnimationFrame(() => {
@@ -138,6 +173,8 @@ export function showContextMenu(
   });
 
   setTimeout(() => {
+    // A newer menu may have replaced this one before its deferred listeners run.
+    if (currentMenu !== menu) return;
     document.addEventListener("pointerdown", onDocPointerDown);
     document.addEventListener("touchstart", onDocTouchStart);
     window.addEventListener("keydown", onKeyDown);
