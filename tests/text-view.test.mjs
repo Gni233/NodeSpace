@@ -128,6 +128,30 @@ test('printer explicitly round-trips unknown and nested semantic fields with sta
   assert.deepEqual(compiled.graph.settings, graph.settings);
 });
 
+test('compact printer hides machine-maintained layout state without hiding editable settings', () => {
+  const graph = {
+    nodes: [{
+      id: 'n1', label: '一条随笔', note: '正文', x: 12, y: 24,
+      createdOrder: 9, fixed: false, collapsed: false,
+      _semanticCard: { form: 'card', width: 180 },
+    }],
+    edges: [],
+    groups: [],
+    settings: {
+      linkDist: 96,
+      semanticLayoutMemory: { version: 1, nodes: { n1: { x: 1, y: 2 } } },
+      semanticCardForms: { n1: 'card' },
+      cardViews: { card: { scale: 1 } },
+      expandedMedia: ['n1'],
+    },
+  };
+
+  const compact = api.printTextGraph(graph, { graphName: '图', compact: true });
+  assert.doesNotMatch(compact, /createdOrder|_semanticCard|semanticLayoutMemory|semanticCardForms|cardViews|expandedMedia/);
+  assert.doesNotMatch(compact, /fixed=false|collapsed=false/);
+  assert.match(compact, /连线距离  96/);
+});
+
 test('explicit content fields preserve values that resemble inferred properties', () => {
   const graph = {
     nodes: [{ id: 'a', label: '节点', content: '三级', x: 0, y: 0 }],

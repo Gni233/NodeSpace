@@ -155,7 +155,8 @@ function inferredCandidates(context: PropertyContext, token: string): Candidate[
       add('nodeColor', normalized);
     }
   } else {
-    if (normalized === '默认' || normalized === 'default') add('layoutMode', 'default');
+    if (normalized === '默认' || normalized === '自动' || normalized === 'default' || normalized === 'auto') add('layoutMode', 'auto');
+    if (normalized === '力导向' || normalized === 'force') add('layoutMode', 'force');
     if (normalized === '线' || normalized === 'line') add('gridMode', 'line');
     if (normalized === '点' || normalized === 'dot') add('gridMode', 'dot');
     if (normalized === '直角' || normalized === 'straight') add('cardBorderStyle', 'straight');

@@ -1,5 +1,6 @@
 import { V } from "./layout-constants";
 import { confirmAction } from './toast';
+import { vaultDisplayName } from './vault';
 export interface TabCallbacks {
   onSwitchTab: (fileName: string) => void;
   onCloseTab: (fileName: string) => void;
@@ -45,7 +46,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       const isActive = fileName === active;
       tab.className = 'fg-tab' + (isActive ? ' is-active' : '');
       const isDirty = dirty?.has(fileName);
-      const displayName = fileName.replace(/\.json$/, '');
+      const displayName = vaultDisplayName(fileName);
 
       tab.dataset.tabIdx = String(i);
       if (paneIdx != null) tab.dataset.paneIdx = String(paneIdx);
@@ -153,6 +154,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       tab.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         const menu = document.createElement('div');
+        menu.className = 'fg-context-menu fg-tab-context-menu';
         menu.style.cssText =
           `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:200;` +
           `background:${V('--fg-surface-glass','rgba(40,42,48,0.9)')};` +
@@ -162,6 +164,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
           `backdrop-filter:blur(var(--fg-glass-blur,12px));box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};`;
         const mk = (t: string, fn: () => void) => {
           const mi = document.createElement('div'); mi.textContent = t;
+          mi.className = 'fg-context-menu-item';
           mi.style.cssText = 'padding:3px 8px;cursor:pointer;';
           mi.onmouseenter = () => mi.style.background = V('--fg-button-hover','rgba(255,255,255,0.12)');
           mi.onmouseleave = () => mi.style.background = '';

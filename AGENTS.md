@@ -1,6 +1,6 @@
 # NodeSpace
 
-跨平台力导向节点图可视化/笔记应用。PixiJS 8 WebGL 渲染 + D3.js force simulation，Electron 桌面 + Capacitor Android。
+跨平台节点图可视化/笔记应用。默认使用确定性的语义自动布局，D3.js 力导向作为可选布局；PixiJS 8 WebGL 渲染，Electron 桌面 + Capacitor Android。
 
 ## MCP Server
 
@@ -8,6 +8,8 @@
 
 路径：`mcp-server/server.js`
 数据目录默认：`~/Documents/NodeSpace`，可通过 `--dir` 或环境变量 `NODESPACE_DATA_DIR` 指定。
+
+当桌面应用打开的是 Obsidian Vault 且根目录下存在 `Graph233/` 时，应用、Vite 开发服务和按应用配置启动的 MCP Server 都把 `Graph233/` 作为可写图目录；Vault 中的 Markdown 与附件只作为只读来源投影，不当作图 JSON 改写。
 
 详细用法见 `mcp-server/AGENT_INSTRUCTIONS.md`。
 
@@ -37,7 +39,7 @@ writeFileSync('D:/Graph233/实例1.json', JSON.stringify(data, null, 2));
 
 图文件结构：`{ nodes: [...], edges: [...], groups: [...], settings: {...} }`
 
-节点字段：id, label, x, y, headingLevel(1-6), tags[], note, color, radius, fixed, collapsed
+节点字段：id, label, x, y, headingLevel(1-6), tags[], note, resourceRef（Vault 引用卡片）, color, radius, fixed, collapsed
 边字段：source(id), target(id), label, color, lineStyle, arrow
 分组字段：id, label(匹配节点tags), displayMode, color, opacity
 

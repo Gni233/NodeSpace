@@ -1,26 +1,22 @@
 /**
- * Android WebView 不支持 window.prompt，用 DOM 弹窗兜底
- * 在 Capacitor/WebView 环境会自动使用自定义弹窗，桌面端仍然用原生 prompt
+ * NodeSpace 统一输入对话框。所有平台都使用同一套 DOM 界面，避免桌面端
+ * 原生 prompt 与应用内部工作台在视觉和键盘行为上割裂。
  */
 
 import {Z_MODAL, Z_MODAL_BACKDROP, V } from "./layout-constants";
 
 export function safePrompt(msg: string, defaultValue?: string): Promise<string | null> {
   return new Promise((resolve) => {
-    try {
-      if (typeof prompt !== 'undefined') {
-        const r = prompt(msg, defaultValue || '');
-        resolve(r);
-        return;
-      }
-    } catch {}
-
     const overlay = document.createElement('div');
+    overlay.className = 'fg-modal-backdrop';
     overlay.style.cssText =
       `position:fixed;inset:0;z-index:${Z_MODAL};` +
       'background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;' +
       'opacity:0;transition:opacity 0.2s ease;';
     const box = document.createElement('div');
+    box.className = 'fg-modal fg-prompt-dialog';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
     box.style.cssText =
       `background:${V('--fg-surface', '#2d2d2d')};padding:16px;` +
       `border-radius:${V('--fg-radius-lg', '14px')};min-width:260px;` +
@@ -28,9 +24,12 @@ export function safePrompt(msg: string, defaultValue?: string): Promise<string |
       `box-shadow:${V('--fg-shadow-lg', '0 8px 32px rgba(0,0,0,0.5)')};` +
       'opacity:0;transform:scale(0.95);transition:opacity 0.2s ease,transform 0.2s ease;';
     const label = document.createElement('div');
+    label.className = 'fg-modal-title';
     label.textContent = msg;
     label.style.cssText = `margin-bottom:10px;font-size:${V('--fg-font-lg', '0.92em')};`;
     const input = document.createElement('input');
+    input.className = 'fg-modal-input';
+    input.setAttribute('aria-label', msg);
     input.value = defaultValue || '';
     input.style.cssText =
       `width:100%;padding:6px 8px;` +
@@ -40,8 +39,10 @@ export function safePrompt(msg: string, defaultValue?: string): Promise<string |
       `color:${V('--fg-input-text', '#ddd')};` +
       'margin-bottom:10px;box-sizing:border-box;';
     const btnRow = document.createElement('div');
+    btnRow.className = 'fg-modal-actions';
     btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const okBtn = document.createElement('button');
+    okBtn.className = 'fg-modal-button fg-modal-button-primary';
     okBtn.textContent = '确定';
     okBtn.style.cssText =
       `padding:4px 16px;border:none;` +
@@ -49,6 +50,7 @@ export function safePrompt(msg: string, defaultValue?: string): Promise<string |
       `background:${V('--fg-accent', '#4a6cf7')};` +
       `color:${V('--fg-accent-text', '#fff')};cursor:pointer;`;
     const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'fg-modal-button fg-modal-button-secondary';
     cancelBtn.textContent = '取消';
     cancelBtn.style.cssText =
       `padding:4px 16px;` +
@@ -84,11 +86,15 @@ export function safePrompt(msg: string, defaultValue?: string): Promise<string |
 export function safeTextareaPrompt(msg: string, defaultValue?: string): Promise<string | null> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
+    overlay.className = 'fg-modal-backdrop';
     overlay.style.cssText =
       `position:fixed;inset:0;z-index:${Z_MODAL};` +
       'background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;' +
       'opacity:0;transition:opacity 0.2s ease;';
     const box = document.createElement('div');
+    box.className = 'fg-modal fg-prompt-dialog fg-prompt-dialog-wide';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
     box.style.cssText =
       `background:${V('--fg-surface', '#2d2d2d')};padding:16px;` +
       `border-radius:${V('--fg-radius-lg', '14px')};min-width:360px;max-width:600px;` +
@@ -96,9 +102,12 @@ export function safeTextareaPrompt(msg: string, defaultValue?: string): Promise<
       `box-shadow:${V('--fg-shadow-lg', '0 8px 32px rgba(0,0,0,0.5)')};` +
       'opacity:0;transform:scale(0.95);transition:opacity 0.2s ease,transform 0.2s ease;';
     const label = document.createElement('div');
+    label.className = 'fg-modal-title';
     label.textContent = msg;
     label.style.cssText = `margin-bottom:10px;font-size:${V('--fg-font-lg', '0.92em')};`;
     const textarea = document.createElement('textarea');
+    textarea.className = 'fg-modal-input fg-modal-textarea';
+    textarea.setAttribute('aria-label', msg);
     textarea.value = defaultValue || '';
     textarea.rows = 8;
     textarea.style.cssText =
@@ -110,8 +119,10 @@ export function safeTextareaPrompt(msg: string, defaultValue?: string): Promise<
       `font-family:monospace;font-size:${V('--fg-font-md', '0.85em')};` +
       'margin-bottom:10px;box-sizing:border-box;';
     const btnRow = document.createElement('div');
+    btnRow.className = 'fg-modal-actions';
     btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const okBtn = document.createElement('button');
+    okBtn.className = 'fg-modal-button fg-modal-button-primary';
     okBtn.textContent = '确定';
     okBtn.style.cssText =
       `padding:4px 16px;border:none;` +
@@ -119,6 +130,7 @@ export function safeTextareaPrompt(msg: string, defaultValue?: string): Promise<
       `background:${V('--fg-accent', '#4a6cf7')};` +
       `color:${V('--fg-accent-text', '#fff')};cursor:pointer;`;
     const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'fg-modal-button fg-modal-button-secondary';
     cancelBtn.textContent = '取消';
     cancelBtn.style.cssText =
       `padding:4px 16px;` +

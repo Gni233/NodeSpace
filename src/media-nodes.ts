@@ -44,12 +44,33 @@ function inlineMarkdown(text: string): string {
     .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank" style="color:var(--fg-accent,#5B8FF9)">$1</a>');
 }
 
+export type MediaType = 'image' | 'audio' | 'video' | 'pdf' | 'md';
+export type MediaPresentation = 'reader' | 'preview';
+export interface MediaSourceAction { label: string; onSelect: () => void; }
+
 export interface MediaOverlay {
   el: HTMLElement;
   nodeId: string;
-  type: 'image' | 'audio' | 'video' | 'md';
+  type: MediaType;
+  presentation: MediaPresentation;
   offsetX: number;
   offsetY: number;
+  onClose?: () => void;
+}
+
+const MEDIA_LABELS: Record<MediaType, string> = {
+  image: '图像', audio: '音频', video: '视频', pdf: 'PDF', md: 'Markdown',
+};
+
+function mediaIconSvg(type: MediaType): string {
+  const paths: Record<MediaType, string> = {
+    image: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m5 17 4-4 3 3 3-4 4 5"/>',
+    audio: '<path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/>',
+    video: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3Z"/>',
+    pdf: '<path d="M6 2h8l4 4v16H6Z"/><path d="M14 2v5h5M9 16h6M9 12h3"/>',
+    md: '<path d="M5 3h14v18H5Z"/><path d="m8 15 2-3 2 3 2-3 2 3M8 8h8"/>',
+  };
+  return `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths[type]}</svg>`;
 }
 
 // 全局拖拽状态：HarmonyOS WebView 不支持 pointer capture，用全局标记代替
@@ -149,6 +170,15 @@ function isSafeUrl(url: string): boolean {
 
 const overlays: Map<string, MediaOverlay> = new Map();
 
+window.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  const reader = [...overlays.values()].find(overlay => overlay.presentation === 'reader');
+  if (!reader) return;
+  event.preventDefault();
+  event.stopPropagation();
+  hideMedia(reader.nodeId, true);
+}, { capture: true });
+
 /** 把本地路径转 file:// URL */
 function toFileUrl(p: string): string {
   if (/^[A-Z]:[\\/]/.test(p)) return 'file:///' + p.replace(/\\/g, '/').replace(/^[A-Z]:/, (m: string) => m.toLowerCase());
@@ -159,57 +189,96 @@ export function showMedia(
   container: HTMLElement,
   nodeId: string,
   label: string,
-  type: 'image' | 'audio' | 'video' | 'md',
+  type: MediaType,
   url: string,
   borderColor: string,
   getWorldPos: () => { x: number; y: number },
   onDragStart?: () => void,
-  onDragEnd?: () => void
+  onDragEnd?: () => void,
+  readOnly = false,
+  onClose?: () => void,
+  presentation: MediaPresentation = 'reader',
+  sourceAction?: MediaSourceAction,
 ) {
+  if (presentation === 'reader') {
+    for (const [openId, overlay] of overlays) {
+      if (openId !== nodeId && overlay.presentation === 'reader') hideMedia(openId, true);
+    }
+  }
   hideMedia(nodeId);
   const el = document.createElement('div');
   el.setAttribute('data-media-id', nodeId);
-  el.style.cssText =
-    'position:absolute;z-index:15;border:3px solid ' + borderColor + ';' +
-    `border-radius:0 ${V('--fg-radius-md','10px')} ${V('--fg-radius-md','10px')} ${V('--fg-radius-md','10px')};` +
-    `overflow:visible;background:${V('--fg-surface-elevated','rgba(40,42,48,0.92)')};` +
-    `pointer-events:auto;touch-action:none;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};` +
-    `transition:background var(--fg-transition,0.25s ease);`;
+  el.setAttribute('data-media-presentation', presentation);
+  el.className = presentation === 'reader' ? 'fg-media-reader' : 'fg-media-preview';
+  el.style.setProperty('--media-accent', borderColor);
+  if (presentation === 'preview') {
+    el.style.cssText +=
+      'position:absolute;z-index:15;border:2px solid color-mix(in srgb, var(--media-accent) 68%, transparent);' +
+      `border-radius:${V('--fg-radius-md','10px')};` +
+      `overflow:visible;background:${V('--fg-surface-elevated','rgba(40,42,48,0.92)')};` +
+      `pointer-events:auto;touch-action:none;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};`;
+  }
   const fileUrl = toFileUrl(url);
 
-  // 节点名标签（左上角伸出）
-  const nameTag = document.createElement('div');
-  nameTag.textContent = label;
-  nameTag.style.cssText =
-    'position:absolute;top:-22px;left:-3px;background:' + borderColor + ';color:#fff;' +
-    `font-size:${V('--fg-font-xxs', '0.65em')};padding:2px 8px;border-radius:${V('--fg-radius-sm', '6px')} ${V('--fg-radius-sm', '6px')} 0 0;white-space:nowrap;` +
-    'max-width:200px;overflow:hidden;text-overflow:ellipsis;pointer-events:none;';
-  el.appendChild(nameTag);
-
-  // 拖拽手柄
   const handle = document.createElement('div');
-  handle.style.cssText =
-    'display:flex;align-items:center;justify-content:center;height:24px;' +
-    `cursor:move;border-bottom:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.1)')};padding:2px 0;` +
-    'touch-action:none;user-select:none;-webkit-user-select:none;';
-  const dot = document.createElement('div');
-  dot.style.cssText = 'width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.3);';
-  handle.appendChild(dot);
-  el.appendChild(handle);
+  let headerActions: HTMLElement | null = null;
+  if (presentation === 'reader') {
+    handle.className = 'fg-media-reader-header';
+    const identity = document.createElement('div');
+    identity.className = 'fg-media-reader-identity';
+    const icon = document.createElement('span');
+    icon.className = 'fg-media-reader-icon';
+    icon.innerHTML = mediaIconSvg(type);
+    const titles = document.createElement('span');
+    titles.className = 'fg-media-reader-titles';
+    const eyebrow = document.createElement('span');
+    eyebrow.className = 'fg-media-reader-eyebrow';
+    eyebrow.textContent = `${MEDIA_LABELS[type]} · ${readOnly ? '来源视图' : '节点内容'}`;
+    const title = document.createElement('strong');
+    title.className = 'fg-media-reader-title';
+    title.textContent = label;
+    titles.append(eyebrow, title);
+    identity.append(icon, titles);
+    headerActions = document.createElement('div');
+    headerActions.className = 'fg-media-reader-actions';
+    if (sourceAction) {
+      const sourceButton = document.createElement('button');
+      sourceButton.type = 'button';
+      sourceButton.className = 'fg-media-reader-action';
+      sourceButton.textContent = sourceAction.label;
+      sourceButton.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        sourceAction.onSelect();
+      });
+      headerActions.appendChild(sourceButton);
+    }
+    handle.append(identity, headerActions);
+    el.appendChild(handle);
+  } else {
+    const nameTag = document.createElement('div');
+    nameTag.className = 'fg-media-preview-title';
+    nameTag.textContent = label;
+    el.appendChild(nameTag);
+    handle.className = 'fg-media-preview-handle';
+    const dot = document.createElement('div');
+    dot.className = 'fg-media-preview-grip';
+    handle.appendChild(dot);
+    el.appendChild(handle);
+  }
 
   // 内容
   const body = document.createElement('div');
-  body.className = 'media-body';
+  body.className = `media-body fg-media-body fg-media-body-${type}`;
   if (type === 'image') {
     const imgSrc = fileUrl;
     if (!isSafeUrl(imgSrc)) return;
-    body.innerHTML = `<img src="${escapeAttr(imgSrc)}" style="display:block;max-width:320px;max-height:320px;" />`;
+    body.innerHTML = `<img src="${escapeAttr(imgSrc)}" alt="${escapeAttr(label)}" />`;
   } else if (type === 'audio') {
     const audioSrc = fileUrl;
     if (!isSafeUrl(audioSrc)) return;
-    body.innerHTML = `<audio controls src="${escapeAttr(audioSrc)}" style="width:100%;height:40px;display:block;"></audio>`;
-    body.style.padding = '4px 8px';
-    el.style.width = '300px'; // 初始宽度，可伸缩
+    body.innerHTML = `<div class="fg-media-audio-art">${mediaIconSvg('audio')}</div><audio controls src="${escapeAttr(audioSrc)}"></audio>`;
+    if (presentation === 'preview') el.style.width = '300px';
   } else if (type === 'video') {
     // 白色半透明播放三角图标
     const playIcon = document.createElement('div');
@@ -224,38 +293,42 @@ export function showMedia(
       const bv = url.match(/BV\w+/)?.[0] || '';
       // B站嵌入播放器需要 autoplay=0 才能有声音（浏览器策略）
       body.innerHTML = `<iframe src="//player.bilibili.com/player.html?bvid=${bv}&page=1&high_quality=1&autoplay=0"
-        style="width:340px;height:220px;border:none;" allow="autoplay;encrypted-media" allowfullscreen></iframe>`;
+        allow="autoplay;encrypted-media" allowfullscreen></iframe>`;
     } else if (/youtube\.com|youtu\.be/i.test(url)) {
       const vid = url.match(/(?:v=|be\/)([\w-]+)/)?.[1] || '';
-      body.innerHTML = `<iframe src="//www.youtube.com/embed/${vid}"
-        style="width:340px;height:220px;border:none;" allowfullscreen></iframe>`;
+      body.innerHTML = `<iframe src="//www.youtube.com/embed/${vid}" allowfullscreen></iframe>`;
     } else {
       const videoSrc = fileUrl;
       if (!isSafeUrl(videoSrc)) return;
-      body.innerHTML = `<video controls src="${escapeAttr(videoSrc)}" style="max-width:340px;max-height:260px;display:block;"></video>`;
+      body.innerHTML = `<video controls src="${escapeAttr(videoSrc)}"></video>`;
     }
+  } else if (type === 'pdf') {
+    const pdfSrc = fileUrl;
+    if (!isSafeUrl(pdfSrc)) return;
+    body.innerHTML = `<iframe src="${escapeAttr(pdfSrc)}" title="${escapeAttr(label)}"></iframe>`;
   } else if (type === 'md') {
     const rawMd = url || '';
     let isEditMode = false;
     const mdDiv = document.createElement('div');
-    mdDiv.style.cssText =
-      `min-width:280px;max-width:520px;max-height:420px;overflow-y:auto;padding:12px;color:${V('--fg-text','#d0d0d0')};font-size:${V('--fg-font-md','0.85em')};outline:none;word-wrap:break-word;`;
+    mdDiv.className = 'fg-media-markdown';
     mdDiv.innerHTML = rawMd ? renderMarkdown(rawMd) : '<em style="color:#888">(空文档)</em>';
     let mdSaveTimer: any;
-    mdDiv.addEventListener('input', () => {
-      clearTimeout(mdSaveTimer);
-      mdSaveTimer = setTimeout(() => {
-        const n = (window as any).__graphNodes?.find((n: any) => n.id === nodeId);
-        if (n) { n.mediaUrl = mdDiv.textContent; (window as any).__triggerSave?.(); }
-      }, 500);
-    });
+    if (!readOnly) {
+      mdDiv.addEventListener('input', () => {
+        clearTimeout(mdSaveTimer);
+        mdSaveTimer = setTimeout(() => {
+          const n = (window as any).__graphNodes?.find((n: any) => n.id === nodeId);
+          if (n) { n.mediaUrl = mdDiv.textContent; (window as any).__triggerSave?.(); }
+        }, 500);
+      });
+    }
     body.appendChild(mdDiv);
 
     // 视图切换按钮（挂在 handle 同行左侧）
     const toggleBtn = document.createElement('button');
+    toggleBtn.className = presentation === 'reader' ? 'fg-media-reader-action' : 'fg-media-preview-edit';
+    toggleBtn.type = 'button';
     toggleBtn.textContent = '编辑';
-    toggleBtn.style.cssText =
-      `position:absolute;top:2px;left:6px;font-size:${V('--fg-font-xs','0.72em')};padding:0 5px;cursor:pointer;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.15)')};border-radius:${V('--fg-radius-sm','6px')};background:transparent;color:${V('--fg-text-muted','#999')};z-index:2;`;
     toggleBtn.onclick = () => {
       isEditMode = !isEditMode;
       if (isEditMode) {
@@ -274,28 +347,30 @@ export function showMedia(
         if (n) { n.mediaUrl = updated; (window as any).__triggerSave?.(); }
       }
     };
-    el.appendChild(toggleBtn);
+    if (!readOnly) (headerActions || el).appendChild(toggleBtn);
   }
   el.appendChild(body);
 
   // 收起按钮
-  const closeBtn = document.createElement('div');
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = presentation === 'reader' ? 'fg-media-reader-close' : 'fg-media-preview-close';
+  closeBtn.setAttribute('aria-label', '关闭内容');
+  closeBtn.title = '关闭内容 (Esc)';
   closeBtn.textContent = '\u2715';
-  closeBtn.style.cssText =
-    `position:absolute;top:2px;right:6px;width:16px;height:16px;font-size:9px;opacity:0.5;cursor:pointer;color:${V('--fg-text','#ccc')};line-height:16px;text-align:center;border-radius:${V('--fg-radius-sm','6px')};z-index:1;transition:all 0.15s ease;`;
-  closeBtn.onclick = () => hideMedia(nodeId);
-  closeBtn.onmouseenter = () => { closeBtn.style.opacity = '1'; closeBtn.style.background = `var(--fg-accent,#5B8FF9)`; closeBtn.style.color = '#fff'; };
-  closeBtn.onmouseleave = () => { closeBtn.style.opacity = '0.5'; closeBtn.style.background = 'transparent'; closeBtn.style.color = V('--fg-text','#ccc'); };
-  el.appendChild(closeBtn);
+  closeBtn.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    hideMedia(nodeId, true);
+  };
+  (headerActions || el).appendChild(closeBtn);
 
   // 存储 media type 到 DOM，resize 需要
   el.setAttribute('data-media-type', type);
 
-  // 伸缩手柄（右下角圆点）
+  // 预览浮窗可伸缩；正式阅读面板由响应式布局接管尺寸。
   const resizer = document.createElement('div');
-  resizer.style.cssText =
-    'position:absolute;right:4px;bottom:4px;width:12px;height:12px;border-radius:50%;' +
-    'background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:2;touch-action:none;user-select:none;';
+  resizer.className = 'fg-media-preview-resizer';
   resizer.addEventListener('dblclick', () => {
     el.style.width = ''; el.style.height = '';
   });
@@ -311,11 +386,11 @@ export function showMedia(
     e.preventDefault(); e.stopPropagation();
     if (e.touches[0]) startResize(e.touches[0]);
   }, { passive: false });
-  el.appendChild(resizer);
+  if (presentation === 'preview') el.appendChild(resizer);
 
   container.appendChild(el);
 
-  const ov: MediaOverlay = { el, nodeId, type, offsetX: 0, offsetY: 0 };
+  const ov: MediaOverlay = { el, nodeId, type, presentation, offsetX: 0, offsetY: 0, onClose };
   overlays.set(nodeId, ov);
 
   // 拖拽逻辑 - 使用全局状态，不依赖 pointer capture
@@ -325,20 +400,22 @@ export function showMedia(
     setGlobalDragState('move', el, pt.clientX, pt.clientY, ov, onDragStart, onDragEnd);
   };
   handle.addEventListener('pointerdown', (e) => {
+    if (presentation === 'reader') { e.stopPropagation(); return; }
     e.preventDefault(); e.stopPropagation();
     startDrag(e);
   });
   handle.addEventListener('touchstart', (e) => {
+    if (presentation === 'reader') { e.stopPropagation(); return; }
     e.preventDefault(); e.stopPropagation();
     if (e.touches[0]) startDrag(e.touches[0]);
   }, { passive: false });
 
-  positionMedia(nodeId, getWorldPos);
+  if (presentation === 'preview') positionMedia(nodeId, getWorldPos);
 }
 
 export function positionMedia(nodeId: string, getWorldPos: () => { x: number; y: number }) {
   const ov = overlays.get(nodeId);
-  if (!ov) return;
+  if (!ov || ov.presentation === 'reader') return;
   const pos = getWorldPos();
   const w = ov.el.offsetWidth || 200;
   const h = ov.el.offsetHeight || 100;
@@ -346,9 +423,13 @@ export function positionMedia(nodeId: string, getWorldPos: () => { x: number; y:
   ov.el.style.top = (pos.y - h / 2 + ov.offsetY) + 'px';
 }
 
-export function hideMedia(nodeId: string) {
+export function hideMedia(nodeId: string, notify = false) {
   const ov = overlays.get(nodeId);
-  if (ov) { ov.el.remove(); overlays.delete(nodeId); }
+  if (ov) {
+    ov.el.remove();
+    overlays.delete(nodeId);
+    if (notify) ov.onClose?.();
+  }
 }
 
 export function getMediaSize(nodeId: string): { w: number; h: number } | null {

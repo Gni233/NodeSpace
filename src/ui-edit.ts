@@ -77,6 +77,8 @@ export interface EditPanelContext {
   /** 在下一帧合并跨窗格同步与重绘。 */
   scheduleNameRender?: () => void;
   onToast?: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => void;
+  /** False for projections and other views whose source data must never be edited. */
+  canMutate?: () => boolean;
 }
 
 function el(tag: string, opts?: { text?: string; style?: string; type?: string; placeholder?: string; attrs?: Record<string, string> }): HTMLElement {
@@ -101,6 +103,8 @@ export function createEditPanel(
   const editPanel = el("div", { style: `position:absolute;right:10px;top:112px;z-index:${Z_EDIT_PANEL};min-width:220px;max-width:500px;max-height:calc(100vh - 124px);overflow-y:auto;padding:10px;border:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.1)')};border-radius:${V('--fg-radius-md','10px')};background:${V('--fg-surface-glass','rgba(40,42,48,0.75)')};backdrop-filter:blur(var(--fg-glass-blur,12px));-webkit-backdrop-filter:blur(12px);color:${V('--fg-text','#d0d0d0')};display:none;flex-direction:column;gap:8px;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};transition:background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease);` });
   editPanel.className = 'fg-inspector';
   editPanel.style.opacity = String(getEditPanelOpacity());
+  let enterCollapse: () => void = () => {};
+  let exitCollapse: () => void = () => {};
   const showPanel = () => {
     editPanel.style.display = 'flex';
     if (collapsed) {
@@ -110,19 +114,37 @@ export function createEditPanel(
     }
   };
 
-  // --- 拖拽把手（居中圆角横线）---
-  const titleBar = el("div", { style: "display:flex;align-items:center;justify-content:center;cursor:move;padding:2px 0 4px 0;user-select:none;flex-shrink:0;" });
-  const dragDot = el("div", { style: "width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.3);" });
-  titleBar.appendChild(dragDot);
+  // --- 上下文标题栏（同时作为拖拽把手）---
+  const titleBar = el("div", { style: "display:flex;align-items:center;justify-content:space-between;cursor:move;padding:2px 0 4px 0;user-select:none;flex-shrink:0;" });
+  titleBar.className = 'fg-inspector-titlebar';
+  const inspectorIdentity = el("div");
+  inspectorIdentity.className = 'fg-inspector-identity';
+  const inspectorEyebrow = el("span", { text: '所选内容' });
+  inspectorEyebrow.className = 'fg-inspector-eyebrow';
+  const inspectorTitle = el("strong", { text: '上下文' });
+  inspectorTitle.className = 'fg-inspector-title';
+  inspectorIdentity.appendChild(inspectorEyebrow);
+  inspectorIdentity.appendChild(inspectorTitle);
+  titleBar.appendChild(inspectorIdentity);
+  const collapsePanelBtn = el("button", { text: '›', attrs: { type: 'button', title: '收起上下文面板', 'aria-label': '收起上下文面板' } });
+  collapsePanelBtn.className = 'fg-inspector-collapse';
+  collapsePanelBtn.addEventListener('pointerdown', (event) => { event.stopPropagation(); });
+  collapsePanelBtn.addEventListener('touchstart', (event) => { event.stopPropagation(); }, { passive: true });
+  collapsePanelBtn.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); enterCollapse(); });
+  titleBar.appendChild(collapsePanelBtn);
   editPanel.insertBefore(titleBar, editPanel.firstChild);
 
   // --- 缩放把手（右下角）---
   const resizeHandle = el("div", { style: "position:absolute;right:6px;bottom:6px;width:12px;height:12px;border-radius:50%;background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:1;touch-action:none;user-select:none;" });
+  resizeHandle.className = 'fg-inspector-resize';
   editPanel.appendChild(resizeHandle);
 
   // --- 折叠把手（小方框 + 拖拽柄，默认隐藏）---
   const collapsedHandle = el("div", { style: `position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;cursor:move;user-select:none;border-radius:${V('--fg-radius-md','10px')};` });
-  const collapseDot = el("div", { style: "width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,0.4);flex-shrink:0;" });
+  collapsedHandle.className = 'fg-inspector-collapsed-handle';
+  collapsedHandle.title = '展开上下文面板';
+  const collapseDot = el("div", { text: '‹' });
+  collapseDot.className = 'fg-inspector-collapsed-glyph';
   collapsedHandle.appendChild(collapseDot);
   editPanel.appendChild(collapsedHandle);
 
@@ -137,8 +159,6 @@ export function createEditPanel(
   const COLLAPSE_BOX = 44; // 折叠后小方框尺寸
   let collapsed = false;
   let preCollapseW = 0, preCollapseH = 0, preCollapseL = '', preCollapseT = '';
-  let enterCollapse: () => void;
-  let exitCollapse: () => void;
 
   // 切换到 left-based 定位
   const ensureLeftBased = () => {
@@ -241,10 +261,12 @@ export function createEditPanel(
             preCollapseT = s.preT || '';
             _restoreCollapsed = true;
           } else {
-            editPanel.style.left = Math.max(0, Math.min(s.l, window.innerWidth - 40)) + 'px';
+            const restoredWidth = Math.max(286, Math.min(s.w || 326, Math.min(500, window.innerWidth - 24)));
+            const maxLeft = Math.max(8, window.innerWidth - restoredWidth - 10);
+            editPanel.style.left = Math.max(8, Math.min(s.l, maxLeft)) + 'px';
             editPanel.style.top = Math.max(0, Math.min(s.t, window.innerHeight - 40)) + 'px';
             editPanel.style.right = 'auto';
-            if (s.w && s.w >= 220) { editPanel.style.width = Math.min(s.w, window.innerWidth - 40) + 'px'; editPanel.style.maxWidth = '500px'; }
+            if (s.w && s.w >= 220) { editPanel.style.width = restoredWidth + 'px'; editPanel.style.maxWidth = '500px'; }
             if (s.h && s.h >= 120) editPanel.style.height = s.h + 'px';
           }
         }
@@ -325,12 +347,16 @@ export function createEditPanel(
 
   const makeRow = (p: HTMLElement, lb: string, inp: HTMLElement) => {
     const r = el("div", { style: "display:flex;gap:6px;align-items:flex-start;" });
-    r.appendChild(el("span", { text: lb, style: `flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};line-height:1.8;` }));
+    r.className = 'fg-inspector-field';
+    const label = el("span", { text: lb, style: `flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};line-height:1.8;` });
+    label.className = 'fg-inspector-field-label';
+    r.appendChild(label);
     r.appendChild(inp);
     p.appendChild(r);
   };
 
   const saveCurrent = async () => {
+    if (ctx.canMutate?.() === false) return;
     const selNode = getSelNode();
     const selEdge = getSelEdge();
     const selGroup = getSelGroup();
@@ -407,6 +433,7 @@ export function createEditPanel(
     nameEdit = null;
   };
   const syncNodeName = () => {
+    if (ctx.canMutate?.() === false) return;
     const selectedNodeId = getSelNode();
     if (selectedNodeId === null) return;
     const node = ctx.graph.nodes.find(n => n.id === selectedNodeId);
@@ -450,9 +477,14 @@ export function createEditPanel(
 
   // --- 节点编辑区 ---
   const nodeEdit = el("div");
+  nodeEdit.className = 'fg-inspector-section';
   const nodeTitleRow = el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;" });
-  nodeTitleRow.appendChild(el("div", { text: "节点", style: "font-weight:bold;" }));
+  nodeTitleRow.className = 'fg-inspector-section-header';
+  const nodeSectionTitle = el("div", { text: "节点", style: "font-weight:bold;" });
+  nodeSectionTitle.className = 'fg-inspector-section-title';
+  nodeTitleRow.appendChild(nodeSectionTitle);
   const nodeDelBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;` });
+  nodeDelBtn.className = 'fg-inspector-danger';
   nodeDelBtn.onclick = async () => {
     if (getSelNode()) { const id = getSelNode()!; const node = ctx.graph.nodes.find(n => n.id === id); const nodeTags = node?.tags || []; detachNodeFromStructure(ctx.graph, id); ctx.markNodesDying?.([id]); const idx = ctx.graph.nodes.findIndex(n => n.id === id); if (idx >= 0) ctx.graph.nodes.splice(idx, 1); for (const e of ctx.graph.edges) { const esrc = typeof e.source === 'object' ? e.source.id : e.source; const etgt = typeof e.target === 'object' ? e.target.id : e.target; if (esrc === id || etgt === id) (e as any)._dyingAt = performance.now(); } for (const t of nodeTags) { if (!ctx.graph.nodes.some(nd => (nd.tags || []).includes(t))) { const gIdx = ctx.graph.groups.findIndex(g => g.label === t); if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1); } } }
     ctx.reinitializeGraph?.(); await getSaveData()(); clearEd(); getUpdateInfo()(); getUpdateSelects()(); draw();
@@ -460,7 +492,7 @@ export function createEditPanel(
   };
   nodeTitleRow.appendChild(nodeDelBtn);
   nodeEdit.appendChild(nodeTitleRow);
-  const nName = el("input", { type: "text", style: "width:100%;" }) as HTMLInputElement;
+  const nName = el("input", { type: "text", placeholder: '这条想法是什么？', style: "width:100%;" }) as HTMLInputElement;
   const structureReflectionEditor = createStructureReflectionEditor({
     getGraph: () => ctx.graph,
     getSelectedNode: () => {
@@ -482,7 +514,7 @@ export function createEditPanel(
   nName.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nName.blur(); } });
   nName.addEventListener('blur', commitNameEdit);
   makeRow(nodeEdit, '名称', nName);
-  const nNote = el("textarea", { attrs: { rows: "2" }, style: `width:100%;resize:vertical;font-size:${V('--fg-font-md', '0.85em')};` }) as HTMLTextAreaElement;
+  const nNote = el("textarea", { placeholder: '随手写下内容…', attrs: { rows: "3" }, style: `width:100%;resize:vertical;font-size:${V('--fg-font-md', '0.85em')};` }) as HTMLTextAreaElement;
   nNote.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { nNote.blur(); } });
   makeRow(nodeEdit, '内容', nNote);
   bindAutoSave(nNote);
@@ -573,6 +605,7 @@ export function createEditPanel(
     else { nMediaUrl.rows = 1; nMediaUrl.style.resize = 'none'; nMediaUrl.style.overflowY = 'hidden'; }
   });
   const nMediaRow = el("div", { style: "display:flex;gap:4px;align-items:center;margin-top:2px;" });
+  nMediaRow.className = 'fg-inspector-media-row';
   // 导入按钮（放在最前面）
   const nFileBtn = el("button", { text: '+', style: `font-size:${V('--fg-font-md', '0.85em')};padding:1px 5px;cursor:pointer;border-radius:${V('--fg-radius-sm','6px')};border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.08);color:#ccc;` }) as HTMLButtonElement;
   nFileBtn.title = '导入本地文件';
@@ -666,10 +699,14 @@ export function createEditPanel(
   makeRow(nodeEdit, '半径', radContainer);
 
   // --- 边编辑区 ---
-  const edgeEdit = el("div"); edgeEdit.style.display = 'none';
+  const edgeEdit = el("div"); edgeEdit.className = 'fg-inspector-section'; edgeEdit.style.display = 'none';
   const edgeTitleRow = el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;" });
-  edgeTitleRow.appendChild(el("div", { text: "边", style: "font-weight:bold;" }));
+  edgeTitleRow.className = 'fg-inspector-section-header';
+  const edgeSectionTitle = el("div", { text: "关系", style: "font-weight:bold;" });
+  edgeSectionTitle.className = 'fg-inspector-section-title';
+  edgeTitleRow.appendChild(edgeSectionTitle);
   const edgeDelBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;` });
+  edgeDelBtn.className = 'fg-inspector-danger';
   edgeDelBtn.onclick = async () => {
     if (getSelEdge() !== null) { const e2 = ctx.graph.edges[getSelEdge()!]; if (e2) (e2 as any)._dyingAt = performance.now(); clearEd(); draw(); setTimeout(() => { for (let i = ctx.graph.edges.length - 1; i >= 0; i--) { const e3: any = ctx.graph.edges[i]; if (e3._dyingAt && performance.now() - e3._dyingAt >= 400) ctx.graph.edges.splice(i, 1); } draw(); }, 400); }
     await getSaveData()(); getUpdateInfo()(); getUpdateSelects()(); draw();
@@ -711,10 +748,14 @@ export function createEditPanel(
   edgeEdit.appendChild(eStyleR);
 
   // --- 集合编辑区 ---
-  const groupEdit = el("div"); groupEdit.style.display = 'none';
+  const groupEdit = el("div"); groupEdit.className = 'fg-inspector-section'; groupEdit.style.display = 'none';
   const groupTitleRow = el("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;" });
-  groupTitleRow.appendChild(el("div", { text: "集合", style: "font-weight:bold;" }));
+  groupTitleRow.className = 'fg-inspector-section-header';
+  const groupSectionTitle = el("div", { text: "集合", style: "font-weight:bold;" });
+  groupSectionTitle.className = 'fg-inspector-section-title';
+  groupTitleRow.appendChild(groupSectionTitle);
   const groupDelBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;` });
+  groupDelBtn.className = 'fg-inspector-danger';
   groupDelBtn.onclick = async () => {
     if (getSelGroup()) { const gIdx = ctx.graph.groups.findIndex(g => g.id === getSelGroup()); if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1); getInitSim()(); }
     await getSaveData()(); clearEd(); getUpdateInfo()(); getUpdateSelects()(); draw();
@@ -832,6 +873,7 @@ export function createEditPanel(
     preCollapseW = r.width; preCollapseH = r.height;
     preCollapseT = editPanel.style.top || r.top + 'px';
     collapsed = true;
+    editPanel.classList.add('is-collapsed');
     nodeEdit.style.display = 'none'; edgeEdit.style.display = 'none'; groupEdit.style.display = 'none';
     titleBar.style.display = 'none'; resizeHandle.style.display = 'none';
     // 贴右，保持当前纵向位置
@@ -849,6 +891,7 @@ export function createEditPanel(
   exitCollapse = () => {
     if (!collapsed) return;
     collapsed = false;
+    editPanel.classList.remove('is-collapsed');
     titleBar.style.display = ''; resizeHandle.style.display = '';
     collapsedHandle.style.display = 'none';
     // 展开到初始默认大小/位置

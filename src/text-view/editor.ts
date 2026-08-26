@@ -3,6 +3,8 @@ import { parseTextGraph } from './parser';
 import { printTextGraph } from './printer';
 import type { GraphDataLike, TextDiagnostic } from './types';
 
+const TEXT_VIEW_INTERNAL_SETTINGS = ['semanticLayoutMemory', 'semanticCardForms', 'cardViews', 'expandedMedia'] as const;
+
 export interface TextViewEditorCallbacks {
   /** Read the graph only when text mode is entered or an edit is compiled. */
   getGraph: () => GraphDataLike;
@@ -60,7 +62,7 @@ export class TextViewEditorController {
 
   enter(): void {
     if (this.active) return;
-    this.source = printTextGraph(this.callbacks.getGraph(), { graphName: this.callbacks.getGraphName() });
+    this.source = printTextGraph(this.callbacks.getGraph(), { graphName: this.callbacks.getGraphName(), compact: true });
     this.diagnostics = [];
     this.active = true;
     this.callbacks.pauseSimulation();
@@ -83,12 +85,13 @@ export class TextViewEditorController {
   async requestExit(): Promise<boolean> {
     if (!this.active) return true;
     this.clearValidationTimer();
-    const compiled = compileTextGraph(this.source, this.callbacks.getGraph());
+    const originalGraph = this.callbacks.getGraph();
+    const compiled = compileTextGraph(this.source, originalGraph);
     this.diagnostics = compiled.diagnostics;
     if (!compiled.ok || !compiled.graph || !compiled.graphName) {
       this.emit();
       this.events.onExitError?.(this.diagnostics);
-      this.callbacks.toast?.('文字内容存在错误，请先修正后再返回图形。', 'error');
+      this.callbacks.toast?.('文字内容存在错误，请修正后再应用并返回。', 'error');
       return false;
     }
     const currentName = this.callbacks.getGraphName()?.trim();
@@ -96,8 +99,20 @@ export class TextViewEditorController {
       this.diagnostics = [this.unsupportedGraphNameDiagnostic()];
       this.emit();
       this.events.onExitError?.(this.diagnostics);
-      this.callbacks.toast?.('不支持在文字视图改图名，请恢复首行后再返回图形。', 'error');
+      this.callbacks.toast?.('不支持在文字视图改图名，请恢复首行后再应用并返回。', 'error');
       return false;
+    }
+
+    // Compact text deliberately hides machine-maintained layout caches. Keep
+    // those values across a text edit without forcing users to read or protect them.
+    if (compiled.graph && originalGraph.settings) {
+      const nextSettings = { ...(compiled.graph.settings ?? {}) };
+      for (const key of TEXT_VIEW_INTERNAL_SETTINGS) {
+        if (key in originalGraph.settings && !(key in nextSettings)) {
+          nextSettings[key] = structuredClone(originalGraph.settings[key]);
+        }
+      }
+      if (Object.keys(nextSettings).length > 0) compiled.graph.settings = nextSettings;
     }
 
     try {
@@ -123,7 +138,7 @@ export class TextViewEditorController {
     const firstLineLength = this.source.split('\n', 1)[0]?.length ?? 0;
     return {
       code: 'UNSUPPORTED_GRAPH_NAME',
-      message: '不支持在文字视图改图名，请恢复首行后再返回图形。',
+      message: '不支持在文字视图改图名，请恢复首行后再应用并返回。',
       severity: 'error',
       range: {
         start: { line: 1, column: 1 },
@@ -206,14 +221,29 @@ export function createTextViewEditor(
   ].join(';'));
 
   const toolbar = document.createElement('div');
+  toolbar.className = 'fg-text-view-toolbar';
   toolbar.setAttribute('style', 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:0 0 auto;');
+  const titleCopy = document.createElement('div');
+  titleCopy.className = 'fg-text-view-title-copy';
+  const eyebrow = document.createElement('span');
+  eyebrow.className = 'fg-text-view-eyebrow';
+  eyebrow.textContent = '当前空间';
   const title = document.createElement('strong');
-  title.textContent = '文字模式';
-  title.setAttribute('style', 'margin-right:auto;font-size:1rem;');
-  const exitButton = button('返回图形', 'min-height:36px;padding:6px 12px;border:0;border-radius:8px;background:var(--fg-accent,#5B8FF9);color:#fff;font:inherit;touch-action:manipulation;');
-  toolbar.append(title, exitButton);
+  title.className = 'fg-text-view-title';
+  title.textContent = '文字视图';
+  const description = document.createElement('span');
+  description.className = 'fg-text-view-description';
+  description.textContent = '用简洁语法直接整理卡片、关系和集合';
+  titleCopy.append(eyebrow, title, description);
+  const shortcutHint = document.createElement('span');
+  shortcutHint.className = 'fg-text-view-shortcut';
+  shortcutHint.textContent = 'Ctrl + Enter';
+  const exitButton = button('应用并返回', 'min-height:36px;padding:6px 12px;border:0;border-radius:8px;background:var(--fg-accent,#5B8FF9);color:#fff;font:inherit;touch-action:manipulation;');
+  exitButton.className = 'fg-text-view-apply';
+  toolbar.append(titleCopy, shortcutHint, exitButton);
 
   const textarea = document.createElement('textarea');
+  textarea.className = 'fg-text-view-source';
   textarea.spellcheck = false;
   textarea.setAttribute('aria-label', '图的文字表示');
   textarea.setAttribute('wrap', 'off');
@@ -225,6 +255,7 @@ export function createTextViewEditor(
   ].join(';'));
 
   const diagnostics = document.createElement('div');
+  diagnostics.className = 'fg-text-view-diagnostics';
   diagnostics.setAttribute('aria-live', 'polite');
   diagnostics.setAttribute('style', 'flex:0 1 28%;max-height:28%;overflow:auto;display:flex;flex-direction:column;gap:4px;font-size:.9rem;');
   overlay.append(toolbar, textarea, diagnostics);
@@ -244,12 +275,19 @@ export function createTextViewEditor(
 
   const renderDiagnostics = (items: readonly TextDiagnostic[]) => {
     diagnostics.replaceChildren();
-    if (items.length === 0) return;
+    if (items.length === 0) {
+      const ok = document.createElement('div');
+      ok.className = 'fg-text-diagnostics-ok';
+      ok.textContent = '语法检查通过';
+      diagnostics.appendChild(ok);
+      return;
+    }
     for (const item of items) {
       const itemButton = button(
         `${item.severity === 'error' ? '错误' : '提示'} · 第 ${item.range.start.line} 行，第 ${item.range.start.column} 列：${item.message}`,
         `display:block;width:100%;min-height:32px;padding:6px 8px;text-align:left;border:1px solid ${item.severity === 'error' ? 'rgba(240,96,96,.55)' : 'rgba(224,176,64,.5)'};border-radius:6px;background:transparent;color:inherit;font:inherit;touch-action:manipulation;`,
       );
+      itemButton.className = `fg-text-diagnostic is-${item.severity}`;
       itemButton.addEventListener('click', () => focusDiagnostic(item));
       diagnostics.appendChild(itemButton);
     }

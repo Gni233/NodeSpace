@@ -1,8 +1,10 @@
 # NodeSpace Agent Instructions
 
-You have access to NodeSpace MCP tools for creating and editing force-directed node graphs. Think of NodeSpace as a **visual knowledge canvas** — nodes represent concepts, edges represent relationships.
+You have access to NodeSpace MCP tools for creating and editing semantic node graphs. Think of NodeSpace as a **visual knowledge canvas** — nodes represent concepts, edges represent relationships. NodeSpace derives positions automatically by default; force-directed layout remains optional.
 
 ## Graph File Model
+
+If the desktop workspace is an Obsidian Vault containing `Graph233/`, the MCP server automatically uses that subdirectory for graph JSON files. Markdown notes elsewhere in the Vault remain source documents and are not MCP graph files.
 
 Each graph is a `.json` file containing three arrays:
 
@@ -10,7 +12,7 @@ Each graph is a `.json` file containing three arrays:
 file: <name>.json
 {
   nodes: [{ id, label, x, y, headingLevel(1-6), tags[], note, color, radius, fixed, collapsed, hyperlink, mediaUrl, mediaType }],
-  edges: [{ source, target, label, color, arrow, lineStyle }],
+  edges: [{ source, target, label, color, arrow, lineStyle, kind? }],
   groups: [{ id, label, displayMode, color, borderColor, opacity, nodeColorMode }]
 }
 ```
@@ -36,8 +38,8 @@ This shows you all existing nodes, edges, groups, and settings.
 ### 2. Create nodes in batches when possible
 Use `create_nodes_batch` instead of calling `create_node` multiple times. It's faster and reduces tool calls.
 
-### 3. After batch creation, LAY OUT the nodes
-Nodes default to random positions — they will overlap. Always call:
+### 3. Let the app derive positions by default
+Graphs default to `settings.layoutMode = "auto"`. `x/y` are a render cache, so callers normally do not need to maintain them. Call `layout_nodes` only when the user explicitly asks for a circle, grid, or random manual arrangement:
 ```
 layout_nodes(name="<graph>", mode="circle", spacing=150)
 ```
@@ -53,7 +55,8 @@ Groups wrap tagged nodes and add colored backgrounds. A group's `label` must mat
 - **headingLevel**: 1 = primary topic (largest), 6 = detail (smallest). Use to create visual hierarchy.
 - **tags**: Use for categorization. Multiple tags per node are supported.
 - **color**: Hex format like `#5B8FF9`. If not set, NodeSpace auto-assigns based on headingLevel.
-- **fixed**: Set `true` after manual layout to prevent force simulation from moving the node.
+- **fixed**: Set `true` only when a node must remain at an absolute user-chosen position.
+- In automatic layout, ordinary drag coordinates are temporary view state and are not persisted. Express intent through hierarchy, relationship kinds, heading levels, groups, and tags instead.
 - **collapsed**: Set `true` to hide child nodes (semantic only, no auto-hierarchy).
 - **note**: Long-form text attached to a node. Useful for context.
 - **hyperlink**: URL that opens when clicked.
@@ -103,12 +106,12 @@ read_graph(graph="analysis")  // see existing structure
 ## Tips
 
 1. **Use headingLevel for hierarchy, tags for categories, groups for visual clustering.**
-2. **Always call `layout_nodes` after creating nodes** — otherwise they randomly scatter.
+2. **Prefer `layoutMode: "auto"`** — use `layout_nodes` only for an explicitly requested manual arrangement.
 3. **Read before writing** — check `read_graph` (small) or `read_node_context` (large) or `search_nodes` to avoid duplicate IDs.
 4. **Node IDs** are auto-generated from `label + random suffix`. If you need to reference a node later, save its ID from the creation response.
 5. **Batch delete is not available** — delete nodes one at a time, but note that deleting a node auto-deletes its edges.
 6. **Settings** can be modified via `read_settings` and `update_settings`. This covers all "图区自定义" options: theme, grid, simulation physics, fonts, color style, snap behavior, etc.
-7. **Large graphs** (>1000 nodes): use `read_node_context` and `search_nodes` instead of `read_graph` to stay within context limits. Use `fixed: true` on key nodes to stabilize the force simulation.
+7. **Large graphs** (>1000 nodes): use `read_node_context` and `search_nodes` instead of `read_graph` to stay within context limits. Automatic layout is event-driven and stops after calculating positions.
 
 ## Edge Cases
 

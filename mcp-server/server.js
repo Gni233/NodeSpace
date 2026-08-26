@@ -50,7 +50,8 @@ function getElectronConfigDir() {
         const raw = readFileSync(cp, 'utf-8');
         const config = JSON.parse(raw);
         if (config.folderPath && existsSync(config.folderPath)) {
-          return config.folderPath;
+          const graphRoot = join(config.folderPath, 'Graph233');
+          return existsSync(graphRoot) ? graphRoot : config.folderPath;
         }
       }
     }
@@ -340,7 +341,7 @@ const TOOLS = [
   },
   {
     name: 'create_node',
-    description: '在图中创建一个新节点。返回创建的节点数据。x/y 坐标默认随机生成。',
+    description: '在图中创建一个新节点。自动布局下 x/y 只是可重算的显示缓存，可省略。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -439,6 +440,7 @@ const TOOLS = [
         color: { type: 'string', description: '边颜色，如 #888888' },
         lineStyle: { type: 'string', description: '线型: solid, dash, dash-2, dash-3' },
         arrow: { type: 'string', description: '箭头方向: none, forward, reverse, both' },
+        kind: { type: 'string', description: '语义关系: hierarchy, reference, dependency, sequence 等' },
       },
       required: ['graph', 'source', 'target'],
     },
@@ -461,6 +463,7 @@ const TOOLS = [
               color: { type: 'string', description: '边颜色，如 #888888' },
               lineStyle: { type: 'string', description: '线型: solid, dash, dash-2, dash-3' },
               arrow: { type: 'string', description: '箭头: none, forward, reverse, both' },
+              kind: { type: 'string', description: '语义关系类型' },
             },
             required: ['source', 'target'],
           },
@@ -512,7 +515,7 @@ const TOOLS = [
   },
   {
     name: 'layout_nodes',
-    description: '为节点自动排列位置。可选圆形、网格或随机布局。建议批量创建后调用，避免所有节点堆叠在同一位置。',
+    description: '显式写入圆形、网格或随机坐标；仅在用户要求手动排列时使用，默认 auto 模式无需调用。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -566,7 +569,7 @@ const TOOLS = [
         alphaTarget: { type: 'number', description: '模拟止息阈值 0~1（默认 0.3）' },
         useRAFL: { type: 'boolean', description: '启用 RAF 节流（默认 true）' },
         categoryLayout: { type: 'boolean', description: '按分类布局（默认 false）' },
-        layoutMode: { type: 'string', description: '布局模式: default / radial / tree' },
+        layoutMode: { type: 'string', description: '布局模式: auto(默认语义布局) / force / radial / tree / category / cardgrid' },
 
         // ── 视觉效果 ──
         graphTheme: { type: 'string', description: '主题: nord-dark, nord-light, solarized-dark, solarized-light, dracula, gruvbox-dark, gruvbox-light, tokyo-night, tokyo-light' },
@@ -649,6 +652,7 @@ const TOOLS = [
         color: { type: 'string', description: '边颜色，如 #888888' },
         lineStyle: { type: 'string', description: '线型: solid, dash, dash-2, dash-3' },
         arrow: { type: 'string', description: '箭头: none, forward, reverse, both' },
+        kind: { type: 'string', description: '语义关系类型' },
       },
       required: ['graph', 'edgeIndex'],
     },
@@ -823,7 +827,7 @@ const handlers = {
         gridVis: true, gridMode: 'dot', axisVis: false, axisTicks: false,
         gridSp: 30, ar: 0.75, graphTheme: 'nord-dark', focusMode: false,
         centerMode: false, glowAppearance: true, gridWidth: 0.5,
-        categoryLayout: false, layoutMode: 'default',
+        categoryLayout: false, layoutMode: 'auto',
         gridSnap: false, partialGridSnap: false,
         nodeColorStyle: 'spectrum-narrow',
         fontFamily: '"SiYuan Songti", serif',
@@ -966,7 +970,7 @@ const handlers = {
     const data = await readGraph(graph);
     if (!data) {
       // 自动创建新图
-      const newData = { nodes: [], edges: [], groups: [], settings: {} };
+      const newData = { nodes: [], edges: [], groups: [], settings: { layoutMode: 'auto' } };
       const r = handlers._createNode(newData, { label, x, y, headingLevel, tags, note, color, radius, hyperlink, fixed, collapsed });
       await writeGraph(graph, newData);
       return { created: r.node, message: `已在新图 "${graph}" 中创建节点。` };
@@ -1013,7 +1017,7 @@ const handlers = {
   async create_nodes_batch({ graph, nodes }) {
     const data = await readGraph(graph);
     if (!data) {
-      const newData = { nodes: [], edges: [], groups: [], settings: {} };
+      const newData = { nodes: [], edges: [], groups: [], settings: { layoutMode: 'auto' } };
       const created = nodes.map(n => handlers._createNode(newData, n, false).node);
       assignCreatedOrders(created, []);
       await writeGraph(graph, newData);
@@ -1070,7 +1074,7 @@ const handlers = {
     return { removed, removedEdges, message: removedEdges > 0 ? `同时删除了 ${removedEdges} 条关联边。` : '' };
   },
 
-  async create_edge({ graph, source, target, label = '', color = '#BFBFBF', lineStyle, arrow }) {
+  async create_edge({ graph, source, target, label = '', color = '#BFBFBF', lineStyle, arrow, kind }) {
     const data = await readGraph(graph);
     if (!data) return { error: `图 "${graph}" 不存在。` };
 
@@ -1090,6 +1094,7 @@ const handlers = {
     data.edges = data.edges || [];
     const idx = data.edges.length;
     const edge = { source, target, label, color, lineStyle: lineStyle || 'solid', arrow: arrow === 'forward' || arrow === true || arrow === 'both', index: idx };
+    if (kind) edge.kind = kind;
     data.edges.push(edge);
 
     await writeGraph(graph, data);
@@ -1113,7 +1118,7 @@ const handlers = {
     );
 
     for (const e of edges) {
-      const { source, target, label = '', color = '#BFBFBF', lineStyle, arrow } = e;
+      const { source, target, label = '', color = '#BFBFBF', lineStyle, arrow, kind } = e;
       // 验证源和目标节点存在
       const srcNode = (data.nodes || []).find(n => n.id === source);
       const tgtNode = (data.nodes || []).find(n => n.id === target);
@@ -1127,6 +1132,7 @@ const handlers = {
         continue;
       }
       const edge = { source, target, label, color, lineStyle: lineStyle || 'solid', arrow: arrow === 'forward' || arrow === true || arrow === 'both', index: data.edges.length };
+      if (kind) edge.kind = kind;
       data.edges.push(edge);
       existing.add(key);
       created.push(edge);
@@ -1154,7 +1160,7 @@ const handlers = {
       return { error: `边索引 ${edgeIndex} 无效。共 ${(data.edges || []).length} 条边。` };
     }
     const edge = data.edges[edgeIndex];
-    const allowed = ['label', 'color', 'lineStyle', 'arrow'];
+    const allowed = ['label', 'color', 'lineStyle', 'arrow', 'kind'];
     const changed = [];
     for (const k of allowed) {
       if (updates[k] !== undefined) {
@@ -1166,7 +1172,7 @@ const handlers = {
         changed.push(k);
       }
     }
-    if (changed.length === 0) return { error: '未提供任何有效更新字段。可更新: label, color, lineStyle, arrow' };
+    if (changed.length === 0) return { error: '未提供任何有效更新字段。可更新: label, color, lineStyle, arrow, kind' };
     await writeGraph(graph, data);
     return { ok: true, changed, edge };
   },
@@ -1371,7 +1377,7 @@ const handlers = {
         gridSp: 30, gridWidth: 0.5, gridSnap: false, partialGridSnap: false,
         graphTheme: 'nord-dark', focusMode: false, glowAppearance: true,
         nodeColorStyle: 'spectrum-narrow', fontFamily: '"SiYuan Songti", serif',
-        ar: 0.75, layoutMode: 'default', categoryLayout: false,
+        ar: 0.75, layoutMode: 'auto', categoryLayout: false,
         edgeColorGradient: false, edgeWidthByLevel: false, fixedHollow: false,
       },
     };

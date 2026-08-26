@@ -23,30 +23,61 @@ export function canvasPoint(
   return [x, y];
 }
 
+export function nodeContainsPoint(n: any, x: number, y: number, expand: number = 0): boolean {
+  const card = n?._semanticCard;
+  if (card && Number.isFinite(card.width) && Number.isFinite(card.height)) {
+    if (card.form === 'node') {
+      const radius = (Number(card.nodeRadius) || card.width / 2) + expand;
+      const dx = n.x - x, dy = n.y - y;
+      return dx * dx + dy * dy <= radius * radius;
+    }
+    return Math.abs(n.x - x) <= card.width / 2 + expand
+      && Math.abs(n.y - y) <= card.height / 2 + expand;
+  }
+  const r = (n.radius || 9) + expand;
+  const dx = n.x - x, dy = n.y - y;
+  return dx * dx + dy * dy <= r * r;
+}
+
 export function hitTestNode(x: number, y: number, nodes: any[], expand: number = 0): any | null {
-  for (const n of nodes) {
-    const r = (n.radius || 9) + expand;
-    const dx = n.x - x, dy = n.y - y;
-    if (dx * dx + dy * dy <= r * r) return n;
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    const n = nodes[index];
+    if (nodeContainsPoint(n, x, y, expand)) return n;
   }
   return null;
 }
 
-export function hitTestEdge(x: number, y: number, edges: any[], nodes: any[], expand: number = 0): number | null {
+export interface EdgeHitTestOptions {
+  routePoints?: (edge: any, source: any, target: any) => readonly { x: number; y: number }[];
+}
+
+export function hitTestEdge(
+  x: number,
+  y: number,
+  edges: any[],
+  nodes: any[],
+  expand: number = 0,
+  options: EdgeHitTestOptions = {},
+): number | null {
   for (let i = 0; i < edges.length; i++) {
     const e = edges[i];
     if (e?._structureMembership) continue;
     const s = nodes.find(n => n.id === (typeof e.source === 'object' ? e.source.id : e.source));
     const t = nodes.find(n => n.id === (typeof e.target === 'object' ? e.target.id : e.target));
     if (!s || !t) continue;
-    const dx = t.x - s.x, dy = t.y - s.y;
-    const len2 = dx * dx + dy * dy;
-    let tProj = ((x - s.x) * dx + (y - s.y) * dy) / len2;
-    tProj = Math.max(0, Math.min(1, tProj));
-    const projX = s.x + tProj * dx;
-    const projY = s.y + tProj * dy;
-    const dist2 = (x - projX) ** 2 + (y - projY) ** 2;
-    if (dist2 <= (expand + 3) ** 2) return i;
+    const route = options.routePoints?.(e, s, t) || [s, t];
+    for (let pointIndex = 1; pointIndex < route.length; pointIndex++) {
+      const start = route[pointIndex - 1], end = route[pointIndex];
+      const dx = end.x - start.x, dy = end.y - start.y;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 1e-8) continue;
+      let tProj = ((x - start.x) * dx + (y - start.y) * dy) / len2;
+      tProj = Math.max(0, Math.min(1, tProj));
+      const projX = start.x + tProj * dx;
+      const projY = start.y + tProj * dy;
+      const dist2 = (x - projX) ** 2 + (y - projY) ** 2;
+      if (dist2 <= (expand + 3) ** 2) return i;
+    }
   }
   return null;
 }

@@ -3,12 +3,13 @@ import { SETTING_KEY_TO_NAME } from './properties';
 import { encodeField } from './syntax';
 import type { GraphDataLike, PrintOptions } from './types';
 
-const NODE_DEFAULTS: Record<string, unknown> = { headingLevel: 4, radius: 9, tags: [] };
+const NODE_DEFAULTS: Record<string, unknown> = { headingLevel: 4, radius: 9, tags: [], fixed: false, collapsed: false };
 const EDGE_DEFAULTS: Record<string, unknown> = { color: '#BFBFBF', arrow: false };
 const NO_DEFAULTS: Record<string, unknown> = {};
-const NODE_SKIP = new Set(['id', 'label', 'note', 'x', 'y', 'fx', 'fy', 'vx', 'vy', 'index', '_isNew', '_createdAt']);
+const NODE_SKIP = new Set(['id', 'label', 'note', 'x', 'y', 'fx', 'fy', 'vx', 'vy', 'index', 'createdOrder', '_semanticCard', '_isNew', '_createdAt']);
 const EDGE_SKIP = new Set(['source', 'target', 'label', 'index', '_createdAt']);
 const GROUP_SKIP = new Set(['id', 'label']);
+const COMPACT_SETTING_SKIP = new Set(['semanticLayoutMemory', 'semanticCardForms', 'cardViews', 'expandedMedia']);
 
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -51,6 +52,7 @@ function edgeLine(
 
 export function printTextGraph(graph: GraphDataLike, options: PrintOptions | string = {}): string {
   const graphName = typeof options === 'string' ? options : options.graphName;
+  const compact = typeof options === 'string' ? false : options.compact === true;
   const nodes = graph.nodes ?? [];
   const aliases = stableAliases(nodes, 'n');
   const nodeById = new Map(nodes.map(node => [String(node.id), node]));
@@ -81,9 +83,10 @@ export function printTextGraph(graph: GraphDataLike, options: PrintOptions | str
   }
 
   const settings = graph.settings ?? {};
-  if (Object.keys(settings).length > 0) {
+  const printableSettingKeys = Object.keys(settings).filter(key => !compact || !COMPACT_SETTING_SKIP.has(key));
+  if (printableSettingKeys.length > 0) {
     lines.push('设置');
-    for (const key of Object.keys(settings).sort()) {
+    for (const key of printableSettingKeys.sort()) {
       lines.push(`${encodeField(SETTING_KEY_TO_NAME[key] ?? key)}  ${json(settings[key])}`);
     }
   }

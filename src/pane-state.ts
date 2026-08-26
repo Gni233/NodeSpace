@@ -188,6 +188,13 @@ export interface PaneState {
   saveTimeout: any;
   searchDebounceTimer: ReturnType<typeof setTimeout> | null;
   currentAnimationCancel: (() => void) | null;
+  /** Non-persistent card budget and zoom band for the automatic semantic lens. */
+  semanticLensState: {
+    band: 'overview' | 'balanced' | 'reading';
+    budget: number;
+    focusNodeId: string | null;
+    expandedNodeIds: string[];
+  } | null;
 
   // --- Layout ---
   layout: LayoutSlot;
@@ -217,7 +224,7 @@ const P_DEFAULTS = {
   gridVis: true, gridMode: 'dot' as 'line' | 'dot', axisVis: false, axisTicks: false,
   gridSp: 30, gridWidth: 0.5, ar: 0.75, graphTheme: 'nord-dark',
   focusMode: false, centerMode: false, selectedTooltip: false, glowAppearance: true, categoryLayout: false,
-  layoutMode: 'default', gridSnapEnabled: false, partialGridSnap: false,
+  layoutMode: 'auto', gridSnapEnabled: false, partialGridSnap: false,
   nodeColorStyle: 'spectrum-narrow' as const, fixedHollow: true,
   fontFamily: '"SiYuan Songti", serif',
   cardBorderStyle: 'straight' as 'straight' | 'rounded',
@@ -367,9 +374,9 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     themeAccentColor: 0x5B8FF9, themeAccentAltColor: 0xF59E0B,
     get saveTimeout() { return this.runtime.saveTimeout; },
     set saveTimeout(value: ReturnType<typeof setTimeout> | null) { this.runtime.saveTimeout = value; },
-    searchDebounceTimer: null, currentAnimationCancel: null,
+    searchDebounceTimer: null, currentAnimationCancel: null, semanticLensState: null,
     layout: new LayoutSlot(),
-    treeMode: false, categoryMode: false, fullCatMode: false, activeMode: 'default',
+    treeMode: false, categoryMode: false, fullCatMode: false, activeMode: 'auto',
     savedFixedNodes: [], savedGroupModes: [], layouts: [],
     get undoManager() { return this.runtime.undoManager; },
     set undoManager(value: UndoManager) { this.runtime.undoManager = value; },

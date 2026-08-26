@@ -1,0 +1,202 @@
+{
+  "nodes": [
+    {
+      "id": "learn-backprop",
+      "label": "反向传播",
+      "note": "链式法则把损失函数的梯度从输出层传回每一层参数。",
+      "createdOrder": 0,
+      "headingLevel": 2,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "learn-gradient",
+      "label": "梯度消失",
+      "note": "深层网络连续相乘的小导数会让早期层几乎得不到更新。",
+      "createdOrder": 1,
+      "headingLevel": 3,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "learn-relu",
+      "label": "ReLU 为什么有效",
+      "note": "正区间导数保持为一，能缓解深层神经网络的梯度消失。",
+      "createdOrder": 2,
+      "headingLevel": 3,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "learn-attention",
+      "label": "注意力机制",
+      "note": "查询和键的相似度决定从哪些上下文位置读取信息。",
+      "createdOrder": 3,
+      "headingLevel": 2,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "layout-manual",
+      "label": "手动偏移没有语义",
+      "note": "卡片被拖到右上角并不表示它在思考中更重要。",
+      "createdOrder": 4,
+      "headingLevel": 2,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "layout-near",
+      "label": "相近的笔记自然靠近",
+      "note": "位置应该表达内容关系，而不是复刻用户上一次拖拽留下的偶然结果。",
+      "createdOrder": 5,
+      "headingLevel": 3,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "layout-lines",
+      "label": "线也可以有内涵",
+      "note": "强弱、方向和关系词可以决定线条的节奏，不必把所有边画成同一种连接。",
+      "createdOrder": 6,
+      "headingLevel": 3,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "layout-interface",
+      "label": "界面像一张逐渐形成的地图",
+      "note": "新句子落下之后，旧内容轻微让位，稳定的主题区域继续保持。",
+      "createdOrder": 7,
+      "headingLevel": 3,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "question-memory",
+      "label": "为什么有些想法隔几天才会连起来？",
+      "note": "也许不是回忆消失，而是缺少能把两个情境同时唤起的线索。",
+      "createdOrder": 8,
+      "headingLevel": 3,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "todo-homework",
+      "label": "周五提交机器学习作业",
+      "note": "记得补上实验结果和误差曲线。",
+      "createdOrder": 9,
+      "headingLevel": 4,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "todo-shopping",
+      "label": "明天买牛奶和咖啡豆",
+      "note": "回家路上经过超市时买。",
+      "createdOrder": 10,
+      "headingLevel": 4,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "idea-sleep",
+      "label": "睡前突然想到的点子",
+      "note": "隔几天才连起来的旧想法，可能是新内容同时唤起了两个情境的线索；只有真正改变主题时才让区域缓慢移动。",
+      "createdOrder": 11,
+      "headingLevel": 4,
+      "tags": [],
+      "fixed": false
+    },
+    {
+      "id": "private-example",
+      "label": "邮箱密码备忘",
+      "note": "示例密码 only-for-demo-123，不应参与相似度计算。",
+      "createdOrder": 12,
+      "headingLevel": 4,
+      "tags": [],
+      "fixed": false
+    }
+  ],
+  "edges": [
+    {
+      "source": "learn-backprop",
+      "target": "learn-gradient",
+      "label": "深层传播时可能导致",
+      "kind": "concept",
+      "arrow": true,
+      "color": "#BFBFBF"
+    },
+    {
+      "source": "learn-relu",
+      "target": "learn-gradient",
+      "label": "缓解",
+      "kind": "concept",
+      "arrow": true,
+      "color": "#BFBFBF"
+    },
+    {
+      "source": "layout-manual",
+      "target": "layout-near",
+      "label": "位置决定权交给内容",
+      "kind": "idea",
+      "arrow": true,
+      "color": "#BFBFBF"
+    },
+    {
+      "source": "layout-near",
+      "target": "layout-interface",
+      "label": "逐渐形成",
+      "kind": "idea",
+      "arrow": true,
+      "color": "#BFBFBF"
+    },
+    {
+      "source": "layout-lines",
+      "target": "layout-interface",
+      "label": "成为地形的一部分",
+      "kind": "idea",
+      "arrow": true,
+      "color": "#BFBFBF"
+    }
+  ],
+  "groups": [],
+  "settings": {
+    "linkDist": 120,
+    "labelSize": 17,
+    "charge": -100,
+    "linkStr": 0.3,
+    "collideR": 10,
+    "centerS": 0.02,
+    "groupBound": 0.8,
+    "heatingTime": 2,
+    "alphaTarget": 0.3,
+    "editPanelOpacity": 0.9,
+    "useRAFL": true,
+    "nodeExpand": 8,
+    "lineExpand": 6,
+    "showGLabels": true,
+    "glMin": 10,
+    "glMax": 28,
+    "gridVis": true,
+    "gridMode": "dot",
+    "axisVis": false,
+    "axisTicks": false,
+    "gridSp": 30,
+    "gridWidth": 0.5,
+    "ar": 0.75,
+    "graphTheme": "sandy-beaches-light",
+    "focusMode": false,
+    "glowAppearance": false,
+    "categoryLayout": false,
+    "layoutMode": "auto",
+    "gridSnap": false,
+    "partialGridSnap": false,
+    "nodeColorStyle": "spectrum-narrow",
+    "fontFamily": "\"SiYuan Songti\", serif",
+    "fixedHollow": false,
+    "edgeColorGradient": true,
+    "edgeWidthByLevel": false,
+    "expandedMedia": []
+  }
+}

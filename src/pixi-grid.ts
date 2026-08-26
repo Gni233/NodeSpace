@@ -1,5 +1,6 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { Transform, getVisibleBounds } from './geometry/hit';
+import { alignedGridStart, dominantGridSkip, getGridLodLevels, gridWorldSize } from './grid-lod';
 
 // 每个 gridLayer 独立缓存，避免双窗格共用同一 Graphics 对象
 const _gridLayerCache = new WeakMap<Container, { gfx: Graphics | null; lastKey: string }>();
@@ -8,20 +9,6 @@ function getCache(layer: Container) {
   let c = _gridLayerCache.get(layer);
   if (!c) { c = { gfx: null, lastKey: '' }; _gridLayerCache.set(layer, c); }
   return c;
-}
-
-/**
- * 根据缩放比例决定跳过因子（与 gridSp 无关，只取决于 k）：
- *   缩放极远（k ≤ 0.2）   → 完全不显示
- *   缩放很远（k ≤ 0.4）   → 只显示主格线/主格点
- *   缩放适中（k ≤ 0.7）   → 每两格一跳
- *   缩放较近（k > 0.7）   → 全部显示
- */
-function getZoomSkip(k: number): number {
-  if (k <= 0.2) return 0;
-  if (k <= 0.4) return 5;
-  if (k <= 0.7) return 2;
-  return 1;
 }
 
 export function updateGrid(
@@ -46,7 +33,9 @@ export function updateGrid(
   const { gridVis, gridMode = 'line', axisVis, axisTicks, gridSp, gridWidth, nodes, transform, dragX, dragY } = opts;
 
   const hasDrag = dragX != null && dragY != null;
-  const zoomSkip = getZoomSkip(transform.k);
+  const gridLods = getGridLodLevels(transform.k);
+  const dominantSkip = dominantGridSkip(gridLods);
+  const gridVisibility = gridLods.reduce((maximum, level) => Math.max(maximum, level.alpha), 0);
 
   // 节点位置哈希，模拟 tick 移动时刷新网格
   const nodeHash = gridMode === 'dot' && nodes?.length
@@ -86,7 +75,7 @@ export function updateGrid(
 
   const bounds = getVisibleBounds(gw, gh, transform);
   const step = gridSp;
-  const lineWidth = gridWidth;
+  const lineWidth = gridWorldSize(gridWidth, transform.k, 0.55);
 
   // 节点引力参数
   const NODE_RANGE = step * 3;     // 节点影响范围（3格距，默认90px）
@@ -95,15 +84,19 @@ export function updateGrid(
   const DRAG_RANGE = step * 4;
   const DRAG_MAX_SCALE = 2.0;
 
-  const xStart = Math.floor(bounds.minX / step) * step - step;
-  const xEnd = bounds.maxX + step * 2;
-  const yStart = Math.floor(bounds.minY / step) * step - step;
-  const yEnd = bounds.maxY + step * 2;
+  const baseXStart = alignedGridStart(bounds.minX, step, 1);
+  const baseXEnd = bounds.maxX + step * 2;
+  const baseYStart = alignedGridStart(bounds.minY, step, 1);
+  const baseYEnd = bounds.maxY + step * 2;
+  const gridIndex = (coordinate: number): number => Math.round(coordinate / step);
+  const pointOnLattice = (x: number, y: number, skip: number): boolean =>
+    gridIndex(x) % skip === 0 && gridIndex(y) % skip === 0;
+  const axisPointOnLattice = (coordinate: number, skip: number): boolean => gridIndex(coordinate) % skip === 0;
 
-  // 网格线（zoomSkip=0 时缩放太远，完全不显示）
-  if (gridVis && zoomSkip > 0) {
+  // 网格层始终锚定世界原点；缩小时各密度层只会单向淡出。
+  if (gridVis && gridLods.length > 0) {
     if (gridMode === 'dot') {
-      const dotRadius = Math.max(1.2, lineWidth * 3);
+      const dotRadius = gridWorldSize(Math.max(1.2, gridWidth * 3), transform.k, 0.85);
       const majorDotRadius = dotRadius * 2.2;
 
       // 节点引力（只处理可见区域附近的节点，避免每帧遍历全部节点）
@@ -134,50 +127,58 @@ export function updateGrid(
         }
       }
 
-      // 渲染点阵（按 zoomSkip 跳过低级格点），同时记录已覆盖位置供补绘
-      const effStep = step * zoomSkip;
-      const covered = zoomSkip > 1 ? new Set<string>() : null;
-      for (let x = xStart; x <= xEnd; x += effStep) {
-        for (let y = yStart; y <= yEnd; y += effStep) {
-          const major = x % (step * 5) === 0 && y % (step * 5) === 0;
-          let r = major ? majorDotRadius : dotRadius;
-          let a = major ? 0.35 : 0.18;
+      // 渲染点阵，同时记录已覆盖位置供节点附近的细格补绘。
+      const covered = gridLods.length > 1 || gridLods[0].skip > 1 ? new Set<string>() : null;
+      for (let lodIndex = 0; lodIndex < gridLods.length; lodIndex++) {
+        const lod = gridLods[lodIndex];
+        const coarserSkips = gridLods.slice(0, lodIndex).map(level => level.skip);
+        const effStep = step * lod.skip;
+        const xStart = alignedGridStart(bounds.minX, step, lod.skip);
+        const xEnd = bounds.maxX + effStep * 2;
+        const yStart = alignedGridStart(bounds.minY, step, lod.skip);
+        const yEnd = bounds.maxY + effStep * 2;
+        for (let x = xStart; x <= xEnd; x += effStep) {
+          for (let y = yStart; y <= yEnd; y += effStep) {
+            if (coarserSkips.some(skip => pointOnLattice(x, y, skip))) continue;
+            const major = x % (step * 5) === 0 && y % (step * 5) === 0;
+            let r = major ? majorDotRadius : dotRadius;
+            let a = (major ? 0.35 : 0.18) * lod.alpha;
 
-          // 节点基础引力
-          const inf = influence.get(cellKey(x, y));
-          if (inf) {
-            r *= 1 + NODE_MAX_SCALE * inf.scale;
-            a += inf.alpha;
-          }
-
-          // 拖拽磁吸（叠加）
-          if (hasDrag) {
-            const ddx = x - dragX!;
-            const ddy = y - dragY!;
-            const ddist = Math.sqrt(ddx * ddx + ddy * ddy);
-            if (ddist < DRAG_RANGE) {
-              const t = 1 - ddist / DRAG_RANGE;
-              const ease = t * t * (3 - 2 * t);
-              r *= 1 + DRAG_MAX_SCALE * ease;
-              a = Math.min(0.65, a + 0.3 * ease);
+            // 节点基础引力
+            const inf = influence.get(cellKey(x, y));
+            if (inf) {
+              r *= 1 + NODE_MAX_SCALE * inf.scale;
+              a += inf.alpha * lod.alpha;
             }
+
+            // 拖拽磁吸（叠加）
+            if (hasDrag) {
+              const ddx = x - dragX!;
+              const ddy = y - dragY!;
+              const ddist = Math.sqrt(ddx * ddx + ddy * ddy);
+              if (ddist < DRAG_RANGE) {
+                const t = 1 - ddist / DRAG_RANGE;
+                const ease = t * t * (3 - 2 * t);
+                r *= 1 + DRAG_MAX_SCALE * ease;
+                a = Math.min(0.65 * lod.alpha, a + 0.3 * ease * lod.alpha);
+              }
+            }
+            cache.gfx.circle(x, y, r).fill({ color: 0x888888, alpha: a });
+            if (covered) covered.add(cellKey(x, y));
           }
-          cache.gfx.circle(x, y, r).fill({ color: 0x888888, alpha: a });
-          if (covered) covered.add(cellKey(x, y));
         }
       }
 
-      // 补绘：被 zoomSkip 跳过但有引力影响的格点
+      // 补绘：粗网格跳过、但处于节点引力范围内的细格点。
       if (covered) {
         for (const [k, inf] of influence) {
           if (covered.has(k)) continue;
           const [sx, sy] = k.split(',').map(Number);
-          if (sx < xStart || sx > xEnd || sy < yStart || sy > yEnd) continue;
+          if (sx < baseXStart || sx > baseXEnd || sy < baseYStart || sy > baseYEnd) continue;
           const major = sx % (step * 5) === 0 && sy % (step * 5) === 0;
           let r = major ? majorDotRadius : dotRadius;
           r *= 1 + NODE_MAX_SCALE * inf.scale;
-          let a = major ? 0.35 : 0.18;
-          a += inf.alpha;
+          let a = ((major ? 0.35 : 0.18) + inf.alpha) * gridVisibility;
 
           if (hasDrag) {
             const ddx = sx - dragX!;
@@ -187,41 +188,59 @@ export function updateGrid(
               const t = 1 - ddist / DRAG_RANGE;
               const ease = t * t * (3 - 2 * t);
               r *= 1 + DRAG_MAX_SCALE * ease;
-              a = Math.min(0.65, a + 0.3 * ease);
+              a = Math.min(0.65 * gridVisibility, a + 0.3 * ease * gridVisibility);
             }
           }
           cache.gfx.circle(sx, sy, r).fill({ color: 0x888888, alpha: a });
         }
       }
     } else {
-      // 传统线网格（zoomSkip 控制线条密度）
-      const effStep = step * zoomSkip;
-      for (let x = xStart; x <= xEnd; x += effStep) {
-        const major = x % (step * 5) === 0;
-        cache.gfx.moveTo(x, bounds.minY).lineTo(x, bounds.maxY).stroke({ color: 0x888888, width: major ? lineWidth * 1.5 : lineWidth, alpha: major ? 0.15 : 0.05 });
-      }
-      for (let y = yStart; y <= yEnd; y += effStep) {
-        const major = y % (step * 5) === 0;
-        cache.gfx.moveTo(bounds.minX, y).lineTo(bounds.maxX, y).stroke({ color: 0x888888, width: major ? lineWidth * 1.5 : lineWidth, alpha: major ? 0.15 : 0.05 });
+      // 传统线网格使用相同的原点锚定和单向淡出。
+      for (let lodIndex = 0; lodIndex < gridLods.length; lodIndex++) {
+        const lod = gridLods[lodIndex];
+        const coarserSkips = gridLods.slice(0, lodIndex).map(level => level.skip);
+        const effStep = step * lod.skip;
+        const xStart = alignedGridStart(bounds.minX, step, lod.skip);
+        const xEnd = bounds.maxX + effStep * 2;
+        const yStart = alignedGridStart(bounds.minY, step, lod.skip);
+        const yEnd = bounds.maxY + effStep * 2;
+        for (let x = xStart; x <= xEnd; x += effStep) {
+          if (coarserSkips.some(skip => axisPointOnLattice(x, skip))) continue;
+          const major = x % (step * 5) === 0;
+          cache.gfx.moveTo(x, bounds.minY).lineTo(x, bounds.maxY).stroke({ color: 0x888888, width: major ? lineWidth * 1.5 : lineWidth, alpha: (major ? 0.15 : 0.05) * lod.alpha });
+        }
+        for (let y = yStart; y <= yEnd; y += effStep) {
+          if (coarserSkips.some(skip => axisPointOnLattice(y, skip))) continue;
+          const major = y % (step * 5) === 0;
+          cache.gfx.moveTo(bounds.minX, y).lineTo(bounds.maxX, y).stroke({ color: 0x888888, width: major ? lineWidth * 1.5 : lineWidth, alpha: (major ? 0.15 : 0.05) * lod.alpha });
+        }
       }
     }
   }
 
-  // 坐标轴（zoomSkip=0 时轴点也隐藏，只留原点 + 线模式轴线）
+  // 坐标轴（极远景时轴点也隐藏，只留原点 + 线模式轴线）
   if (axisVis) {
     if (gridMode === 'dot') {
       // 原点始终可见
       const axisDotR = Math.max(2.5, lineWidth * 5);
       cache.gfx.circle(0, 0, axisDotR * 1.4).fill({ color: 0x888888, alpha: 0.65 });
-      if (zoomSkip > 0) {
-        const effStep = step * zoomSkip;
+      for (let lodIndex = 0; lodIndex < gridLods.length; lodIndex++) {
+        const lod = gridLods[lodIndex];
+        const coarserSkips = gridLods.slice(0, lodIndex).map(level => level.skip);
+        const effStep = step * lod.skip;
+        const xStart = alignedGridStart(bounds.minX, step, lod.skip);
+        const xEnd = bounds.maxX + effStep * 2;
+        const yStart = alignedGridStart(bounds.minY, step, lod.skip);
+        const yEnd = bounds.maxY + effStep * 2;
         for (let x = xStart; x <= xEnd; x += effStep) {
           if (Math.abs(x) < 1) continue;
-          cache.gfx.circle(x, 0, axisDotR).fill({ color: 0x888888, alpha: 0.5 });
+          if (coarserSkips.some(skip => axisPointOnLattice(x, skip))) continue;
+          cache.gfx.circle(x, 0, axisDotR).fill({ color: 0x888888, alpha: 0.5 * lod.alpha });
         }
         for (let y = yStart; y <= yEnd; y += effStep) {
           if (Math.abs(y) < 1) continue;
-          cache.gfx.circle(0, y, axisDotR).fill({ color: 0x888888, alpha: 0.5 });
+          if (coarserSkips.some(skip => axisPointOnLattice(y, skip))) continue;
+          cache.gfx.circle(0, y, axisDotR).fill({ color: 0x888888, alpha: 0.5 * lod.alpha });
         }
       }
     } else {
@@ -238,9 +257,9 @@ export function updateGrid(
       t.destroy();
     }
   }
-  // 刻度标签（zoomSkip=0 时完全隐藏）
-  if (axisTicks && zoomSkip > 0) {
-    const tickStep = step * 5 * zoomSkip;
+  // 刻度标签只跟随当前占主导的密度层，避免重复文字。
+  if (axisTicks && gridLods.length > 0) {
+    const tickStep = step * 5 * dominantSkip;
     const tickSize = 4 / transform.k;
     for (let x = Math.floor(bounds.minX / tickStep) * tickStep; x <= bounds.maxX; x += tickStep) {
       if (Math.abs(x) < 1) continue;

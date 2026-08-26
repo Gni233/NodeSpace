@@ -327,7 +327,7 @@
     "focusMode": true,
     "glowAppearance": true,
     "categoryLayout": false,
-    "layoutMode": "default",
+    "layoutMode": "auto",
     "gridSnap": true,
     "partialGridSnap": false,
     "nodeColorStyle": "spectrum-narrow",

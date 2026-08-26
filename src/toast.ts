@@ -13,6 +13,7 @@ let toastsContainer: HTMLElement | null = null;
 function ensureContainer() {
   if (!toastsContainer) {
     toastsContainer = document.createElement('div');
+    toastsContainer.className = 'fg-toast-stack';
     toastsContainer.style.cssText =
       `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:${Z_TOAST};` +
       'display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;';
@@ -47,6 +48,9 @@ function easingCSS(name: string): string {
 export function showToast(msg: string, type: 'info' | 'success' | 'error' | 'warning' = 'info', duration = 2500): void {
   const container = ensureContainer();
   const toast = document.createElement('div');
+  toast.className = 'fg-toast';
+  toast.dataset.type = type;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
   const color = COLORS[type] || COLORS.info;
   toast.textContent = msg;
   toast.style.cssText =
@@ -91,10 +95,14 @@ export function confirmAction(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
+    overlay.className = 'fg-modal-backdrop';
     overlay.style.cssText =
       `position:fixed;inset:0;z-index:${Z_MODAL_BACKDROP};background:rgba(0,0,0,0.5);` +
       'display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity 0.2s ease;';
     const dialog = document.createElement('div');
+    dialog.className = 'fg-modal fg-confirm-dialog';
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-modal', 'true');
     dialog.style.cssText =
       `background:${V('--fg-surface-elevated', 'rgba(40,42,48,0.92)')};` +
       `backdrop-filter:blur(var(--fg-glass-blur-lg,16px));-webkit-backdrop-filter:blur(var(--fg-glass-blur-lg,16px));` +
@@ -103,11 +111,14 @@ export function confirmAction(
       `min-width:260px;max-width:380px;color:${V('--fg-text', '#d0d0d0')};` +
       `box-shadow:${V('--fg-shadow-lg', '0 8px 32px rgba(0,0,0,0.5)')};`;
     const label = document.createElement('div');
+    label.className = 'fg-modal-title fg-confirm-message';
     label.textContent = msg;
     label.style.cssText = `margin-bottom:14px;font-size:${V('--fg-font-lg', '0.92em')};line-height:1.4;`;
     const btnRow = document.createElement('div');
+    btnRow.className = 'fg-modal-actions';
     btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
     const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'fg-modal-button fg-modal-button-secondary';
     cancelBtn.textContent = labels.cancel || '取消';
     cancelBtn.style.cssText =
       'padding:5px 14px;' +
@@ -115,6 +126,7 @@ export function confirmAction(
       `border-radius:${V('--fg-radius-md', '10px')};` +
       `background:transparent;color:${V('--fg-text', '#ccc')};cursor:pointer;font-size:${V('--fg-font-md', '0.85em')};`;
     const okBtn = document.createElement('button');
+    okBtn.className = 'fg-modal-button fg-modal-button-primary';
     okBtn.textContent = labels.confirm || '确定';
     okBtn.style.cssText =
       'padding:5px 14px;border:none;' +

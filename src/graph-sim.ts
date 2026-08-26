@@ -1,6 +1,8 @@
 import * as d3 from 'd3';
 import { initSimulation } from "./simulation";
 import { GraphData } from "./data/storage";
+import { getStructureProjection } from './structure-nodes';
+import { createStaticSimulation, isStaticSimulation } from './static-simulation';
 
 export function createSimManager(
   graph: GraphData,
@@ -20,9 +22,49 @@ export function createSimManager(
   let simulation: any = null;
   let heatTimer: any = null;
   let dragNodeId: string | null = null;
+  let staticMode = false;
+
+  const clearHeatTimer = () => {
+    if (heatTimer) clearTimeout(heatTimer);
+    heatTimer = null;
+  };
+
+  function initStatic(positionOverrides?: Map<string, { x: number; y: number }>) {
+    staticMode = true;
+    simulation?.stop?.();
+    clearHeatTimer();
+    const projection = getStructureProjection(graph);
+    const excluded = new Set<string>([...(getExcludeNodeIds() ?? []), ...projection.hiddenNodeIds]);
+    const visibleNodes = excluded.size === 0
+      ? projection.nodes
+      : projection.nodes.filter(node => !excluded.has(node.id));
+    const nodes = !positionOverrides
+      ? visibleNodes
+      : visibleNodes.map(node => {
+        const source = positionOverrides?.get(node.id);
+        if (!source) return node;
+        // During the short transition, inherit semantic/visual fields from the
+        // graph node and own only mutable position state. A settled static view
+        // uses graph nodes directly and allocates no per-node copies.
+        const viewNode = Object.create(node);
+        viewNode.x = source.x;
+        viewNode.y = source.y;
+        viewNode.fx = node.fixed ? source.x : null;
+        viewNode.fy = node.fixed ? source.y : null;
+        viewNode.fixed = !!node.fixed;
+        return viewNode;
+      });
+    simulation = createStaticSimulation(nodes);
+    return simulation;
+  }
 
   function initSim() {
+    if (staticMode) {
+      initStatic();
+      return;
+    }
     if (simulation) simulation.stop();
+    clearHeatTimer();
     const gw = getGw(), gh = getGh();
     simulation = initSimulation(graph, {
       gw, gh,
@@ -39,9 +81,9 @@ export function createSimManager(
       .alpha(1)
       .alphaTarget(getAlphaTarget())
       .restart();
-    if (heatTimer) clearTimeout(heatTimer);
     heatTimer = setTimeout(() => {
       if (simulation) simulation.alphaTarget(0);
+      heatTimer = null;
     }, getHeatingTime() * 1000);
   }
 
@@ -80,7 +122,7 @@ export function createSimManager(
   };
 
   function updateCenter() {
-    if (!simulation) return;
+    if (!simulation || isStaticSimulation(simulation)) return;
     const w = getGw(), h = getGh();
     simulation.force("center", d3.forceCenter(0, 0));
     simulation.force("radial", d3.forceRadial(0).x(0).y(0).strength(getCenterS()));
@@ -89,5 +131,20 @@ export function createSimManager(
 
   function getSim() { return simulation; }
 
-  return { initSim, updateCenter, getSim, setDragNode, getDragNode };
+  function setStaticMode(value: boolean) {
+    staticMode = value;
+  }
+
+  function isStaticMode() {
+    return staticMode;
+  }
+
+  function dispose() {
+    simulation?.stop?.();
+    clearHeatTimer();
+    simulation = null;
+    dragNodeId = null;
+  }
+
+  return { initSim, initStatic, updateCenter, getSim, setStaticMode, isStaticMode, setDragNode, getDragNode, dispose };
 }

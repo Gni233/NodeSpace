@@ -23,7 +23,8 @@ function getElectronConfigDir(): string | null {
       if (fs.existsSync(cp)) {
         const config = JSON.parse(fs.readFileSync(cp, 'utf-8'));
         if (config.folderPath && fs.existsSync(config.folderPath)) {
-          return config.folderPath;
+          const graphRoot = path.join(config.folderPath, 'Graph233');
+          return fs.existsSync(graphRoot) && fs.statSync(graphRoot).isDirectory() ? graphRoot : config.folderPath;
         }
       }
     }

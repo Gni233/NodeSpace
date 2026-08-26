@@ -35,6 +35,7 @@ test('main applies local card label scale only while card layout is active', asy
   assert.match(main, /const cardController = isCardMode && st\.layout\.current instanceof CardGridController/);
   assert.match(main, /const cardViewScale = cardController\?\.getNodeViewScale\(id\) \?\? 1;/);
   assert.match(main, /const nodeLabelSize = isCardMode\s*\? getCardLabelSize\(baseNodeLabelSize, cardViewScale\)\s*: baseNodeLabelSize;/);
-  assert.match(main, /sprite = createNodeSprite\(id, n\.label \|\| id, n\.x, n\.y, nodeRadius, color, lblColor, nodeLabelSize\);/);
+  assert.match(main, /const displayLabel = resolveNodeDisplayLabel\(n, graphNodeById\);/);
+  assert.match(main, /sprite = createNodeSprite\(id, displayLabel, n\.x, n\.y, nodeRadius, color, lblColor, nodeLabelSize\);/);
   assert.match(main, /applyNodeVisual\(sprite, baseColor, lblColor, nodeLabelSize2,/);
 });

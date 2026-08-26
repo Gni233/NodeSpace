@@ -94,6 +94,7 @@ export function showContextMenu(
 ) {
   closeContextMenu();
   const menu = document.createElement("div");
+  menu.className = 'fg-context-menu';
   menu.setAttribute('data-menu', 'context');
   const menuStyle =
     `position:absolute;z-index:${Z_CONTEXT_MENU};` +
@@ -116,12 +117,15 @@ export function showContextMenu(
     itemList.forEach(item => {
       if (item.separator) {
         const separator = document.createElement('div');
+        separator.className = 'fg-context-menu-separator';
         separator.setAttribute('role', 'separator');
         separator.style.cssText = `height:1px;margin:4px 6px;background:${V('--fg-border-light', 'rgba(255,255,255,0.1)')};`;
         parent.appendChild(separator);
         return;
       }
       const mi = document.createElement("div");
+      mi.className = 'fg-context-menu-item' + (item.children ? ' has-children' : '') + (item.disabled ? ' is-disabled' : '');
+      mi.setAttribute('role', 'menuitem');
       mi.textContent = item.label ?? '';
       mi.style.cssText = itemStyle + (item.children ? ' display:flex;justify-content:space-between;' : '') + (item.disabled ? 'opacity:0.42;cursor:default;' : '');
       mi.setAttribute('aria-disabled', String(!!item.disabled));
@@ -140,6 +144,7 @@ export function showContextMenu(
         if (item.children) {
           // 子菜单：在父项右侧创建
           const sub = document.createElement("div");
+          sub.className = 'fg-context-menu fg-context-submenu';
           sub.style.cssText = menuStyle + `left:${mx + parent.offsetWidth}px;top:${my + mi.offsetTop}px;`;
           buildItems(sub, item.children, mx + parent.offsetWidth, my + mi.offsetTop);
           // Keep one submenu branch open and register it with the root's outside-click tree.

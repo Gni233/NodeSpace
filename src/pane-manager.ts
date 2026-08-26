@@ -16,6 +16,7 @@ import { setupCanvasEvents, EventsContext } from './ui-events';
 import { sharedState } from './shared-state';
 import { NodeSprite } from './pixi-nodes';
 import { GraphData } from './data/storage';
+import { nodeContainsPoint } from './geometry/hit';
 
 // ---- PaneExternals — 窗格需要的外部回调（由 main.ts 注入） ----
 
@@ -217,6 +218,7 @@ export class PaneManager {
       }
 
       renderPaneFn(px, paneGraph(pane), paneSimulationManager(pane), pane.nodeSprites, pane);
+      px.app.render();
     }
 
     // 休眠非聚焦窗格的模拟
@@ -285,8 +287,10 @@ function createEventsContextForPane(
     getTransform: () => px ? { k: px.viewport.scale.x, x: px.viewport.x, y: px.viewport.y } : { k: 1, x: 0, y: 0 },
     viewport: px.viewport,
     getCanvas: () => px.app.canvas as any,
+    captureMagnifierRegion: region => px.captureMagnifierRegion(region),
     getNodeExpand: () => pi.nodeExpand,
     getLineExpand: () => pi.lineExpand,
+    getSemanticEdgeRouting: () => pi.activeMode === 'auto',
     getDraggingNode: () => pi.draggingNode,
     setDraggingNode: (v: any) => { pi.draggingNode = v; },
     getWasDragged: () => pi.wasDragged,
@@ -415,9 +419,7 @@ function createEventsContextForPane(
       if (ext.handleLinkTap(x, y)) return;
       if (pi.linkMode && !pi.linkSrc) {
         const nodes = getSim()?.nodes() || [];
-        const hit = nodes.find((nd: any) =>
-          (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + pi.nodeExpand) ** 2
-        );
+        const hit = nodes.find((nd: any) => nodeContainsPoint(nd, x, y, pi.nodeExpand));
         if (hit) {
           pi.linkSrc = hit.id;
           ext.showToast(`源: ${hit.label || hit.id}，请点击目标节点`, 'info', 2000);
@@ -425,9 +427,7 @@ function createEventsContextForPane(
         }
       }
       const nodes = getSim()?.nodes() || [];
-      const n = nodes.find((nd: any) =>
-        (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + pi.nodeExpand) ** 2
-      );
+      const n = nodes.find((nd: any) => nodeContainsPoint(nd, x, y, pi.nodeExpand));
       if (n) { pi.selNode = n.id; ext.fillNode(n.id); ext.onDraw(); return; }
       for (let i2 = 0; i2 < pi.graph.edges.length; i2++) {
         const e = pi.graph.edges[i2];

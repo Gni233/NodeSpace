@@ -372,7 +372,7 @@ test('card grid uses bounded continuous motion and independent card gestures', a
   assert.match(source, /delete n\._pieColors/);
   assert.match(source, /onGraphChanged\(\): void/);
   assert.doesNotMatch(source, /if \(gsn\.fx != null \|\| gsn\.fy != null\)/);
-  assert.match(graphSim, /return \{ initSim, updateCenter, getSim, setDragNode, getDragNode \}/);
+  assert.match(graphSim, /return \{ initSim, initStatic, updateCenter, getSim, setStaticMode, isStaticMode, setDragNode, getDragNode, dispose \}/);
   assert.match(source, /\{ \.\.\.e, source: s, target: t \}/);
   assert.doesNotMatch(source, /\['drag', 'wheel', 'pinch', 'decelerate'\]/);
   assert.match(interactions, /gesture: 'reorder' \| 'pan' \| 'pinch' \| null/);
@@ -395,7 +395,7 @@ test('save flow only clears dirty tabs after a successful frozen write', async (
   assert.match(source, /pixi\.blobLayerGfx[\s\S]*?bg\?\.clear\?\.\(\);\s*pixi\.blobLayer\.visible = false/);
   assert.match(source, /onBeforeClose/);
   assert.match(source, /function clearPaneLayout\(pane: Pick<PaneState, 'layout' \| 'pixi' \| 'activeMode' \| 'structureBoundaryShapes' \| 'hoverStructureId' \| 'membershipDragPreview' \| 'membershipDragSession'>\)/);
-  assert.match(source, /clearMembershipDragPreview\(pane\);\s*pane\.layout\.clear\(\);\s*pane\.activeMode = 'default';\s*clearPaneStructureBoundaries\(pane\)[\s\S]*?clearBlobLayer\(pane\.pixi\)/);
+  assert.match(source, /clearMembershipDragPreview\(pane\);\s*pane\.layout\.clear\(\);\s*pane\.activeMode = 'auto';\s*clearPaneStructureBoundaries\(pane\)[\s\S]*?clearBlobLayer\(pane\.pixi\)/);
   assert.match(source, /async function loadGraphData\(fileName: string\) \{\s*exitStructureForPane\(pane0 as unknown as PaneState\);\s*clearPaneStructureBoundaries\(pane0 as unknown as PaneState\);\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane0\)/);
   assert.match(source, /async function loadGraphForPane\(pane: PaneState, fileName: string\) \{\s*exitStructureForPane\(pane\);\s*clearPaneStructureBoundaries\(pane\);\s*sharedState\.hoverNodeId = null;\s*sharedState\.focusHoverNodeId = null;\s*clearPaneLayout\(pane\)/);
   assert.match(source, /if \(isCardMode && st\.layout\.current\) st\.layout\.update\(\);\s*const structureProjection = st\.structureView[\s\S]*?: getStructureProjection\(graph\);\s*const nodes = isCardMode/);
@@ -427,10 +427,12 @@ test('interface keeps low-frequency tools and appearance settings off the canvas
   const source = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
   const styles = await readFile(path.join(root, 'index.html'), 'utf8');
   assert.match(source, /primaryRow\.appendChild\(controlsDetails\)/);
+  assert.match(source, /primaryRow\.appendChild\(settingsDet\)/);
   assert.match(source, /controlsRow2\.appendChild\(refreshBtn\)/);
   assert.match(source, /const bottom = 4/);
-  assert.match(styles, /\.fg-appearance-panel:not\(\[open\]\) \{ display:none !important; \}/);
-  assert.match(styles, /\.fg-tools-content \{\s*position:fixed/);
+  assert.match(styles, /\.fg-appearance-content \{[\s\S]*?width:min\(360px, calc\(100vw - 16px\)\)/);
+  assert.match(styles, /\.fg-toolbar-popover \{\s*position:fixed/);
+  assert.match(source, /calculateToolbarPopoverPosition\([\s\S]*?window\.innerWidth/);
   assert.match(styles, /@media \(max-width: 720px\)/);
 });
 
@@ -442,14 +444,15 @@ test('interface regressions keep panel controls usable and inactive tab close is
   const fileSystem = await readFile(path.join(root, 'src', 'file-system.ts'), 'utf8');
   const editPanel = await readFile(path.join(root, 'src', 'ui-edit.ts'), 'utf8');
 
-  assert.match(main, /rightRail\.appendChild\(appearanceBtn\)/);
-  assert.match(main, /modeRow\.hidden = modeCollapsed/);
-  assert.match(main, /modeToggle\.setAttribute\('aria-expanded'/);
+  assert.match(main, /setupToolbarDropdowns\(\[/);
+  assert.match(main, /layoutPopover\.appendChild\(modeRow\)/);
+  assert.match(main, /summary\.setAttribute\('aria-expanded', String\(details\.open\)\)/);
+  assert.doesNotMatch(main, /rightRail|appearanceBtn|modeCollapsed/);
   assert.match(sidebar, /presetHeader = document\.createElement\('button'\)/);
   assert.match(sidebar, /callbacks\.onApplyPreset\?\.\(''\)/);
   assert.match(tabs, /closest\('\[data-tab-close\]'\)/);
   assert.match(tabs, /closeBtn\.onpointerdown = \(e\) => e\.stopPropagation\(\)/);
-  assert.match(styles, /\.fg-mode-switcher\[hidden\] \{ display:none !important; \}/);
+  assert.match(styles, /\.fg-mode-switcher \{[\s\S]*?flex-wrap:wrap/);
   assert.match(styles, /\.fg-status-line \{[\s\S]*?right:82px !important;/);
   assert.match(fileSystem, /const wrote = await writeGraphFile\(newPath, data, h\);\s*if \(!wrote\) return false;\s*\/\/ 删除旧文件/);
   assert.doesNotMatch(editPanel, /const \{ graph,/);

@@ -76,12 +76,22 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     'transition:opacity 0.25s ease',
   ].join(';');
 
-  const makeBtn = (text: string, label: string, onClick: () => void): HTMLButtonElement => {
+  const makeBtn = (text: string, label: string, onClick: () => void, shortLabel = label): HTMLButtonElement => {
     const btn = document.createElement('button');
+    btn.className = 'fg-mobile-action';
     btn.type = 'button';
-    btn.textContent = text;
     btn.title = label;
     btn.setAttribute('aria-label', label);
+    btn.dataset.shortLabel = shortLabel;
+    const icon = document.createElement('span');
+    icon.className = 'fg-mobile-action-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = text;
+    const visibleLabel = document.createElement('span');
+    visibleLabel.className = 'fg-mobile-action-label';
+    visibleLabel.setAttribute('aria-hidden', 'true');
+    visibleLabel.textContent = shortLabel;
+    btn.append(icon, visibleLabel);
     btn.style.cssText = [
       'min-width:44px; height:44px; padding:4px 10px',
       'font-size:18px; line-height:1',
@@ -99,8 +109,8 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
 
   const setToggleState = (button: HTMLButtonElement, active: boolean) => {
     button.setAttribute('aria-pressed', String(active));
-    button.style.background = active ? '#5B8FF9' : '';
-    button.style.color = active ? '#fff' : '';
+    button.style.background = active ? 'var(--fg-accent,#5B8FF9)' : '';
+    button.style.color = active ? 'var(--fg-accent-text,#fff)' : '';
   };
 
   const runAndSync = (action: () => void) => {
@@ -115,12 +125,12 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
       return;
     }
     runAndSync(callbacks.createNode);
-  });
-  const undoBtn = makeBtn('↩', '撤销', () => runAndSync(callbacks.undo));
-  const linkBtn = makeBtn('↔', '连线模式', () => runAndSync(callbacks.toggleLinkMode));
+  }, '记录');
+  const undoBtn = makeBtn('↩', '撤销', () => runAndSync(callbacks.undo), '撤销');
+  const linkBtn = makeBtn('↔', '连线模式', () => runAndSync(callbacks.toggleLinkMode), '连线');
   linkBtn.setAttribute('aria-pressed', 'false');
-  const fitBtn = makeBtn('◎', '适配全部节点', () => runAndSync(callbacks.fitView));
-  const moreBtn = makeBtn('⋯', '更多操作', () => setMenuOpen(!menuOpen));
+  const fitBtn = makeBtn('◎', '适配全部节点', () => runAndSync(callbacks.fitView), '全览');
+  const moreBtn = makeBtn('⋯', '更多操作', () => setMenuOpen(!menuOpen), '更多');
   moreBtn.setAttribute('aria-haspopup', 'menu');
   moreBtn.setAttribute('aria-expanded', 'false');
 
@@ -140,34 +150,34 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     runAndSync(callbacks.redo);
     setMenuOpen(false);
   });
+  redoBtn.classList.add('fg-mobile-menu-action');
   redoBtn.setAttribute('role', 'menuitem');
   redoBtn.style.width = '100%';
-  redoBtn.appendChild(document.createTextNode(' 重做'));
 
   const boxBtn = makeBtn('⬚', '框选模式', () => {
     runAndSync(callbacks.toggleBoxSelectMode);
     setMenuOpen(false);
   });
+  boxBtn.classList.add('fg-mobile-menu-action');
   boxBtn.setAttribute('role', 'menuitemcheckbox');
   boxBtn.setAttribute('aria-checked', 'false');
   boxBtn.style.width = '100%';
-  boxBtn.appendChild(document.createTextNode(' 框选'));
 
   const raiseHeadingBtn = makeBtn('⇧', '提升层级', () => {
     if (callbacks.raiseHeading) runAndSync(callbacks.raiseHeading);
     setMenuOpen(false);
   });
+  raiseHeadingBtn.classList.add('fg-mobile-menu-action');
   raiseHeadingBtn.setAttribute('role', 'menuitem');
   raiseHeadingBtn.style.width = '100%';
-  raiseHeadingBtn.appendChild(document.createTextNode(' 提升层级'));
 
   const lowerHeadingBtn = makeBtn('⇩', '降低层级', () => {
     if (callbacks.lowerHeading) runAndSync(callbacks.lowerHeading);
     setMenuOpen(false);
   });
+  lowerHeadingBtn.classList.add('fg-mobile-menu-action');
   lowerHeadingBtn.setAttribute('role', 'menuitem');
   lowerHeadingBtn.style.width = '100%';
-  lowerHeadingBtn.appendChild(document.createTextNode(' 降低层级'));
 
   menu.append(redoBtn, boxBtn);
   menu.append(raiseHeadingBtn, lowerHeadingBtn);
@@ -199,8 +209,8 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     setToggleState(linkBtn, callbacks.getLinkActive());
     const boxActive = callbacks.getBoxSelectActive();
     boxBtn.setAttribute('aria-checked', String(boxActive));
-    boxBtn.style.background = boxActive ? '#5B8FF9' : '';
-    boxBtn.style.color = boxActive ? '#fff' : '';
+    boxBtn.style.background = boxActive ? 'var(--fg-accent,#5B8FF9)' : '';
+    boxBtn.style.color = boxActive ? 'var(--fg-accent-text,#fff)' : '';
     boxBtn.disabled = !callbacks.getBoxSelectEnabled();
     boxBtn.style.opacity = boxBtn.disabled ? '0.45' : '';
     syncDisabled(raiseHeadingBtn, !callbacks.raiseHeading || !selection.canRaiseHeading);

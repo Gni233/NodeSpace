@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copy: (src, dst) => ipcRenderer.invoke('fs-copy', src, dst),
   exists: (path) => ipcRenderer.invoke('fs-exists', path),
   stat: (path) => ipcRenderer.invoke('fs-stat', path),
+  scanVault: (path) => ipcRenderer.invoke('vault-scan', path),
+  openInObsidian: (rootPath, relativePath, heading) => ipcRenderer.invoke('vault-open-in-obsidian', rootPath, relativePath, heading),
 
   // 对话框
   openFolder: () => ipcRenderer.invoke('dialog-open-folder'),
@@ -47,6 +49,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 外部文件变更通知（MCP Server 等外部工具修改了图文件）
   onExternalFileChange: (fn) => {
     ipcRenderer.on('file-external-change', (_, graphName) => fn(graphName));
+  },
+  onVaultFileChange: (fn) => {
+    ipcRenderer.on('vault-file-change', (_, relativePath) => fn(relativePath));
   },
 
   // 通知主进程：app 自身即将读写文件（用于文件监听自免触发）

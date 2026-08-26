@@ -1,4 +1,6 @@
 import { Container, Graphics, Text } from 'pixi.js';
+import type { SemanticCardMetrics } from './layouts/semantic';
+import { semanticBodyDetailAlpha, WORLD_TEXT_SAMPLING } from './pixi-text-quality';
 
 /** 多彩分级：六级不同色相，以色环黄金角 137.5° 生成长跨距调色盘，各主题偏移不同 */
 export function getSpectrumColor(level: number, isDark: boolean, accentHex?: string): number {
@@ -122,6 +124,9 @@ export interface NodeVisualState {
   groupEdgeOnly?: boolean;
   pieColors?: number[];
   mediaType?: string;
+  vaultResourceKind?: string;
+  resourceReferenceKind?: string;
+  resourceReferenceStatus?: 'ok' | 'broken';
   mediaExpanded?: boolean;
   mediaUrl?: string;
   hyperlink?: string;
@@ -129,7 +134,11 @@ export interface NodeVisualState {
   hasChildren?: boolean;
   /** 结构节点包含的成员数量 */
   structureMemberCount?: number;
+  semanticCard?: SemanticCardMetrics & { regionColorIndex?: number };
+  semanticZoom?: number;
 }
+
+const SEMANTIC_PALETTE = [0x5e81ac, 0x88c0d0, 0x8fbcbb, 0xa3be8c, 0xb48ead, 0xd08770, 0xebcb8b];
 
 const TEXT_RESOLUTION = Math.max(3, (window.devicePixelRatio || 1) * 2);
 
@@ -161,6 +170,7 @@ export function createNodeSprite(
   const text = new Text({
     text: labelStr,
     resolution: TEXT_RESOLUTION,
+    ...WORLD_TEXT_SAMPLING,
     style: {
       fontFamily: readFontFamily(),
       fontSize: labelSize,
@@ -228,46 +238,247 @@ export function applyNodeVisual(
   const r = radius;
   const alpha = state.inFocus ? 1 : 0.15;
 
-  // 多媒体节点图标（Feather Icons 风格）
+  // Media identity is a compact badge attached to the card/node silhouette.
+  // It remains visible while the reader is open, using the accent ring as its
+  // state instead of making the symbol disappear.
   const oldIcon = (sprite as any)._mediaIcon as Graphics | undefined;
   if (oldIcon) { sprite.container.removeChild(oldIcon); oldIcon.destroy(); (sprite as any)._mediaIcon = null; }
-  if (state.mediaType && !state.mediaExpanded) {
+  const drawMediaBadge = (x: number, y: number, size: number, tint: number, focusAlpha = 1) => {
+    const resourceKind = state.mediaType || state.resourceReferenceKind || state.vaultResourceKind;
+    if (!resourceKind) return;
     const g = new Graphics();
-    const s = r * 0.4;
-    const w = 1.4;
-    const a = 0.5;
-    g.setStrokeStyle({ color: 0xffffff, width: w, alpha: a, cap: 'round', join: 'round' });
-    if (state.mediaType === 'image') {
-      // rect + circle (sun) + mountain
-      g.roundRect(-s * 1.2, -s * 0.9, s * 2.4, s * 1.8, s * 0.2).stroke();
-      g.circle(-s * 0.2, -s * 0.2, s * 0.35).stroke();
-      g.moveTo(-s * 0.8, s * 0.6).lineTo(-s * 0.1, s * 0.0).lineTo(s * 0.4, s * 0.6).stroke();
-    } else if (state.mediaType === 'audio') {
-      // four vertical bars, varying heights
-      const gap = s * 0.6;
-      const h1 = s * 0.6, h2 = s * 1.4, h3 = s * 0.9, h4 = s * 1.1;
-      g.moveTo(-gap * 1.5, -h1 / 2).lineTo(-gap * 1.5, h1 / 2);
-      g.moveTo(-gap * 0.5, -h2 / 2).lineTo(-gap * 0.5, h2 / 2);
-      g.moveTo(gap * 0.5, -h3 / 2).lineTo(gap * 0.5, h3 / 2);
-      g.moveTo(gap * 1.5, -h4 / 2).lineTo(gap * 1.5, h4 / 2);
-      g.stroke();
-    } else if (state.mediaType === 'video') {
-      // play triangle
-      g.moveTo(-s * 0.7, -s * 0.9).lineTo(s * 1.0, 0).lineTo(-s * 0.7, s * 0.9).closePath().stroke();
-    } else if (state.mediaType === 'md') {
-      // document with folded corner
-      g.moveTo(-s, -s * 1.1).lineTo(s * 0.4, -s * 1.1).lineTo(s * 1.0, -s * 0.5).lineTo(s * 1.0, s * 1.1).lineTo(-s, s * 1.1).closePath().stroke();
-      g.moveTo(s * 0.4, -s * 1.1).lineTo(s * 0.4, -s * 0.5).lineTo(s * 1.0, -s * 0.5).stroke();
-      for (let i = 0; i < 3; i++) {
-        g.moveTo(-s * 0.5, -s * 0.3 + i * s * 0.5).lineTo(s * 0.4, -s * 0.3 + i * s * 0.5).stroke();
-      }
+    const s = Math.max(4.5, size);
+    const active = !!state.mediaExpanded;
+    const isReference = Boolean(state.resourceReferenceKind);
+    const isBroken = state.resourceReferenceStatus === 'broken';
+    const badgeTint = isBroken ? 0xbf616a : tint;
+    g.circle(0, 0, s)
+      .fill({ color: badgeTint, alpha: (active ? 0.34 : isReference ? 0.22 : 0.16) * focusAlpha })
+      .stroke({ color: active ? state.accentColor : badgeTint, width: active || isReference ? 1.6 : 1, alpha: (active ? 0.9 : isReference ? 0.7 : 0.48) * focusAlpha });
+    const u = s * 0.46;
+    const stroke = { color: 0xffffff, width: Math.max(1, s * 0.13), alpha: 0.82 * focusAlpha, cap: 'round' as const, join: 'round' as const };
+    if (resourceKind === 'folder') {
+      g.moveTo(-u * 0.72, -u * 0.42).lineTo(-u * 0.12, -u * 0.42).lineTo(u * 0.08, -u * 0.62)
+        .lineTo(u * 0.7, -u * 0.62).lineTo(u * 0.7, u * 0.55).lineTo(-u * 0.72, u * 0.55).closePath().stroke(stroke);
+    } else if (resourceKind === 'graph') {
+      g.circle(-u * 0.52, u * 0.28, u * 0.2).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
+      g.circle(0, -u * 0.48, u * 0.2).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
+      g.circle(u * 0.52, u * 0.28, u * 0.2).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
+      g.moveTo(-u * 0.38, u * 0.14).lineTo(-u * 0.1, -u * 0.32).lineTo(u * 0.1, -u * 0.32).lineTo(u * 0.38, u * 0.14).stroke(stroke);
+    } else if (resourceKind === 'image') {
+      g.roundRect(-u, -u * 0.82, u * 2, u * 1.64, u * 0.2).stroke(stroke);
+      g.circle(-u * 0.28, -u * 0.24, u * 0.2).fill({ color: 0xffffff, alpha: 0.78 * focusAlpha });
+      g.moveTo(-u * 0.72, u * 0.5).lineTo(-u * 0.12, 0).lineTo(u * 0.2, u * 0.3).lineTo(u * 0.66, -u * 0.18).stroke(stroke);
+    } else if (resourceKind === 'audio') {
+      g.moveTo(-u * 0.58, u * 0.45).lineTo(-u * 0.58, -u * 0.34).lineTo(u * 0.45, -u * 0.58).lineTo(u * 0.45, u * 0.2).stroke(stroke);
+      g.circle(-u * 0.72, u * 0.5, u * 0.25).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
+      g.circle(u * 0.3, u * 0.28, u * 0.25).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
+    } else if (resourceKind === 'video') {
+      g.moveTo(-u * 0.35, -u * 0.58).lineTo(u * 0.62, 0).lineTo(-u * 0.35, u * 0.58).closePath().fill({ color: 0xffffff, alpha: 0.84 * focusAlpha });
+    } else if (resourceKind === 'pdf') {
+      g.moveTo(-u * 0.52, -u * 0.72).lineTo(u * 0.18, -u * 0.72).lineTo(u * 0.54, -u * 0.34).lineTo(u * 0.54, u * 0.72).lineTo(-u * 0.52, u * 0.72).closePath().stroke(stroke);
+      g.moveTo(-u * 0.22, u * 0.28).lineTo(u * 0.28, u * 0.28).stroke(stroke);
+    } else {
+      g.moveTo(-u * 0.52, -u * 0.68).lineTo(u * 0.52, -u * 0.68).lineTo(u * 0.52, u * 0.68).lineTo(-u * 0.52, u * 0.68).closePath().stroke(stroke);
+      g.moveTo(-u * 0.26, -u * 0.2).lineTo(u * 0.27, -u * 0.2).moveTo(-u * 0.26, u * 0.18).lineTo(u * 0.16, u * 0.18).stroke(stroke);
     }
-    g.alpha = 0.75;
+    if (isReference) {
+      g.circle(s * 0.7, -s * 0.7, Math.max(1.35, s * 0.22))
+        .fill({ color: isBroken ? 0xbf616a : state.accentColor, alpha: 0.94 * focusAlpha })
+        .stroke({ color: 0xffffff, width: Math.max(0.7, s * 0.08), alpha: 0.72 * focusAlpha });
+    }
+    if (isBroken) {
+      g.moveTo(-s * 0.58, s * 0.58).lineTo(s * 0.58, -s * 0.58)
+        .stroke({ color: 0xffffff, width: Math.max(1.1, s * 0.15), alpha: 0.9 * focusAlpha, cap: 'round' });
+    }
+    g.position.set(x, y);
     (sprite as any)._mediaIcon = g;
     sprite.container.addChild(g);
-  }
+  };
 
   circle.clear();
+
+  if (state.semanticCard) {
+    const card = state.semanticCard;
+    const width = Math.max(80, card.width);
+    const height = Math.max(48, card.height);
+    const regionIndex = card.regionColorIndex ?? -1;
+    const tint = regionIndex >= 0 ? SEMANTIC_PALETTE[regionIndex % SEMANTIC_PALETTE.length] : baseColor;
+    const identityColor = state.groupColor && !state.groupEdgeOnly ? state.groupColor : baseColor;
+    const focusAlpha = state.inFocus ? 1 : 0.18;
+    const fillAlpha = card.kind === 'private' ? 0.055 : 0.075;
+    const borderAlpha = state.selected ? 0.82 : state.boxSelected ? 0.68 : 0.32;
+    const headerHeight = (card.titleLines || 1) > 1 ? 49 : 32;
+
+    if (card.form === 'node') {
+      const nodeRadius = Math.max(5, Number(card.nodeRadius) || r);
+      const body = (sprite as any)._semanticBody as Text | undefined;
+      if (body) body.visible = false;
+      const drawGlow = (color: number, maxAlpha: number) => {
+        for (let index = 5; index >= 0; index--) {
+          const progress = (5 - index) / 5;
+          circle.circle(0, 0, nodeRadius + index + 0.5)
+            .fill({ color, alpha: maxAlpha * (1 - progress) * (1 - progress) });
+        }
+      };
+      if (state.searchMatch) drawGlow(state.accentColor, 0.10 * focusAlpha);
+      if (state.selected && !state.boxSelected) drawGlow(state.accentColor, 0.16 * focusAlpha);
+      if (state.boxSelected) drawGlow(state.accentAltColor, 0.14 * focusAlpha);
+
+      const nodeAlpha = focusAlpha * 0.85;
+      const fixedT = (typeof (sprite as any)._fixedAnim === 'number' && !isNaN((sprite as any)._fixedAnim))
+        ? (sprite as any)._fixedAnim : (state.fixed ? 1 : 0);
+      if (!state.fixedHollow || fixedT < 1) {
+        circle.circle(0, 0, nodeRadius)
+          .fill({ color: identityColor, alpha: nodeAlpha * (state.fixedHollow ? (1 - fixedT) : 1) });
+      }
+      if (state.fixedHollow && fixedT > 0) {
+        circle.circle(0, 0, nodeRadius)
+          .fill({ color: identityColor, alpha: Math.max(0.15, nodeAlpha) * fixedT });
+        circle.circle(0, 0, nodeRadius - Math.max(1.5, nodeRadius * 0.25)).cut();
+        circle.circle(0, 0, Math.max(nodeRadius * 0.3, 1.5))
+          .fill({ color: identityColor, alpha: Math.max(0.3, nodeAlpha) * fixedT });
+      }
+      if (state.groupEdgeOnly) {
+        circle.circle(0, 0, nodeRadius)
+          .stroke({ color: state.groupColor!, width: 2, alpha: focusAlpha });
+      }
+      if (state.selected && !state.boxSelected) {
+        circle.circle(0, 0, nodeRadius + 1)
+          .stroke({ color: state.accentColor, width: 2, alpha: focusAlpha });
+      }
+      if (state.boxSelected) {
+        circle.circle(0, 0, nodeRadius + 1)
+          .stroke({ color: state.accentAltColor, width: 2, alpha: focusAlpha });
+      }
+      if (state.searchMatch) {
+        circle.circle(0, 0, nodeRadius)
+          .stroke({ color: state.accentColor, width: 1.5, alpha: 0.35 * focusAlpha });
+      }
+
+      // A short regional arc is the only new mark. The node itself keeps the
+      // same color, radius, fill and selection language as the legacy renderer.
+      if (regionIndex >= 0) {
+        circle.arc(0, 0, nodeRadius + 3, -Math.PI * 0.78, -Math.PI * 0.22)
+          .stroke({ color: tint, width: 1.35, alpha: 0.46 * focusAlpha, cap: 'round' });
+      }
+      const markerX = nodeRadius * 0.62;
+      const markerY = -nodeRadius * 0.62;
+      if (card.kind === 'task') {
+        circle.roundRect(markerX - 2.5, markerY - 2.5, 5, 5, 1)
+          .stroke({ color: tint, width: 1, alpha: 0.72 * focusAlpha });
+      } else if (card.kind === 'question') {
+        circle.circle(markerX, markerY, 2.4)
+          .stroke({ color: tint, width: 1, alpha: 0.7 * focusAlpha });
+      } else if (card.kind === 'private') {
+        circle.circle(markerX, markerY, 1.8)
+          .fill({ color: tint, alpha: 0.66 * focusAlpha });
+      }
+      drawMediaBadge(-nodeRadius * 0.72, -nodeRadius * 0.72, Math.max(4.5, nodeRadius * 0.42), tint, focusAlpha);
+
+      sprite.label.anchor.set(0.5, 0);
+      sprite.label.position.set(0, nodeRadius + 3);
+      const labelCharacters = Array.from(String(sprite.label.text || ''));
+      if (labelCharacters.length > 9) sprite.label.text = `${labelCharacters.slice(0, 8).join('')}…`;
+      sprite.label.style.fontSize = Math.max(11, Math.min(15, labelSize));
+      sprite.label.style.fontWeight = 'normal';
+      sprite.label.style.align = 'center';
+      sprite.label.style.wordWrap = false;
+      sprite.label.style.breakWords = false;
+      sprite.label.style.fill = labelColor;
+      sprite.label.alpha *= focusAlpha;
+      (sprite as any)._semanticMode = true;
+      container.alpha = state.dying ? 0.25 : 1;
+      return;
+    }
+
+    circle
+      .roundRect(-width / 2, -height / 2, width, height, 9)
+      .fill({ color: tint, alpha: fillAlpha * focusAlpha })
+      .stroke({ color: state.selected ? state.accentColor : state.boxSelected ? state.accentAltColor : tint, width: state.selected || state.boxSelected ? 2 : 1, alpha: borderAlpha * focusAlpha });
+    circle
+      .roundRect(-width / 2, -height / 2, 4, height, 2)
+      .fill({ color: identityColor, alpha: 0.78 * focusAlpha });
+    circle
+      .moveTo(-width / 2 + 15, -height / 2 + headerHeight)
+      .lineTo(width / 2 - 15, -height / 2 + headerHeight)
+      .stroke({ color: tint, width: 1, alpha: 0.16 * focusAlpha });
+
+    if (card.kind === 'task') {
+      circle.rect(width / 2 - 25, -height / 2 + 12, 10, 10)
+        .stroke({ color: identityColor, width: 1.2, alpha: 0.62 * focusAlpha });
+    } else if (card.kind === 'question') {
+      circle.circle(width / 2 - 20, -height / 2 + 17, 5)
+        .stroke({ color: identityColor, width: 1.2, alpha: 0.58 * focusAlpha });
+      circle.circle(width / 2 - 20, -height / 2 + 17, 1.2)
+        .fill({ color: identityColor, alpha: 0.7 * focusAlpha });
+    } else if (card.kind === 'private') {
+      circle.circle(width / 2 - 20, -height / 2 + 17, 3)
+        .fill({ color: identityColor, alpha: 0.5 * focusAlpha });
+    }
+
+    sprite.label.anchor.set(0, 0);
+    sprite.label.position.set(-width / 2 + 15, -height / 2 + 9);
+    sprite.label.style.fontSize = Math.max(12, Math.min(17, labelSize));
+    sprite.label.style.fontWeight = '600';
+    sprite.label.style.align = 'left';
+    sprite.label.style.wordWrap = true;
+    sprite.label.style.breakWords = true;
+    sprite.label.style.lineHeight = 18;
+    sprite.label.style.wordWrapWidth = width - 50;
+    sprite.label.style.fill = labelColor;
+    sprite.label.alpha *= focusAlpha;
+    (sprite as any)._semanticMode = true;
+
+    let body = (sprite as any)._semanticBody as Text | undefined;
+    if (card.excerpt) {
+      if (!body || body.destroyed) {
+        body = new Text({
+          text: card.excerpt,
+          resolution: TEXT_RESOLUTION,
+          style: {
+            fontFamily: readFontFamily(),
+            fontSize: 11,
+            lineHeight: 17,
+            fill: labelColor,
+            align: 'left',
+            wordWrap: true,
+            breakWords: true,
+          } as any,
+        });
+        body.anchor.set(0, 0);
+        (sprite as any)._semanticBody = body;
+        container.addChild(body);
+      }
+      body.text = card.excerpt;
+      body.style.wordWrapWidth = width - 30;
+      body.position.set(-width / 2 + 15, -height / 2 + headerHeight + 7);
+      const detailAlpha = semanticBodyDetailAlpha(state.semanticZoom ?? 1);
+      body.alpha = 0.58 * focusAlpha * detailAlpha;
+      body.visible = detailAlpha > 0.015;
+    } else if (body) {
+      body.visible = false;
+    }
+    if (state.fixed) {
+      circle.circle(-width / 2 + 12, height / 2 - 11, 2.2).fill({ color: tint, alpha: 0.7 * focusAlpha });
+    }
+    drawMediaBadge(width / 2 - 17, height / 2 - 15, 6.5, tint, focusAlpha);
+    container.alpha = state.dying ? 0.25 : 1;
+    return;
+  }
+
+  if ((sprite as any)._semanticMode) {
+    (sprite as any)._semanticMode = false;
+    sprite.label.anchor.set(0.5, 0);
+    sprite.label.position.set(0, radius + 3);
+    sprite.label.style.fontWeight = 'normal';
+    sprite.label.style.align = 'center';
+    sprite.label.style.wordWrap = false;
+    sprite.label.style.breakWords = false;
+    const body = (sprite as any)._semanticBody as Text | undefined;
+    if (body) body.visible = false;
+    container.alpha = 1;
+  }
 
   // 填充色
   let fillColor = baseColor;
@@ -340,6 +551,7 @@ export function applyNodeVisual(
     const dots = new Text({
       text: state.structureMemberCount ? String(state.structureMemberCount) : '...',
       resolution: TEXT_RESOLUTION,
+      ...WORLD_TEXT_SAMPLING,
       style: {
         fontFamily: readFontFamily(),
         fontSize: Math.max(10, labelSize * 0.75),
@@ -422,4 +634,5 @@ export function applyNodeVisual(
   sprite.label.style.fill = labelColor;
   sprite.label.style.fontFamily = readFontFamily();
   sprite.label.y = r + 3;
+  drawMediaBadge(r * 0.72, -r * 0.72, Math.max(4.5, r * 0.42), baseColor, alpha);
 }

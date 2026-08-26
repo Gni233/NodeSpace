@@ -35,6 +35,8 @@ export function createSettingsPanel(
 ): SettingsPanelAPI {
   const panel = document.createElement('div');
   panel.className = 'fg-settings-dialog';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-label', '应用与默认值');
   const panelMaxW = Math.min(500, window.innerWidth - 40);
   panel.style.cssText =
     `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:${Z_SETTINGS_PANEL};` +
@@ -52,21 +54,33 @@ export function createSettingsPanel(
   const titleBar = document.createElement('div');
   titleBar.className = 'fg-dialog-titlebar';
   titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
-  const dot = document.createElement('div');
-  dot.style.cssText = `width:5px;height:5px;border-radius:50%;background:${V('--fg-text-muted', 'rgba(255,255,255,0.3)')};margin-right:8px;`;
+  const titleCopy = document.createElement('div');
+  titleCopy.className = 'fg-settings-title-copy';
+  const eyebrow = document.createElement('span');
+  eyebrow.className = 'fg-settings-eyebrow';
+  eyebrow.textContent = 'NodeSpace';
   const titleText = document.createElement('span');
-  titleText.textContent = '设置';
+  titleText.className = 'fg-settings-title';
+  titleText.textContent = '应用与默认值';
   titleText.style.cssText = `font-weight:bold;font-size:${V('--fg-font-lg', '0.92em')};`;
+  const titleDescription = document.createElement('span');
+  titleDescription.className = 'fg-settings-title-description';
+  titleDescription.textContent = '管理资料库、更新，以及新空间采用的默认样式';
+  titleCopy.append(eyebrow, titleText, titleDescription);
   const titleLeft = document.createElement('div');
+  titleLeft.className = 'fg-settings-title-left';
   titleLeft.style.cssText = 'display:flex;align-items:center;cursor:move;';
-  titleLeft.appendChild(dot);
-  titleLeft.appendChild(titleText);
-  const closeBtn = document.createElement('span');
+  titleLeft.appendChild(titleCopy);
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'fg-dialog-close';
   closeBtn.textContent = '\u2715';
+  closeBtn.title = '关闭';
+  closeBtn.setAttribute('aria-label', '关闭应用与默认值');
   closeBtn.style.cssText =
     `cursor:pointer;font-size:10px;width:16px;height:16px;line-height:16px;text-align:center;opacity:0.5;color:${V('--fg-text','#d0d0d0')};` +
     `border-radius:${V('--fg-radius-sm', '6px')};transition:all var(--fg-transition-fast,0.15s ease);`;
-  closeBtn.onclick = () => { panel.style.display = 'none'; };
+  closeBtn.onclick = () => { panel.classList.remove('is-open'); panel.style.display = 'none'; };
   closeBtn.onmouseenter = () => { closeBtn.style.opacity = '1'; closeBtn.style.background = `var(--fg-accent,#5B8FF9)`; closeBtn.style.color = '#fff'; };
   closeBtn.onmouseleave = () => { closeBtn.style.opacity = '0.5'; closeBtn.style.background = 'transparent'; closeBtn.style.color = V('--fg-text','#d0d0d0'); };
   titleBar.appendChild(titleLeft);
@@ -110,6 +124,7 @@ export function createSettingsPanel(
 
   // --- 缩放把手（右下角）---
   const resizeHandle = document.createElement('div');
+  resizeHandle.className = 'fg-dialog-resize';
   resizeHandle.style.cssText = 'position:absolute;right:6px;bottom:6px;width:12px;height:12px;border-radius:50%;background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:1;touch-action:none;user-select:none;';
   panel.appendChild(resizeHandle);
   let resizeInfo: { sx: number; sy: number; pw: number; ph: number } | null = null;
@@ -168,12 +183,27 @@ export function createSettingsPanel(
   window.addEventListener('touchend', onDragEnd);
   window.addEventListener('touchcancel', onDragEnd);
 
+  const makeSectionIntro = (title: string, description: string) => {
+    const intro = document.createElement('div');
+    intro.className = 'fg-settings-section-intro';
+    const heading = document.createElement('strong');
+    heading.className = 'fg-settings-section-title';
+    heading.textContent = title;
+    const copy = document.createElement('span');
+    copy.className = 'fg-settings-section-description';
+    copy.textContent = description;
+    intro.append(heading, copy);
+    return intro;
+  };
+
   // 预设管理区
   const presetSection = document.createElement('div');
+  presetSection.className = 'fg-settings-section fg-settings-presets';
   presetSection.style.cssText =
     `margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
 
   const presetRow = document.createElement('div');
+  presetRow.className = 'fg-settings-preset-row';
   presetRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;';
 
   const pillStyle = (extra: string) =>
@@ -181,10 +211,12 @@ export function createSettingsPanel(
     `white-space:nowrap;transition:background var(--fg-transition-fast,0.15s ease);min-height:24px;display:inline-flex;align-items:center;` + extra;
 
   const renderPresets = () => {
-    presetRow.innerHTML = `<span style="font-size:${V('--fg-font-sm', '0.8em')};opacity:0.5;margin-right:4px;color:${V('--fg-text-muted','')}">预设</span>`;
+    presetRow.replaceChildren();
     // "默认" 预设始终在最前
-    const defaultPill = document.createElement('span');
-    defaultPill.textContent = '默认';
+    const defaultPill = document.createElement('button');
+    defaultPill.type = 'button';
+    defaultPill.className = 'fg-settings-pill is-primary';
+    defaultPill.textContent = '内置默认';
     defaultPill.title = '加载默认预设';
     defaultPill.style.cssText = pillStyle(`border:1px solid ${V('--fg-border', 'rgba(255,255,255,0.25)')};`);
     defaultPill.onclick = () => callbacks.onLoadPreset('默认');
@@ -192,7 +224,9 @@ export function createSettingsPanel(
     defaultPill.onmouseleave = () => { defaultPill.style.background = ''; };
     presetRow.appendChild(defaultPill);
     for (const p of callbacks.getPresets()) {
-      const pill = document.createElement('span');
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'fg-settings-pill';
       pill.textContent = p.name;
       pill.title = '右键删除';
       pill.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.18)')};`);
@@ -202,20 +236,25 @@ export function createSettingsPanel(
       pill.onmouseleave = () => { pill.style.background = ''; };
       presetRow.appendChild(pill);
     }
-    const saveBtn = document.createElement('span');
-    saveBtn.textContent = '+';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'fg-settings-pill';
+    saveBtn.textContent = '保存方案';
     saveBtn.title = '保存当前为预设';
     saveBtn.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};`);
     saveBtn.onclick = async () => { const n = await safePrompt('预设名称：'); if (n) callbacks.onSavePreset(n); };
     presetRow.appendChild(saveBtn);
-    const resetBtn = document.createElement('span');
-    resetBtn.textContent = '\u21BA';
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'fg-settings-pill is-danger';
+    resetBtn.textContent = '恢复内置';
     resetBtn.title = '恢复预设默认';
     resetBtn.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};color:${V('--fg-danger', '#e88')};`);
     resetBtn.onclick = () => callbacks.onResetDefaults();
     presetRow.appendChild(resetBtn);
     if (callbacks.onToggleDemo && callbacks.getDemoEnabled) {
       const demoLabel = document.createElement('label');
+      demoLabel.className = 'fg-settings-pill fg-settings-check-pill';
       demoLabel.title = '开启后在启动时加载三个内置演示图（开始/结构/说明文档）';
       demoLabel.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};`);
       const demoCheck = document.createElement('input');
@@ -226,12 +265,14 @@ export function createSettingsPanel(
         callbacks.onToggleDemo!(demoCheck.checked);
       });
       demoLabel.appendChild(demoCheck);
-      demoLabel.appendChild(document.createTextNode('初始演示'));
+      demoLabel.appendChild(document.createTextNode('内置示例'));
       presetRow.appendChild(demoLabel);
     }
     if (callbacks.onResetDemo) {
-      const demoBtn = document.createElement('span');
-      demoBtn.textContent = '\u21BA';
+      const demoBtn = document.createElement('button');
+      demoBtn.type = 'button';
+      demoBtn.className = 'fg-settings-pill';
+      demoBtn.textContent = '重置示例';
       demoBtn.title = '重置三个内置演示图到初始状态';
       demoBtn.style.cssText = pillStyle(`border:1px solid ${V('--fg-accent','#5B8FF9')};color:${V('--fg-accent','#5B8FF9')};`);
       demoBtn.onclick = () => callbacks.onResetDemo!();
@@ -239,6 +280,7 @@ export function createSettingsPanel(
     }
   };
   renderPresets();
+  presetSection.appendChild(makeSectionIntro('默认方案', '保存一套样式与布局参数，供新空间或当前空间快速采用'));
   presetSection.appendChild(presetRow);
   // presetSection attached below, after updateSection
 
@@ -248,9 +290,11 @@ export function createSettingsPanel(
   // 目录选择
   if (callbacks.onOpenFolder) {
     const folderSection = document.createElement('div');
+    folderSection.className = 'fg-settings-section fg-settings-storage';
     folderSection.style.cssText =
       `margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
     const folderRow = document.createElement('div');
+    folderRow.className = 'fg-settings-storage-row';
     folderRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
     pathLabel = document.createElement('span');
     pathLabel.style.cssText =
@@ -312,6 +356,7 @@ export function createSettingsPanel(
       folderRow.appendChild(openBtn);
     }
     folderRow.appendChild(pathLabel);
+    folderSection.appendChild(makeSectionIntro('资料库', 'NodeSpace 读取和保存图文件的位置'));
     folderSection.appendChild(folderRow);
     panel.appendChild(folderSection);
   }
@@ -319,9 +364,11 @@ export function createSettingsPanel(
   // 自动检查更新
   if (callbacks.getAutoUpdate) {
     const updateSection = document.createElement('div');
+    updateSection.className = 'fg-settings-section fg-settings-update';
     updateSection.style.cssText =
       `margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
     const updateRow = document.createElement('label');
+    updateRow.className = 'fg-settings-update-row';
     updateRow.style.cssText = `display:flex;align-items:center;gap:8px;font-size:${V('--fg-font-sm', '0.8em')};cursor:pointer;`;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
@@ -329,7 +376,7 @@ export function createSettingsPanel(
     cb.addEventListener('change', () => callbacks.onToggleAutoUpdate?.(cb.checked));
     updateRow.appendChild(cb);
     const lbl = document.createElement('span');
-    lbl.textContent = '自动检查GitHub更新';
+    lbl.textContent = '自动检查更新';
     lbl.style.cssText = 'opacity:0.7;flex:1;';
     updateRow.appendChild(lbl);
     const checkBtn = document.createElement('button');
@@ -343,7 +390,7 @@ export function createSettingsPanel(
     checkBtn.onclick = (e) => { e.preventDefault(); callbacks.onCheckUpdate?.(); };
     updateRow.appendChild(checkBtn);
     const dlBtn = document.createElement('button');
-    dlBtn.textContent = '下载安装';
+    dlBtn.textContent = '下载并安装';
     dlBtn.style.cssText =
       `font-size:${V('--fg-font-xs', '0.72em')};padding:2px 8px;cursor:pointer;` +
       `background:rgba(74,108,247,0.2);color:#8aafff;` +
@@ -351,6 +398,7 @@ export function createSettingsPanel(
       `border-radius:${V('--fg-radius-sm', '6px')};`;
     dlBtn.onclick = (e) => { e.preventDefault(); callbacks.onDownloadInstall?.(); };
     updateRow.appendChild(dlBtn);
+    updateSection.appendChild(makeSectionIntro('版本更新', '从项目发布页获取新版本，不影响你的资料库'));
     updateSection.appendChild(updateRow);
     panel.appendChild(updateSection);
   }
@@ -359,6 +407,8 @@ export function createSettingsPanel(
   panel.appendChild(presetSection);
 
   const bodyWrap = document.createElement('div');
+  bodyWrap.className = 'fg-settings-section fg-settings-defaults';
+  bodyWrap.appendChild(makeSectionIntro('新空间默认值', '这些参数只作为以后新建空间的起点；当前空间在顶部“外观”中调整'));
   bodyWrap.appendChild(settingsBody);
   panel.appendChild(bodyWrap);
   parent.appendChild(panel);
@@ -367,12 +417,13 @@ export function createSettingsPanel(
     panel,
     show: () => {
       panel.style.display = 'block';
+      panel.classList.add('is-open');
       renderPresets();
       if (pathLabel) {
         pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
       }
     },
-    hide: () => { panel.style.display = 'none'; },
+    hide: () => { panel.classList.remove('is-open'); panel.style.display = 'none'; },
     updateInfo: () => { renderPresets(); },
   };
 }

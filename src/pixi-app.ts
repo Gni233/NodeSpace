@@ -1,10 +1,12 @@
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, Rectangle } from 'pixi.js';
+import type { MagnifierCaptureRegion } from './canvas-magnifier';
 import { Viewport } from 'pixi-viewport';
 
 export interface PixiLayers {
   app: Application;
   viewport: Viewport;
   gridLayer: Container;
+  semanticLayer: Container;
   groupLayer: Container;
   /** Structure boundary overlays; independent from group redraw/clearing. */
   structureLayer: Container;
@@ -13,6 +15,8 @@ export interface PixiLayers {
   nodeLayer: Container;
   labelLayer: Container;
   cardLayer: Container;
+  /** Renders only the requested screen-space patch for the temporary lens. */
+  captureMagnifierRegion: (region: MagnifierCaptureRegion) => CanvasImageSource;
   onContextRestored?: (() => void) | null;
   /** Reusable Graphics cache for blob/glow effects to avoid per-frame allocation */
   blobLayerGfx?: Graphics | null;
@@ -33,6 +37,10 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   await app.init({
     preference: 'webgl',
+    // NodeSpace renders on graph/view changes. Keeping the application ticker
+    // alive while an automatic layout is idle wastes GPU time without changing
+    // the framebuffer.
+    autoStart: false,
     resizeTo: container,
     resolution: dpr,
     autoDensity: true,
@@ -69,6 +77,7 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
 
   // 图层（从后到前）
   const gridLayer = new Container({ label: 'grid' });
+  const semanticLayer = new Container({ label: 'semantic-regions' });
   const groupLayer = new Container({ label: 'groups' });
   // Kept outside groupLayer so updateGroups may clear its own children safely.
   const structureLayer = new Container({ label: 'structure-boundaries' });
@@ -78,6 +87,7 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
   const labelLayer = new Container({ label: 'labels' });
 
   viewport.addChild(gridLayer);
+  viewport.addChild(semanticLayer);
   viewport.addChild(groupLayer);
   viewport.addChild(structureLayer);
   viewport.addChild(edgeLayer);
@@ -91,7 +101,14 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
 
   // WebGL context loss recovery
   let contextLost = false;
-  const result: PixiLayers = { app, viewport, gridLayer, groupLayer, structureLayer, edgeLayer, blobLayer, nodeLayer, labelLayer, cardLayer };
+  const captureMagnifierRegion = (region: MagnifierCaptureRegion): CanvasImageSource =>
+    app.renderer.extract.canvas({
+      target: app.stage,
+      frame: new Rectangle(region.x, region.y, region.width, region.height),
+      resolution: region.resolution,
+      antialias: true,
+    }) as CanvasImageSource;
+  const result: PixiLayers = { app, viewport, gridLayer, semanticLayer, groupLayer, structureLayer, edgeLayer, blobLayer, nodeLayer, labelLayer, cardLayer, captureMagnifierRegion };
   app.canvas.addEventListener('webglcontextlost', (e) => {
     e.preventDefault();
     contextLost = true;

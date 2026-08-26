@@ -6,6 +6,9 @@ import { Z_TOOLTIP, V } from "./layout-constants";
 import { PRESET_COLORS } from "./utils/color";
 import { CanvasGestureState, NodeMembershipDragState } from "./canvas-gesture-state";
 import { isStructureNode } from './structure-nodes';
+import { semanticEdgePolyline } from './semantic-edge-grammar';
+import { createCanvasMagnifier } from './canvas-magnifier';
+import type { MagnifierCaptureRegion } from './canvas-magnifier';
 
 const DRAG_THRESHOLD = 3;
 const TOUCH_DRAG_THRESHOLD = 10;
@@ -21,13 +24,17 @@ export interface EventsContext {
   getSimulation: () => any;
   getTransform: () => any;
   getCanvas: () => HTMLCanvasElement;
+  captureMagnifierRegion?: (region: MagnifierCaptureRegion) => CanvasImageSource | null;
   getNodeExpand: () => number;
   getLineExpand: () => number;
+  /** Curved semantic routes need the same geometry for drawing and hit testing. */
+  getSemanticEdgeRouting?: () => boolean;
   getDraggingNode: () => any;       setDraggingNode: (n: any) => void;
   getWasDragged: () => boolean;     setWasDragged: (v: boolean) => void;
   draw: () => void;
   onContextMenu?: (type: 'blank'|'node'|'edge'|'group', id: string|null, x: number, y: number) => void;
   onTap?: (x: number, y: number, nodeId?: string) => void;
+  canDoubleClickReadOnlyNode?: (id: string) => boolean;
   fixNode?: (id: string) => void;
   isFixedNode?: (id: string) => boolean;
   selectionBox?: HTMLDivElement;
@@ -105,7 +112,6 @@ export function setupCanvasEvents(
     getDraggingNode, setDraggingNode, getWasDragged, setWasDragged,
     draw, onContextMenu: onAppContextMenu, fixNode, isFixedNode
   } = ctx;
-
   // 坐标转换：统一用 canvas 偏移校正
   // 过滤隐藏节点（折叠/搜索），返回可见节点列表
   const _rawSimNodes = () => getSimulation()?.nodes() || [];
@@ -116,6 +122,9 @@ export function setupCanvasEvents(
     return all.filter((n: any) => !hidden?.has(n.id) && !ctx.isStructureBoundaryNode?.(n.id));
   };
   const edgeNodes = () => visibleNodes().concat(ctx.getStructureBoundaryEndpoints?.() ?? []);
+  const edgeHitOptions = () => ctx.getSemanticEdgeRouting?.()
+    ? { routePoints: semanticEdgePolyline }
+    : undefined;
 
   const toWorldPos = (e: { clientX: number; clientY: number }): [number, number] => {
     const rect = canvas.getBoundingClientRect();
@@ -144,6 +153,12 @@ export function setupCanvasEvents(
   ctx.appShell!.appendChild(tooltip);
   let hoveredNodeNote: string | null = null;
   const hideTooltip = () => { tooltip.style.display = 'none'; hoveredNodeNote = null; };
+  const magnifier = createCanvasMagnifier(
+    canvas,
+    () => Number(getTransform()?.k ?? 1),
+    ctx.captureMagnifierRegion,
+    hideTooltip,
+  );
   const updateTooltip = (content: string, x: number, y: number) => {
     tooltip.textContent = content;
     tooltip.style.display = 'block';
@@ -363,7 +378,7 @@ export function setupCanvasEvents(
     if (n) { onAppContextMenu?.('node', n.id, screenX, screenY); return; }
     const structureId = ctx.hitStructureBoundary?.(cx, cy);
     if (structureId) { onAppContextMenu?.('node', structureId, screenX, screenY); return; }
-    const eIdx = hitTestEdge(cx, cy, graph.edges, edgeNodes(), getLineExpand());
+    const eIdx = hitTestEdge(cx, cy, graph.edges, edgeNodes(), getLineExpand(), edgeHitOptions());
     if (eIdx !== null) { onAppContextMenu?.('edge', String(eIdx), screenX, screenY); return; }
     const g = hitTestGroup(cx, cy, graph.groups, nodes);
     if (g) { onAppContextMenu?.('group', g.id, screenX, screenY); return; }
@@ -376,7 +391,7 @@ export function setupCanvasEvents(
     const node = hitTestNode(x, y, [...visibleNodes()].reverse(), getNodeExpand());
     const structureId = node ? null : ctx.hitStructureBoundary?.(x, y);
     const targetId = node?.id ?? structureId;
-    if (!targetId || ctx.isReadOnlyNode?.(targetId)) return;
+    if (!targetId || (ctx.isReadOnlyNode?.(targetId) && !ctx.canDoubleClickReadOnlyNode?.(targetId))) return;
     e.preventDefault();
     e.stopPropagation();
     ctx.onNodeDoubleClick?.(targetId);
@@ -398,7 +413,7 @@ export function setupCanvasEvents(
     // 如果外部提供了 onTap 回调，使用它（集成编辑面板等）
     if (ctx.onTap) { ctx.onTap(x, y, n?.id); return; }
     if (n) { setSelNode(n.id); setSelEdge(null); setSelGroup(null); draw(); return; }
-    const eIdx = hitTestEdge(x, y, graph.edges, edgeNodes(), getLineExpand());
+    const eIdx = hitTestEdge(x, y, graph.edges, edgeNodes(), getLineExpand(), edgeHitOptions());
     if (eIdx !== null) { setSelNode(null); setSelEdge(eIdx); setSelGroup(null); draw(); return; }
     const g = hitTestGroup(x, y, graph.groups, nodes);
     if (g) { setSelNode(null); setSelEdge(null); setSelGroup(g.id); draw(); return; }
@@ -595,7 +610,7 @@ export function setupCanvasEvents(
     if (ctx.onLinkCursorMove && ctx.getLinkMode?.() && ctx.getLinkSrc?.()) {
       ctx.onLinkCursorMove(mx, my);
     }
-    if (!getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
+    if (!e.ctrlKey && !getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
       if (hoveredNodeNote !== hoverNode.note) { hoveredNodeNote = hoverNode.note; updateTooltip(hoverNode.note, e.offsetX, e.offsetY); }
     } else hideTooltip();
 
@@ -886,6 +901,7 @@ export function setupCanvasEvents(
     if (ctx.selectionBox) ctx.selectionBox.style.display = 'none';
     hideTooltip();
     tooltip.remove();
+    magnifier.destroy();
 
     canvas.removeEventListener("pointerdown", onPointerDown, { capture: true });
     canvas.removeEventListener("pointermove", onPointerMove);

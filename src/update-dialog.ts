@@ -11,7 +11,7 @@ export function showUpdateDialog(info: UpdateInfo, onUpdate: () => void): void {
   if (existing) existing.remove();
 
   const overlay = document.createElement('div');
-  overlay.className = 'fg-update-overlay';
+  overlay.className = 'fg-update-overlay fg-modal-backdrop';
   overlay.style.cssText =
     `position:fixed;inset:0;z-index:${Z_MODAL};background:rgba(0,0,0,0.65);` +
     'display:flex;align-items:center;justify-content:center;' +
@@ -19,6 +19,10 @@ export function showUpdateDialog(info: UpdateInfo, onUpdate: () => void): void {
     'opacity:0;transition:opacity 0.2s ease;';
 
   const panel = document.createElement('div');
+  panel.className = 'fg-modal fg-update-dialog';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-label', '版本更新');
   panel.style.cssText =
     `background:${V('--fg-surface-elevated', 'rgba(40,42,48,0.92)')};` +
     `backdrop-filter:blur(var(--fg-glass-blur-lg,16px));-webkit-backdrop-filter:blur(var(--fg-glass-blur-lg,16px));` +
@@ -30,13 +34,21 @@ export function showUpdateDialog(info: UpdateInfo, onUpdate: () => void): void {
 
   // 标题
   const title = document.createElement('div');
+  title.className = 'fg-update-title';
   title.style.cssText =
     `font-size:${V('--fg-font-xl', '1.15em')};font-weight:bold;margin-bottom:12px;` +
     `color:${V('--fg-text', '#fff')};display:flex;align-items:center;gap:8px;`;
-  title.innerHTML = '&#x1F389; 发现新版本';
+  const updateEyebrow = document.createElement('span');
+  updateEyebrow.className = 'fg-modal-eyebrow';
+  updateEyebrow.textContent = '版本更新';
+  const updateHeading = document.createElement('strong');
+  updateHeading.className = 'fg-modal-title';
+  updateHeading.textContent = '发现新版本';
+  title.append(updateEyebrow, updateHeading);
 
   // 版本对比
   const verRow = document.createElement('div');
+  verRow.className = 'fg-update-version-row';
   verRow.style.cssText = `display:flex;align-items:center;gap:12px;margin-bottom:14px;font-size:${V('--fg-font-lg', '0.92em')};`;
   verRow.innerHTML = `
     <span style="background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};padding:3px 10px;border-radius:${V('--fg-radius-sm', '6px')};">${getCurrentVersion()}</span>
@@ -46,6 +58,7 @@ export function showUpdateDialog(info: UpdateInfo, onUpdate: () => void): void {
 
   // 更新内容
   const bodyWrap = document.createElement('div');
+  bodyWrap.className = 'fg-update-notes';
   bodyWrap.style.cssText =
     'max-height:160px;overflow-y:auto;margin-bottom:16px;font-size:' + V('--fg-font-sm', '0.8em') + ';line-height:1.5;' +
     `color:${V('--fg-text-muted', '#999')};white-space:pre-wrap;` +
@@ -54,9 +67,11 @@ export function showUpdateDialog(info: UpdateInfo, onUpdate: () => void): void {
 
   // 按钮区
   const btnRow = document.createElement('div');
+  btnRow.className = 'fg-modal-actions';
   btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
 
   const laterBtn = document.createElement('button');
+  laterBtn.className = 'fg-modal-button fg-modal-button-secondary';
   laterBtn.textContent = '稍后';
   laterBtn.style.cssText =
     'padding:6px 18px;' +
@@ -72,6 +87,7 @@ export function showUpdateDialog(info: UpdateInfo, onUpdate: () => void): void {
   laterBtn.onclick = () => closeAnimated();
 
   const updateBtn = document.createElement('button');
+  updateBtn.className = 'fg-modal-button fg-modal-button-primary';
   updateBtn.textContent = '立即更新';
   updateBtn.style.cssText =
     `padding:6px 18px;border:none;border-radius:${V('--fg-radius-md', '10px')};` +

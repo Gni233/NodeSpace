@@ -22,12 +22,15 @@ function makeSlider(
   onChange: (v: number) => void
 ): SliderHandle {
   const row = document.createElement("div");
+  row.className = 'fg-setting-row fg-setting-slider-row';
   row.style.cssText = "display:flex;gap:8px;align-items:center;margin:3px 0;";
   const lb = document.createElement("span");
+  lb.className = 'fg-setting-label';
   lb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
   lb.textContent = label;
   row.appendChild(lb);
   const range = document.createElement("input");
+  range.className = 'fg-setting-range';
   range.type = "range";
   range.min = String(min);
   range.max = String(max);
@@ -35,6 +38,7 @@ function makeSlider(
   range.value = String(val);
   range.style.cssText = "flex:1;";
   const num = document.createElement("input");
+  num.className = 'fg-setting-number';
   num.type = "number";
   num.min = String(min);
   num.max = String(max);
@@ -71,6 +75,7 @@ function makeCheckbox(
   onChange: (v: boolean) => void
 ): { set: (v: boolean) => void } {
   const row = document.createElement("label");
+  row.className = 'fg-setting-row fg-setting-checkbox-row';
   row.style.cssText = "display:flex;gap:6px;align-items:center;margin:3px 0;cursor:pointer;";
   const cb = document.createElement("input");
   cb.type = "checkbox";
@@ -78,6 +83,7 @@ function makeCheckbox(
   cb.addEventListener("change", () => onChange(cb.checked));
   row.appendChild(cb);
   const lb = document.createElement("span");
+  lb.className = 'fg-setting-checkbox-label';
   lb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};`;
   lb.textContent = label;
   row.appendChild(lb);
@@ -140,6 +146,7 @@ export function buildSettings(
     getCardBorderStyle?: () => string; setCardBorderStyle?: (v: string) => void;
     onApplyPreset?: () => void;
     onResetPresets?: () => void;
+    scope?: 'current' | 'defaults';
   }
 ) {
   const {
@@ -164,14 +171,20 @@ export function buildSettings(
     getSelectedTooltip, setSelectedTooltip,
     getCardBorderStyle, setCardBorderStyle,
   } = params;
+  const settingsScope = params.scope ?? 'current';
+  container.classList.add('fg-settings-form');
+  container.dataset.settingsScope = settingsScope;
 
   const themeRow = document.createElement("div");
+  themeRow.className = 'fg-setting-row fg-setting-select-row fg-setting-theme-row';
   themeRow.style.cssText = "margin-bottom:10px;display:flex;align-items:center;gap:6px;";
   const themeLabel = document.createElement("span");
-  themeLabel.textContent = "主题：";
+  themeLabel.className = 'fg-setting-label';
+  themeLabel.textContent = settingsScope === 'defaults' ? '默认主题' : '空间主题';
   themeLabel.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};opacity:0.6;`;
   themeRow.appendChild(themeLabel);
   const themeSelect = document.createElement("select");
+  themeSelect.className = 'fg-setting-select';
   themeSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
   Object.keys(THEMES).forEach(key => {
     const opt = document.createElement("option");
@@ -187,7 +200,8 @@ export function buildSettings(
   themeRow.appendChild(themeSelect);
 
   const resetBtn = document.createElement("button");
-  resetBtn.textContent = "恢复默认";
+  resetBtn.className = 'fg-settings-reset';
+  resetBtn.textContent = settingsScope === 'defaults' ? '恢复内置默认值' : '应用默认值到此空间';
   resetBtn.style.cssText = "margin-top:10px;";
   resetBtn.onclick = () => {
     const defs = getDefaultValues();
@@ -257,11 +271,14 @@ export function buildSettings(
     });
 
     const densityRow = document.createElement('div');
+    densityRow.className = 'fg-setting-row fg-setting-select-row fg-setting-density-row';
     densityRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin:4px 0 8px;';
     const densityLabel = document.createElement('span');
-    densityLabel.textContent = '节点疏密';
+    densityLabel.className = 'fg-setting-label';
+    densityLabel.textContent = settingsScope === 'defaults' ? '默认疏密' : '节点疏密';
     densityLabel.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
     const densitySelect = document.createElement('select');
+    densitySelect.className = 'fg-setting-select';
     densitySelect.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
     for (const preset of Object.keys(FORCE_DENSITY_PRESETS) as ForceDensityPreset[]) {
       const option = document.createElement('option');
@@ -296,22 +313,28 @@ export function buildSettings(
 
     // 高级设置
     const advancedDetails = document.createElement("details");
+    advancedDetails.className = 'fg-settings-details fg-settings-advanced';
     advancedDetails.style.cssText = `margin-top:2px;border-top:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};padding-top:6px;`;
     const advancedSum = document.createElement("summary");
-    advancedSum.textContent = "高级设置";
+    advancedSum.className = 'fg-settings-details-summary';
+    advancedSum.textContent = "详细参数";
     advancedSum.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};cursor:pointer;opacity:0.6;padding:2px 0;`;
     advancedDetails.appendChild(advancedSum);
     const advancedBody = document.createElement("div");
+    advancedBody.className = 'fg-settings-details-body';
     advancedBody.style.cssText = "padding:4px 0;";
     const onMechanicsChange = () => { densitySelect.value = detectForceDensityPreset(getForceDensitySettings()); };
 
     // 力学
     const mechanicsDet = document.createElement("details");
+    mechanicsDet.className = 'fg-settings-subdetails';
     const mechSum = document.createElement("summary");
+    mechSum.className = 'fg-settings-subsummary';
     mechSum.textContent = "力学参数";
     mechSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:6px;`;
     mechanicsDet.appendChild(mechSum);
     const mechBody = document.createElement("div");
+    mechBody.className = 'fg-settings-subbody';
     makeSlider(mechBody, "连线距离", 30, 300, getLinkDist(), 1, v => { setLinkDist(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
     makeSlider(mechBody, "节点斥力", -500, -10, getCharge(), 10, v => { setCharge(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
     makeSlider(mechBody, "连线强度", 0, 1, getLinkStr(), 0.05, v => { setLinkStr(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
@@ -325,11 +348,14 @@ export function buildSettings(
 
     // 外观
     const appearDet = document.createElement("details");
+    appearDet.className = 'fg-settings-subdetails';
     const appearSum = document.createElement("summary");
+    appearSum.className = 'fg-settings-subsummary';
     appearSum.textContent = "外观效果";
     appearSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:4px;`;
     appearDet.appendChild(appearSum);
     const appearBody = document.createElement("div");
+    appearBody.className = 'fg-settings-subbody';
     makeSlider(appearBody, "文字大小", 8, 40, getLabelSize(), 1, v => { setLabelSize(v); getSaveData()(); });
     makeSlider(appearBody, "编辑面板透明度", 0, 1, getEditPanelOpacity(), 0.05, v => { setEditPanelOpacity(v); getSaveData()(); });
     makeSlider(appearBody, "节点点击扩展", 0, 20, getNodeExpand(), 1, v => { setNodeExpand(v); getSaveData()(); });
@@ -338,44 +364,6 @@ export function buildSettings(
     makeCheckbox(appearBody, "聚焦模式", getFocusMode(), v => { setFocusMode(v); draw(); getSaveData()(); });
     makeCheckbox(appearBody, "居中模式", getCenterMode(), v => { setCenterMode(v); getSaveData()(); });
     if (getSelectedTooltip) makeCheckbox(appearBody, "选中显示内容", getSelectedTooltip(), v => { setSelectedTooltip!(v); getSaveData()(); });
-    if (getNodeColorStyle) {
-      const nsRow = document.createElement("div");
-      nsRow.style.cssText = "display:flex;gap:6px;align-items:center;margin:3px 0;";
-      const nsLb = document.createElement("span");
-      nsLb.textContent = "节点默认色";
-      nsLb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
-      nsRow.appendChild(nsLb);
-      const nsSel = document.createElement("select");
-      nsSel.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
-      (['uniform','hierarchical','spectrum','spectrum-narrow'] as const).forEach(v => {
-        const o = document.createElement("option"); o.value = v;
-        o.textContent = v === 'uniform' ? '统一' : v === 'hierarchical' ? '分级' : v === 'spectrum-narrow' ? '分级窄' : '多彩分级';
-        nsSel.appendChild(o);
-      });
-      nsSel.value = getNodeColorStyle();
-      nsSel.addEventListener('change', () => { setNodeColorStyle!(nsSel.value); draw(); getSaveData()(); });
-      nsRow.appendChild(nsSel);
-      appearBody.appendChild(nsRow);
-    }
-    if (getFontFamily) {
-      const fsRow = document.createElement("div");
-      fsRow.style.cssText = "display:flex;gap:6px;align-items:center;margin:3px 0;";
-      const fsLb = document.createElement("span");
-      fsLb.textContent = "字体";
-      fsLb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
-      fsRow.appendChild(fsLb);
-      const fsSel = document.createElement("select");
-      fsSel.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
-      (['system-ui, -apple-system, sans-serif','"SiYuan Songti", serif','"LXGW WenKai", sans-serif','"Noto Serif SC", serif','monospace'] as const).forEach(f => {
-        const o = document.createElement("option"); o.value = f;
-        o.textContent = f.startsWith('system') ? '系统默认' : f.includes('SiYuan') ? '思源宋体' : f.includes('WenKai') ? '霞鹜文楷' : f.includes('Noto') ? 'Noto 衬线' : '等宽';
-        fsSel.appendChild(o);
-      });
-      fsSel.value = getFontFamily();
-      fsSel.addEventListener('change', () => { setFontFamily!(fsSel.value); draw(); getSaveData()(); });
-      fsRow.appendChild(fsSel);
-      appearBody.appendChild(fsRow);
-    }
     if (getEdgeColorGradient) makeCheckbox(appearBody, "连线渐变颜色", getEdgeColorGradient(), v => { setEdgeColorGradient?.(v); draw(); getSaveData()(); });
     if (getEdgeWidthByLevel) makeCheckbox(appearBody, "连线等级粗细", getEdgeWidthByLevel(), v => { setEdgeWidthByLevel?.(v); draw(); getSaveData()(); });
     if (getCardBorderStyle) {
@@ -400,11 +388,14 @@ export function buildSettings(
 
     // 集合标签
     const groupLabelDet = document.createElement("details");
+    groupLabelDet.className = 'fg-settings-subdetails';
     const glSum = document.createElement("summary");
+    glSum.className = 'fg-settings-subsummary';
     glSum.textContent = "集合标签";
     glSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:4px;`;
     groupLabelDet.appendChild(glSum);
     const glBody = document.createElement("div");
+    glBody.className = 'fg-settings-subbody';
     makeCheckbox(glBody, "显示集合标签", getShowGLabels(), v => { setShowGLabels(v); getSaveData()(); });
     makeSlider(glBody, "最小集合标签", 5, 20, getGlMin(), 1, v => { setGlMin(v); getSaveData()(); });
     makeSlider(glBody, "最大集合标签", 10, 50, getGlMax(), 1, v => { setGlMax(v); getSaveData()(); });
@@ -413,11 +404,14 @@ export function buildSettings(
 
     // 网格
     const gridDet = document.createElement("details");
+    gridDet.className = 'fg-settings-subdetails';
     const gridSum = document.createElement("summary");
+    gridSum.className = 'fg-settings-subsummary';
     gridSum.textContent = "网格与坐标轴";
     gridSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:4px;`;
     gridDet.appendChild(gridSum);
     const gridBody = document.createElement("div");
+    gridBody.className = 'fg-settings-subbody';
     makeCheckbox(gridBody, "显示网格", getGridVis(), v => { setGridVis(v); getSaveData()(); });
     makeCheckbox(gridBody, "显示坐标轴", getAxisVis(), v => { setAxisVis(v); getSaveData()(); });
     makeCheckbox(gridBody, "坐标轴刻度", getAxisTicks(), v => { setAxisTicks(v); getSaveData()(); });
@@ -428,11 +422,14 @@ export function buildSettings(
 
     // 性能
     const perfDet = document.createElement("details");
+    perfDet.className = 'fg-settings-subdetails';
     const perfSum = document.createElement("summary");
+    perfSum.className = 'fg-settings-subsummary';
     perfSum.textContent = "性能";
     perfSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:4px;`;
     perfDet.appendChild(perfSum);
     const perfBody = document.createElement("div");
+    perfBody.className = 'fg-settings-subbody';
     makeCheckbox(perfBody, "性能模式 (RAF 节流)", getUseRAFL(), v => { setUseRAFL(v); if (getSimulation()) getSimulation()!.alpha(0.3).restart(); getSaveData()(); });
     makeSlider(perfBody, "图区高宽比", 0.3, 1.5, getAr(), 0.05, v => { setAr(v); getSaveData()(); });
     perfDet.appendChild(perfBody);

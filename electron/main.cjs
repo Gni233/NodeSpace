@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
 const path = require('path');
 const fs = require('fs');
 const { isPathAllowed } = require('./path-guard.cjs');
+const { MEDIA_EXTENSIONS, normalizeRelativePath, scanVault } = require('./vault-service.cjs');
 
 // ---- File watching: 检测外部工具（MCP Server 等）修改的文件 ----
 const fileWatchers = new Map(); // dir → FSWatcher
@@ -9,9 +10,18 @@ let selfWriting = false; // 防止 app 自身写入触发重载
 const pendingExternalChanges = new Map(); // fileName -> timeout
 
 function onFileWatcherEvent(filename) {
-  if (!filename || !filename.endsWith('.json')) return;
+  if (!filename) return;
   if (selfWriting) return;
-  const graphName = filename.replace(/\.json$/, '');
+  const normalized = normalizeRelativePath(filename);
+  const extension = path.extname(normalized).toLowerCase();
+  const isGraph = extension === '.json';
+  const isVaultResource = extension === '.md' || MEDIA_EXTENSIONS.has(extension);
+  if (!isGraph && !isVaultResource) return;
+  if (isVaultResource && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('vault-file-change', normalized);
+  }
+  if (!isGraph) return;
+  const graphName = normalized.replace(/\.json$/i, '');
   // 防抖：500ms 内的重复事件合并
   const existing = pendingExternalChanges.get(graphName);
   if (existing) clearTimeout(existing);
@@ -52,18 +62,30 @@ const knownMTimes = new Map(); // filePath -> mtimeMs（已知的 mtime，避免
 function pollingFallback() {
   for (const dir of allowedDirs) {
     if (!fs.existsSync(dir)) continue;
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-    for (const e of entries) {
-      if (!e.isFile() || !e.name.endsWith('.json')) continue;
-      const fp = path.join(dir, e.name);
+    const files = [];
+    const collect = currentDir => {
+      let entries;
+      try { entries = fs.readdirSync(currentDir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue;
+        const fp = path.join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+          if (!entry.name.startsWith('.') && entry.name !== 'node_modules') collect(fp);
+          continue;
+        }
+        const extension = path.extname(entry.name).toLowerCase();
+        if (entry.isFile() && (extension === '.json' || extension === '.md' || MEDIA_EXTENSIONS.has(extension))) files.push(fp);
+      }
+    };
+    collect(dir);
+    for (const fp of files) {
       try {
         const stat = fs.statSync(fp);
         const known = knownMTimes.get(fp);
         // mtime 变了，且不是我们已知的（app 自己写的），才当作外部变更
         if (known !== undefined && stat.mtimeMs !== known && !selfWriting) {
           knownMTimes.set(fp, stat.mtimeMs);
-          onFileWatcherEvent(e.name);
+          onFileWatcherEvent(path.relative(dir, fp));
         } else if (known === undefined) {
           knownMTimes.set(fp, stat.mtimeMs);
         }
@@ -230,6 +252,32 @@ ipcMain.handle('fs-stat', async (_, p) => {
   catch (e) { return { error: e.message }; }
 });
 
+ipcMain.handle('vault-scan', async (_, rootPath) => {
+  try {
+    if (!isAllowed(rootPath)) return { error: 'Access denied' };
+    return scanVault(rootPath);
+  } catch (e) { return { error: e.message }; }
+});
+
+ipcMain.handle('vault-open-in-obsidian', async (_, rootPath, relativePath, heading) => {
+  try {
+    const root = path.resolve(rootPath);
+    const target = path.resolve(root, relativePath);
+    if (!isAllowed(root) || !isPathAllowed(new Set([root]), target) || !fs.existsSync(target)) {
+      return { error: 'Access denied' };
+    }
+    const location = heading ? `${target}#${heading}` : target;
+    const uri = `obsidian://open?path=${encodeURIComponent(location)}`;
+    try {
+      await shell.openExternal(uri);
+      return { ok: true };
+    } catch {
+      const error = await shell.openPath(target);
+      return error ? { error } : { ok: true, fallback: true };
+    }
+  } catch (e) { return { error: e.message }; }
+});
+
 ipcMain.handle('dialog-open-folder', async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
   if (r.canceled) return null;
@@ -298,7 +346,18 @@ ipcMain.handle('config-write', (_, updates) => {
   } catch (e) { return { error: e.message }; }
 });
 
+function restoreConfiguredFolderAccess() {
+  try {
+    const config = JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
+    if (typeof config.folderPath !== 'string' || !config.folderPath) return;
+    const resolved = path.resolve(config.folderPath);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return;
+    allowedDirs.add(resolved);
+  } catch {}
+}
+
 app.whenReady().then(() => {
+  restoreConfiguredFolderAccess();
   createWindow();
   startFileWatcher();
   setInterval(pollingFallback, 5000);

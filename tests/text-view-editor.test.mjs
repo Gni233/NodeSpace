@@ -92,3 +92,32 @@ test('editor controller compiles only when exiting, blocks graph renames, and ke
   assert.equal(calls.apply[0].graphName, '原图');
   assert.equal(calls.apply[0].nextGraph.nodes.length, 2);
 });
+
+test('compact text edits preserve hidden semantic layout state', async () => {
+  const hiddenState = {
+    semanticLayoutMemory: { version: 1, nodes: { n1: { x: 8, y: 13 } } },
+    semanticCardForms: { n1: 'card' },
+    cardViews: { card: { scale: 1.2 } },
+    expandedMedia: ['n1'],
+  };
+  const graph = {
+    nodes: [{ id: 'n1', label: '原节点', x: 1, y: 2 }],
+    edges: [], groups: [], settings: { charge: -80, ...hiddenState },
+  };
+  let applied;
+  const controller = new TextViewEditorController({
+    getGraph: () => graph,
+    getGraphName: () => '原图',
+    pauseSimulation: () => {},
+    resumeSimulation: () => {},
+    applyGraph: nextGraph => { applied = nextGraph; },
+    markDirty: () => {},
+    draw: () => {},
+  });
+
+  controller.enter();
+  assert.doesNotMatch(controller.getSource(), /semanticLayoutMemory|semanticCardForms|cardViews|expandedMedia/);
+  assert.equal(await controller.requestExit(), true);
+  for (const [key, value] of Object.entries(hiddenState)) assert.deepEqual(applied.settings[key], value);
+  assert.equal(applied.settings.charge, -80);
+});

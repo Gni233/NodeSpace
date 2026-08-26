@@ -123,4 +123,6 @@ export interface CompileResult {
 
 export interface PrintOptions {
   graphName?: string;
+  /** Hide layout caches and other machine-maintained fields in the user-facing editor. */
+  compact?: boolean;
 }

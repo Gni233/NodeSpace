@@ -1,5 +1,6 @@
 import { FileAdapter, FileEntry, joinPath, ok, err, replacePathName } from '../file-adapter';
 import { GRAPH_STORAGE_PREFIX } from '../storage-keys';
+import type { SemanticLayoutMemory } from '../layouts/semantic';
 export interface GraphSettings {
   linkDist: number;
   labelSize: number;
@@ -45,11 +46,19 @@ export interface GraphSettings {
   cardViews?: Record<string, { scale: number; offsetX: number; offsetY: number }>;
   groupCardViews?: Record<string, { scale: number; offsetX: number; offsetY: number }>;
   expandedMedia?: string[];
+  /** Derived automatic-layout state. User-dragged coordinates are never copied into it. */
+  semanticLayoutMemory?: SemanticLayoutMemory;
+  /** Overall density for the automatic semantic composition. */
+  semanticCardDensity?: 'full' | 'mixed' | 'nodes';
+  /** Per-node overrides layered over semanticCardDensity. */
+  semanticCardForms?: Record<string, 'card' | 'node'>;
+  /** The graph is a projection over source files and must not overwrite them. */
+  sourceMode?: 'vault-readonly';
 }
 
 /** 图数据：节点+边+集合+设置
- *  Node fields: id, label, x, y, headingLevel(1-6), tags[], note, mediaUrl, mediaType, color, radius, radiusMode, fixed, fx, fy, collapsed, hyperlink
- *  Edge fields: source, target, label, color, arrow, lineStyle
+ *  Node fields: id, label, x, y, headingLevel(1-6), tags[], note, mediaUrl, mediaType, resourceRef, color, radius, radiusMode, fixed, fx, fy, collapsed, hyperlink
+ *  Edge fields: source, target, label, color, arrow, lineStyle, kind/relationType
  *  Group fields: id, label, displayMode, color, borderColor, opacity, nodeColorMode, nodeColor, fluidRadius, fluidOpacity
  */
 export interface GraphData {
