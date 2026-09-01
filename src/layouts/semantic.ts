@@ -126,6 +126,17 @@ export function isSensitiveSemanticText(value: unknown): boolean {
   return PRIVATE_PATTERN.test(String(value ?? ''));
 }
 
+/** Resource previews are transient source text; ordinary cards keep using their editable note. */
+export function semanticNodeBody(node: any): string {
+  if (node?.spaceRef && typeof node?._spaceReferencePreview === 'string') {
+    return node._spaceReferencePreview.trim();
+  }
+  if (node?.resourceRef && typeof node?._resourceReferencePreview === 'string') {
+    return node._resourceReferencePreview.trim();
+  }
+  return String(node?.note || '').trim();
+}
+
 const endpointId = (endpoint: any): string =>
   String(endpoint && typeof endpoint === 'object' ? endpoint.id : endpoint);
 
@@ -204,7 +215,7 @@ function cardKind(node: any, text: string): SemanticCardKind {
   if (PRIVATE_PATTERN.test(text)) return 'private';
   if (TASK_PATTERN.test(text)) return 'task';
   if (/[?？]\s*$/.test(text) || /^(?:为什么|为何|怎么|如何|是否|能不能)/.test(text.trim())) return 'question';
-  if (text.replace(/\s/g, '').length <= 18 && !String(node.note || '').trim()) return 'fragment';
+  if (text.replace(/\s/g, '').length <= 18 && !semanticNodeBody(node)) return 'fragment';
   return 'note';
 }
 
@@ -216,7 +227,7 @@ function truncateExcerpt(text: string, limit: number): string {
 
 function computeCardMetrics(node: any, collapsed = false): SemanticCardMetrics {
   const label = String(node.label || node.id || '').trim();
-  const note = String(node.note || '').trim();
+  const note = semanticNodeBody(node);
   const combined = `${label}\n${note}`.trim();
   const kind = cardKind(node, combined);
   if (collapsed) {
@@ -229,6 +240,19 @@ function computeCardMetrics(node: any, collapsed = false): SemanticCardMetrics {
     const width = Math.max(nodeRadius * 2 + 8, visibleTitleLength * 15 + 10);
     const height = Math.max(nodeRadius * 2 + 8, (nodeRadius + 22) * 2);
     return { width, height, titleLines: 1, excerpt: '', kind, form: 'node', nodeRadius };
+  }
+  if (node?.spaceRef?.kind === 'space' || node?.spaceRef?.kind === 'fragment') {
+    const width = node.spaceRef.kind === 'space' ? 244 : 226;
+    const titleCapacity = Math.max(8, Math.floor((width - 48) / 16));
+    const titleLines = clamp(Math.ceil(Math.max(4, label.replace(/\s/g, '').length) / titleCapacity), 1, 2);
+    return {
+      width,
+      height: titleLines > 1 ? 164 : 150,
+      titleLines,
+      excerpt: truncateExcerpt(note, 54),
+      kind,
+      form: 'card',
+    };
   }
   const titleLength = Math.max(4, label.replace(/\s/g, '').length);
   const width = clamp(158 + Math.sqrt(titleLength) * 13 + Math.min(34, note.length * 0.18), 172, 246);
@@ -300,7 +324,7 @@ function buildTextAnalysis(
   const countsById = new Map<string, Map<string, number>>();
   const documentFrequency = new Map<string, number>();
   for (const item of indexed) {
-    const raw = `${item.node.label || ''}\n${item.node.note || ''}\n${(item.node.tags || []).join(' ')}\n${(edgeTextByNode.get(item.id) || []).join(' ')}`;
+    const raw = `${item.node.label || ''}\n${semanticNodeBody(item.node)}\n${(item.node.tags || []).join(' ')}\n${(edgeTextByNode.get(item.id) || []).join(' ')}`;
     const sensitive = PRIVATE_PATTERN.test(raw);
     const safeText = sensitive ? String(item.node.label || '') : raw;
     const counts = new Map<string, number>();
@@ -332,7 +356,7 @@ function buildTextAnalysis(
       .slice(0, 8);
     profiles.set(item.id, {
       id: item.id,
-      sensitive: PRIVATE_PATTERN.test(`${item.node.label || ''}\n${item.node.note || ''}`),
+      sensitive: PRIVATE_PATTERN.test(`${item.node.label || ''}\n${semanticNodeBody(item.node)}`),
       weights,
       topTerms,
     });
@@ -849,7 +873,7 @@ function semanticFingerprints(graph: GraphData): Map<string, string> {
     const id = String(node.id);
     const value = JSON.stringify({
       label: String(node.label || ''),
-      note: String(node.note || ''),
+      note: semanticNodeBody(node),
       tags: [...(node.tags || [])].map(String).sort(),
       headingLevel: node.headingLevel ?? null,
       structureParentId: node.structureParentId == null ? null : String(node.structureParentId),
@@ -1254,7 +1278,7 @@ export function semanticGraphSignature(graph: GraphData): string {
     id: String(node.id),
     order: nodeOrder(node, index),
     label: String(node.label || ''),
-    note: String(node.note || ''),
+    note: semanticNodeBody(node),
     headingLevel: node.headingLevel ?? null,
     tags: [...(node.tags || [])].sort(),
     structureParentId: node.structureParentId ?? null,

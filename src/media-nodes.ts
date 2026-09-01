@@ -169,6 +169,12 @@ function isSafeUrl(url: string): boolean {
 }
 
 const overlays: Map<string, MediaOverlay> = new Map();
+const syncReaderPresence = () => {
+  document.documentElement.classList.toggle(
+    'has-media-reader',
+    [...overlays.values()].some(overlay => overlay.presentation === 'reader'),
+  );
+};
 
 window.addEventListener('keydown', event => {
   if (event.key !== 'Escape') return;
@@ -392,6 +398,7 @@ export function showMedia(
 
   const ov: MediaOverlay = { el, nodeId, type, presentation, offsetX: 0, offsetY: 0, onClose };
   overlays.set(nodeId, ov);
+  syncReaderPresence();
 
   // 拖拽逻辑 - 使用全局状态，不依赖 pointer capture
   handle.addEventListener('dblclick', () => { ov.offsetX = 0; ov.offsetY = 0; });
@@ -428,6 +435,7 @@ export function hideMedia(nodeId: string, notify = false) {
   if (ov) {
     ov.el.remove();
     overlays.delete(nodeId);
+    syncReaderPresence();
     if (notify) ov.onClose?.();
   }
 }

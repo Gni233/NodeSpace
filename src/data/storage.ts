@@ -1,6 +1,7 @@
 import { FileAdapter, FileEntry, joinPath, ok, err, replacePathName } from '../file-adapter';
 import { GRAPH_STORAGE_PREFIX } from '../storage-keys';
 import type { SemanticLayoutMemory } from '../layouts/semantic';
+import type { SpaceFragmentDefinition } from '../space-composition';
 export interface GraphSettings {
   linkDist: number;
   labelSize: number;
@@ -54,6 +55,10 @@ export interface GraphSettings {
   semanticCardForms?: Record<string, 'card' | 'node'>;
   /** The graph is a projection over source files and must not overwrite them. */
   sourceMode?: 'vault-readonly';
+  /** Named, live views over subsets of this graph. */
+  spaceFragments?: Record<string, SpaceFragmentDefinition>;
+  /** Read-only counts derived from explicit Obsidian links in a Vault projection. */
+  obsidianLinkSummary?: { outgoing: number; backlinks: number; unresolved: number };
 }
 
 /** 图数据：节点+边+集合+设置

@@ -38,3 +38,19 @@ test('menus, settings scopes, and mobile actions use the shared component gramma
   assert.match(styles, /\.fg-settings-section/);
   assert.match(styles, /\.fg-mobile-toolbar > \.fg-mobile-action \.fg-mobile-action-label/);
 });
+
+test('native and custom dropdowns inherit the active light or dark theme', async () => {
+  const [theme, main, settings, styles, index] = await Promise.all([
+    source('theme.ts'), source('main.ts'), source('ui-settings.ts'), source('workspace-ui.css'),
+    readFile(path.join(root, 'index.html'), 'utf8'),
+  ]);
+
+  assert.match(theme, /"--fg-color-scheme": dark \? "dark" : "light"/);
+  assert.match(index, /color-scheme: var\(--fg-color-scheme\)/);
+  assert.match(index, /select, option, optgroup[\s\S]*?background-color: var\(--fg-input-bg\)/);
+  assert.match(index, /html, body[\s\S]*?color: var\(--fg-text\)/);
+  assert.match(styles, /\.fg-setting-select[\s\S]*?color: var\(--fg-input-text\) !important/);
+  assert.match(styles, /\.fg-setting-select > option:disabled[\s\S]*?color: var\(--fg-text-muted\)/);
+  assert.match(main, /groupDropdown\.className = 'fg-group-dropdown'/);
+  assert.match(settings, /cbSel\.className = 'fg-setting-select'/);
+});

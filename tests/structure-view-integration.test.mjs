@@ -96,7 +96,7 @@ test('main integration enters and exits pane scope without replacing runtime gra
   assert.ok(main?.body);
   const bodyText = main.body.getText(file);
   assert.match(bodyText, /const enterStructureForPane = \(pane: PaneState, id: string\): void => \{/);
-  assert.match(bodyText, /runtime\.graph\.nodes\.find\(candidate => candidate\.id === id\)/);
+  assert.match(bodyText, /scopedPaneGraph\(pane\)\.nodes\.find\(candidate => candidate\.id === id\)/);
   assert.match(bodyText, /pane\.textViewActive \|\| runtime\.textEditActive/);
   assert.match(bodyText, /pane\.structureController\.enter\(id\)/);
   assert.match(bodyText, /pane\.structureView = view/);

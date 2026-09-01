@@ -10,8 +10,15 @@ const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function loadLens() {
-  const source = await readFile(path.join(root, 'src', 'semantic-lens.ts'), 'utf8');
-  const output = ts.transpileModule(source, {
+  const [source, zoomSource] = await Promise.all([
+    readFile(path.join(root, 'src', 'semantic-lens.ts'), 'utf8'),
+    readFile(path.join(root, 'src', 'semantic-zoom.ts'), 'utf8'),
+  ]);
+  const zoomOutput = ts.transpileModule(zoomSource, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const zoomUrl = `data:text/javascript;base64,${Buffer.from(zoomOutput).toString('base64')}`;
+  const output = ts.transpileModule(source.replaceAll("'./semantic-zoom'", `'${zoomUrl}'`), {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   return import(`data:text/javascript;base64,${Buffer.from(output).toString('base64')}`);
@@ -28,12 +35,12 @@ const nodes = Array.from({ length: 12 }, (_, index) => ({
 test('semantic lens zoom bands use hysteresis instead of flickering at one threshold', async () => {
   const { resolveSemanticLensBand } = await loadLens();
   assert.equal(resolveSemanticLensBand(0.5), 'overview');
-  assert.equal(resolveSemanticLensBand(0.6, 'overview'), 'overview');
-  assert.equal(resolveSemanticLensBand(0.65, 'overview'), 'balanced');
-  assert.equal(resolveSemanticLensBand(1.08, 'balanced'), 'balanced');
-  assert.equal(resolveSemanticLensBand(1.13, 'balanced'), 'reading');
-  assert.equal(resolveSemanticLensBand(0.9, 'reading'), 'reading');
-  assert.equal(resolveSemanticLensBand(0.85, 'reading'), 'balanced');
+  assert.equal(resolveSemanticLensBand(0.55, 'overview'), 'overview');
+  assert.equal(resolveSemanticLensBand(0.57, 'overview'), 'balanced');
+  assert.equal(resolveSemanticLensBand(1.05, 'balanced'), 'balanced');
+  assert.equal(resolveSemanticLensBand(1.07, 'balanced'), 'reading');
+  assert.equal(resolveSemanticLensBand(0.95, 'reading'), 'reading');
+  assert.equal(resolveSemanticLensBand(0.93, 'reading'), 'balanced');
 });
 
 test('adaptive lens prioritizes focus, explicit neighbors, and semantic echoes within a budget', async () => {
@@ -55,6 +62,7 @@ test('adaptive lens prioritizes focus, explicit neighbors, and semantic echoes w
   assert.ok(decision.expandedNodeIdsSet.has('n5'));
   assert.ok(decision.expandedNodeIdsSet.has('n7'));
   assert.equal(decision.expandedNodeIds.length, decision.budget);
+  assert.ok(decision.edgeLabelBudget >= 3);
   assert.equal(decision.collapsedNodeIds.size + decision.expandedNodeIds.length, nodes.length);
 });
 

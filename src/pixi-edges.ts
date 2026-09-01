@@ -59,6 +59,7 @@ function drawSolidRoute(g: Graphics, route: SemanticEdgeRoute, width: number, co
 function semanticDefaultColor(role: SemanticEdgeRole): string {
   if (role === 'structure') return '#4F8F7D';
   if (role === 'directional') return '#B97846';
+  if (role === 'reference') return '#6F73B8';
   return '#71838F';
 }
 
@@ -114,9 +115,10 @@ export function updateEdges(
     semanticMode?: boolean;
     semanticZoom?: number;
     semanticFocusNodeId?: string | null;
+    semanticLabelBudget?: number;
   }
 ) {
-  const { hiddenNodes, focusNeighborIds, focusEdgeIndices, collapsedEdgeIndices, alpha = 0.6, selectedEdgeIndex, boxSelectedEdgeIndices, collapseEdgeFade, nodeColorMap, edgeColorGradient, edgeWidthByLevel, semanticMode = false, semanticZoom = 1, semanticFocusNodeId = null } = opts;
+  const { hiddenNodes, focusNeighborIds, focusEdgeIndices, collapsedEdgeIndices, alpha = 0.6, selectedEdgeIndex, boxSelectedEdgeIndices, collapseEdgeFade, nodeColorMap, edgeColorGradient, edgeWidthByLevel, semanticMode = false, semanticZoom = 1, semanticFocusNodeId = null, semanticLabelBudget } = opts;
   const isFocusActive = focusNeighborIds && focusNeighborIds.size > 0;
   const semanticFocusId = semanticMode && semanticFocusNodeId ? String(semanticFocusNodeId) : null;
   const useGradient = edgeColorGradient && nodeColorMap;
@@ -141,6 +143,8 @@ export function updateEdges(
     labelAlpha: number;
     showLabel: boolean;
     color: string;
+    labelPriority: number;
+    mandatoryLabel: boolean;
   }>();
 
   graph.edges.forEach((e, idx) => {
@@ -160,7 +164,7 @@ export function updateEdges(
     const anyFocusActive = !!isFocusActive || !!semanticFocusId;
     const disclosure = semanticMode
       ? semanticEdgeDisclosure(grammar, semanticZoom, focusedEdge, anyFocusActive, isSelected || isBoxSelected)
-      : { alphaMultiplier: 1, widthMultiplier: 1, showLabel: true };
+      : { alphaMultiplier: 1, widthMultiplier: 1, showLabel: true, labelAlpha: 1 };
 
     let edgeAlpha = alpha;
     if (isFocusActive) edgeAlpha = focusEdgeIndices?.has(idx) ? 0.8 : 0.12;
@@ -291,9 +295,14 @@ export function updateEdges(
     }
     renderedEdges.set(idx, {
       route,
-      labelAlpha: Math.min(1, edgeAlpha + 0.14),
+      labelAlpha: Math.min(1, edgeAlpha + 0.14) * disclosure.labelAlpha,
       showLabel: disclosure.showLabel,
       color: baseColor,
+      labelPriority: (isSelected ? 1000 : isBoxSelected ? 900 : 0)
+        + (focusedEdge ? 420 : 0)
+        + (grammar.role === 'structure' ? 80 : grammar.role === 'reference' ? 68 : grammar.role === 'directional' ? 55 : 30)
+        + Math.min(24, String(e.label || '').trim().length),
+      mandatoryLabel: isSelected || isBoxSelected,
     });
   });
 
@@ -307,10 +316,19 @@ export function updateEdges(
     || new TextStyle({ fontSize: 11, fill: '#aaaaaa', fontFamily: 'var(--fg-font-family,"SiYuan Songti",serif)' });
   (edgeLayer as any)._labelStyle = labelStyle;
   const activeLabels = new Set<number>();
+  const labelCandidates = graph.edges
+    .map((edge, index) => ({ edge, index, rendered: renderedEdges.get(index) }))
+    .filter(item => item.edge.label && item.rendered?.showLabel)
+    .sort((a, b) => (b.rendered?.labelPriority || 0) - (a.rendered?.labelPriority || 0) || a.index - b.index);
+  const mandatoryLabels = labelCandidates.filter(item => item.rendered?.mandatoryLabel);
+  const labelLimit = semanticMode && Number.isFinite(semanticLabelBudget)
+    ? Math.max(mandatoryLabels.length, Math.max(0, Math.floor(Number(semanticLabelBudget))))
+    : labelCandidates.length;
+  const visibleLabelIndices = new Set(labelCandidates.slice(0, labelLimit).map(item => item.index));
   graph.edges.forEach((e, idx) => {
     if (!e.label) return;
     const rendered = renderedEdges.get(idx);
-    if (!rendered || !rendered.showLabel) return;
+    if (!rendered || !rendered.showLabel || !visibleLabelIndices.has(idx)) return;
     const midpoint = semanticEdgePoint(rendered.route, 0.5);
     const tangent = semanticEdgeTangent(rendered.route, 0.5);
     const tangentLength = Math.hypot(tangent.x, tangent.y) || 1;

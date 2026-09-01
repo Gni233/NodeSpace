@@ -1,5 +1,5 @@
 import type { GraphData } from './data/storage';
-import { isSensitiveSemanticText } from './layouts/semantic';
+import { isSensitiveSemanticText, semanticNodeBody } from './layouts/semantic';
 
 export type LocalSemanticStatus = 'idle' | 'probing' | 'ready' | 'unavailable';
 
@@ -16,7 +16,7 @@ const BATCH_SIZE = 48;
 const MAX_TEXT_LENGTH = 1200;
 
 function normalizedNodeText(node: any): string {
-  return [node.label, node.note, ...(node.tags || [])]
+  return [node.label, semanticNodeBody(node), ...(node.tags || [])]
     .map(value => String(value ?? '').trim())
     .filter(Boolean)
     .join('\n')

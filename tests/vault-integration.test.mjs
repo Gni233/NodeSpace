@@ -11,7 +11,15 @@ const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function importTypeScriptModule(filePath) {
-  const source = await import('node:fs/promises').then(fs => fs.readFile(filePath, 'utf8'));
+  let source = await import('node:fs/promises').then(fs => fs.readFile(filePath, 'utf8'));
+  if (filePath.endsWith(`${path.sep}vault.ts`)) {
+    const dependencySource = await readFile(path.join(root, 'src', 'obsidian-links.ts'), 'utf8');
+    const dependencyOutput = ts.transpileModule(dependencySource, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
+    }).outputText;
+    const dependencyUrl = `data:text/javascript;base64,${Buffer.from(dependencyOutput).toString('base64')}`;
+    source = source.replace(/(['"])\.\/obsidian-links\1/g, JSON.stringify(dependencyUrl));
+  }
   const output = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
   }).outputText;
@@ -90,6 +98,7 @@ test('long Markdown becomes a bounded heading hierarchy with source locations', 
   assert.equal(mlEdge.kind, 'hierarchy');
   assert.equal(optimizationEdge.source, machineLearning.id);
   assert.ok(machineLearning.sourceRef.line > 1);
+  assert.equal(optimization.sourceRef.headingPath, '人工智能#机器学习#优化');
   assert.equal(graph.settings.sourceMode, 'vault-readonly');
 });
 

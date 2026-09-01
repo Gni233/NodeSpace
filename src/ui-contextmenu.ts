@@ -145,6 +145,7 @@ export function showContextMenu(
           // 子菜单：在父项右侧创建
           const sub = document.createElement("div");
           sub.className = 'fg-context-menu fg-context-submenu';
+          sub.setAttribute('data-menu', 'context-submenu');
           sub.style.cssText = menuStyle + `left:${mx + parent.offsetWidth}px;top:${my + mi.offsetTop}px;`;
           buildItems(sub, item.children, mx + parent.offsetWidth, my + mi.offsetTop);
           // Keep one submenu branch open and register it with the root's outside-click tree.

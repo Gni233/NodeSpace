@@ -1,4 +1,6 @@
-export type SemanticEdgeRole = 'explicit' | 'structure' | 'directional';
+import { semanticZoomProfile } from './semantic-zoom';
+
+export type SemanticEdgeRole = 'explicit' | 'structure' | 'directional' | 'reference';
 
 export interface SemanticEdgeGrammar {
   role: SemanticEdgeRole;
@@ -21,12 +23,14 @@ export interface SemanticEdgeDisclosure {
   alphaMultiplier: number;
   widthMultiplier: number;
   showLabel: boolean;
+  labelAlpha: number;
 }
 
 const STRUCTURE_KIND = /^(?:hierarchy|parent|child|contains|containment|membership|part|structure|tree)$/i;
 const STRUCTURE_WORDING = /(?:层级|父级|子级|包含|属于|隶属|构成|组成|上位|下位|part\s+of|belongs?\s+to|contains?)/i;
 const DIRECTION_KIND = /^(?:cause|causal|dependency|depends|sequence|flow|next|lead|support|contrast|response)$/i;
 const DIRECTION_WORDING = /(?:导致|决定|引发|产生|因此|所以|因为|依赖|先于|随后|之后|然后|下一步|促进|阻碍|支持|反驳|回应|cause|lead(?:s)?\s+to|depend(?:s)?\s+on|because|therefore|then|next|before|after)/i;
+const REFERENCE_KIND = /^(?:obsidian-link|obsidian-embed|obsidian-backlink|obsidian-missing|cross-space-context|reference|backlink|embed)$/i;
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 
@@ -50,6 +54,9 @@ function edgeField(edge: any): string {
 export function inferSemanticEdgeGrammar(edge: any): SemanticEdgeGrammar {
   const declared = edgeField(edge);
   const label = String(edge?.label ?? '').trim();
+  if (edge?._obsidianLink || REFERENCE_KIND.test(declared)) {
+    return { role: 'reference', tentative: false, cue: declared || 'obsidian-link' };
+  }
   if (edge?._structureMembership || STRUCTURE_KIND.test(declared)) {
     return { role: 'structure', tentative: false, cue: declared || 'structure' };
   }
@@ -84,6 +91,24 @@ export function buildSemanticEdgeRoute(
   // A small deterministic variation stops adjacent relations from looking like
   // copies while keeping every route stable across renders and sessions.
   const variation = 0.92 + ((hash >>> 1) % 5) * 0.04;
+
+  if (grammar.role === 'reference') {
+    if (length < 24) return { kind: 'line', start, end };
+    const bend = clamp(length * (grammar.cue === 'obsidian-embed' ? 0.1 : 0.078), 8, 32) * sign * variation;
+    return {
+      kind: 'cubic',
+      start,
+      control1: {
+        x: start.x + dx * 0.28 + normalX * bend,
+        y: start.y + dy * 0.28 + normalY * bend,
+      },
+      control2: {
+        x: start.x + dx * 0.72 + normalX * bend * 0.72,
+        y: start.y + dy * 0.72 + normalY * bend * 0.72,
+      },
+      end,
+    };
+  }
 
   if (grammar.role === 'explicit') {
     // Only truly tiny gaps stay straight. A shallow cubic gives ordinary,
@@ -213,20 +238,22 @@ export function semanticEdgeDisclosure(
   focusActive: boolean,
   selected = false,
 ): SemanticEdgeDisclosure {
-  const scale = Number.isFinite(zoom) ? zoom : 1;
-  if (selected) return { alphaMultiplier: 1.15, widthMultiplier: 1.24, showLabel: true };
-  let alphaMultiplier = 1;
-  if (scale < 0.43) {
-    alphaMultiplier = grammar.role === 'structure' ? 0.95 : grammar.role === 'directional' ? 0.78 : 0.54;
-  } else if (scale < 0.72) {
-    alphaMultiplier = grammar.role === 'structure' ? 1 : grammar.role === 'directional' ? 0.96 : 0.82;
-  }
-  if (focusActive) alphaMultiplier *= focused ? 1.16 : grammar.role === 'structure' ? 0.22 : 0.1;
-  const roleWidth = grammar.role === 'structure' ? 1.2 : grammar.role === 'directional' ? 1.14 : 1.05;
-  const distantWidth = scale < 0.43 ? 1.28 : scale < 0.72 ? 1.16 : 1;
+  const profile = semanticZoomProfile(zoom);
+  if (selected) return { alphaMultiplier: 1.15, widthMultiplier: 1.24, showLabel: true, labelAlpha: 1 };
+  const distantAlpha = grammar.role === 'structure' ? 0.95 : grammar.role === 'directional' ? 0.78 : grammar.role === 'reference' ? 0.66 : 0.54;
+  let alphaMultiplier = distantAlpha + (1 - distantAlpha) * profile.edgeDetailAlpha;
+  if (focusActive) alphaMultiplier *= focused ? 1.16 : grammar.role === 'structure' ? 0.22 : grammar.role === 'reference' ? 0.14 : 0.1;
+  const roleWidth = grammar.role === 'structure' ? 1.2 : grammar.role === 'directional' ? 1.14 : grammar.role === 'reference' ? 1.1 : 1.05;
+  const distantWidth = 1 + (1 - profile.edgeDetailAlpha) * 0.28;
+  const labelAlpha = focused
+    ? profile.focusedEdgeLabelAlpha
+    : !focusActive
+      ? profile.edgeLabelAlpha
+      : 0;
   return {
     alphaMultiplier,
     widthMultiplier: roleWidth * distantWidth,
-    showLabel: focused ? scale >= 0.42 : !focusActive && scale >= 0.68,
+    showLabel: labelAlpha > 0.025,
+    labelAlpha,
   };
 }

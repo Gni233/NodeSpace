@@ -368,12 +368,15 @@ export function buildSettings(
     if (getEdgeWidthByLevel) makeCheckbox(appearBody, "连线等级粗细", getEdgeWidthByLevel(), v => { setEdgeWidthByLevel?.(v); draw(); getSaveData()(); });
     if (getCardBorderStyle) {
       const cbRow = document.createElement("div");
+      cbRow.className = 'fg-setting-row fg-setting-select-row';
       cbRow.style.cssText = "display:flex;gap:6px;align-items:center;margin:3px 0;";
       const cbLb = document.createElement("span");
+      cbLb.className = 'fg-setting-label';
       cbLb.textContent = "卡片边框风格";
       cbLb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
       cbRow.appendChild(cbLb);
       const cbSel = document.createElement("select");
+      cbSel.className = 'fg-setting-select';
       cbSel.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
       const opt1 = document.createElement("option"); opt1.value = 'straight'; opt1.textContent = '直线';
       const opt2 = document.createElement("option"); opt2.value = 'rounded'; opt2.textContent = '圆角';

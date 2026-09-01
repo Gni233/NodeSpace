@@ -38,6 +38,127 @@ function markdownTitle(relativePath, markdown) {
   return path.basename(relativePath, path.extname(relativePath));
 }
 
+function decodeLinkPart(value) {
+  const clean = String(value || '').trim().replace(/^<|>$/g, '');
+  try { return decodeURIComponent(clean); } catch { return clean; }
+}
+
+function splitLinkTarget(value) {
+  const decoded = decodeLinkPart(value);
+  if (decoded.startsWith('^^')) return { target: '', block: decoded.slice(2).trim(), search: true };
+  const hash = decoded.indexOf('#');
+  const target = decodeLinkPart(hash >= 0 ? decoded.slice(0, hash) : decoded).replace(/\?.*$/, '');
+  if (hash < 0) return { target };
+  const fragment = decodeLinkPart(decoded.slice(hash + 1)).trim();
+  if (!target && (fragment.startsWith('#') || fragment.startsWith('^') && !/^[A-Za-z\d-]+$/.test(fragment.slice(1)))) {
+    return { target, heading: fragment, search: true };
+  }
+  if (fragment.startsWith('^') && /^[A-Za-z\d-]+$/.test(fragment.slice(1))) return { target, block: fragment.slice(1) };
+  return fragment ? { target, heading: fragment } : { target };
+}
+
+function markdownDestination(value) {
+  const trimmed = String(value || '').trim();
+  if (trimmed.startsWith('<')) {
+    const close = trimmed.indexOf('>');
+    if (close > 0) return trimmed.slice(1, close);
+  }
+  const title = trimmed.match(/^(.*?)(?:\s+["'][^"']*["'])\s*$/);
+  return (title?.[1] || trimmed).trim();
+}
+
+/** Lightweight scan metadata. The renderer owns authoritative resolution; the
+ * desktop scanner only records occurrences while the file is already in RAM. */
+function extractObsidianLinks(markdown) {
+  const lines = String(markdown || '').replace(/^\uFEFF/, '').split(/\r?\n/);
+  const links = [];
+  let fenced = false;
+  let fenceMarker = '';
+  let inComment = false;
+  let frontmatter = lines[0]?.trim() === '---';
+  let sourceHeading;
+  for (let index = 0; index < lines.length; index++) {
+    const original = lines[index];
+    if (frontmatter) {
+      if (index > 0 && original.trim() === '---') frontmatter = false;
+      continue;
+    }
+    const fence = original.match(/^\s*(```+|~~~+)/);
+    if (fence) {
+      if (!fenced) { fenced = true; fenceMarker = fence[1][0]; }
+      else if (fence[1][0] === fenceMarker) { fenced = false; fenceMarker = ''; }
+      continue;
+    }
+    if (fenced) continue;
+    let line = original;
+    if (inComment) {
+      const end = line.indexOf('-->');
+      if (end < 0) continue;
+      line = line.slice(end + 3);
+      inComment = false;
+    }
+    line = line.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<!--.*$/, () => { inComment = true; return ' '; });
+    line = line.replace(/`+[^`]*`+/g, match => ' '.repeat(match.length));
+    const heading = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+    if (heading) sourceHeading = heading[1].trim();
+
+    for (const match of line.matchAll(/(!?)\[\[([^\]\n]+)\]\]/g)) {
+      const pipe = match[2].indexOf('|');
+      const destination = pipe >= 0 ? match[2].slice(0, pipe) : match[2];
+      const alias = pipe >= 0 ? match[2].slice(pipe + 1).trim() : '';
+      const parts = splitLinkTarget(destination);
+      links.push({
+        raw: match[0], syntax: 'wikilink', disposition: match[1] ? 'embed' : 'link', target: parts.target,
+        ...(parts.heading ? { heading: parts.heading } : {}), ...(parts.block ? { block: parts.block } : {}),
+        ...(alias ? { alias } : {}), ...(parts.search ? { search: true } : {}), line: index + 1, column: (match.index || 0) + 1, ...(sourceHeading ? { sourceHeading } : {}),
+      });
+    }
+    for (const match of line.matchAll(/(!?)\[([^\]\n]*)\]\(([^)\n]+)\)/g)) {
+      const destination = markdownDestination(match[3]);
+      if (!destination || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(destination)) continue;
+      const parts = splitLinkTarget(destination);
+      links.push({
+        raw: match[0], syntax: 'markdown', disposition: match[1] ? 'embed' : 'link', target: parts.target,
+        ...(parts.heading ? { heading: parts.heading } : {}), ...(parts.block ? { block: parts.block } : {}),
+        ...(match[2].trim() ? { alias: match[2].trim() } : {}), line: index + 1,
+        column: (match.index || 0) + 1,
+        ...(sourceHeading ? { sourceHeading } : {}), ...(parts.search ? { search: true } : {}),
+      });
+    }
+  }
+  return links.sort((left, right) => left.line - right.line || (left.column || 0) - (right.column || 0));
+}
+
+function markdownAliases(markdown) {
+  const frontmatter = String(markdown || '').match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] || '';
+  const aliases = [];
+  const inline = frontmatter.match(/^(?:aliases?|alias):\s*(.+)$/im)?.[1]?.trim();
+  if (inline) {
+    const value = inline.replace(/^\[|\]$/g, '');
+    for (const alias of value.split(',').map(item => item.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)) aliases.push(alias);
+  }
+  const block = frontmatter.match(/^(?:aliases?|alias):\s*\r?\n((?:\s*-\s*[^\r\n]+\r?\n?)*)/im)?.[1] || '';
+  for (const match of block.matchAll(/^\s*-\s*['"]?(.+?)['"]?\s*$/gm)) if (match[1].trim()) aliases.push(match[1].trim());
+  return [...new Set(aliases)].slice(0, 24);
+}
+
+function markdownExcerpt(markdown, limit = 280) {
+  const text = String(markdown || '')
+    .replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/, '')
+    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, ' ')
+    .replace(/<!--([\s\S]*?)-->/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/!\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, '$2 $1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, '$2 $1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*(?:>|[-*+]|\d+[.)])\s*/gm, '')
+    .replace(/[*_~`|]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1)).trimEnd()}…` : text;
+}
+
 function scanVault(rootPath) {
   const root = path.resolve(rootPath);
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
@@ -77,6 +198,9 @@ function scanVault(rootPath) {
           ...common,
           kind: 'markdown',
           title: markdownTitle(relativePath, markdown),
+          aliases: markdownAliases(markdown),
+          excerpt: markdownExcerpt(markdown),
+          links: extractObsidianLinks(markdown),
           headingCount: countMarkdownHeadings(markdown),
           charCount: markdown.length,
           hasFrontmatter: /^---\s*\r?\n/.test(markdown),
@@ -111,6 +235,8 @@ function scanVault(rootPath) {
 module.exports = {
   MEDIA_EXTENSIONS,
   countMarkdownHeadings,
+  extractObsidianLinks,
+  markdownExcerpt,
   normalizeRelativePath,
   scanVault,
 };

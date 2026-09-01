@@ -124,6 +124,26 @@ test('semantic signature ignores coordinates but reacts to content and structure
   assert.equal(applies, 2);
 });
 
+test('resource cards compose from transient source previews instead of stored path notes', async () => {
+  const { computeSemanticLayout, semanticGraphSignature } = await importTypeScriptModule(
+    path.join(root, 'src', 'layouts', 'semantic.ts'),
+  );
+  const node = {
+    id: 'reference',
+    label: '注意力机制',
+    note: 'Markdown · 课程/人工智能/注意力.md',
+    resourceRef: { provider: 'vault', version: 1, kind: 'markdown', path: '课程/人工智能/注意力.md' },
+    _resourceReferencePreview: '查询与键的相关程度决定不同值的注意力权重',
+  };
+  const data = graph([node]);
+  const result = computeSemanticLayout(data);
+  assert.match(result.positions.get('reference').card.excerpt, /注意力权重/);
+  assert.doesNotMatch(result.positions.get('reference').card.excerpt, /课程\//);
+  const before = semanticGraphSignature(data);
+  node._resourceReferencePreview = '多头注意力观察多个表示子空间';
+  assert.notEqual(semanticGraphSignature(data), before);
+});
+
 test('semantic content creates useful regions without user tags or explicit edges', async () => {
   const { computeSemanticLayout } = await importTypeScriptModule(
     path.join(root, 'src', 'layouts', 'semantic.ts'),
@@ -401,6 +421,9 @@ test('application defaults to auto, opportunistically uses local Qwen, and keeps
   );
   assert.match(semanticSection, /targetSimManager\.initStatic/);
   assert.doesNotMatch(semanticSection, /targetSimManager\.initSim/);
+  assert.match(semanticSection, /if \(fitAfter\)/);
+  assert.doesNotMatch(semanticSection, /if \(!animate \|\| fitAfter\)/);
+  assert.match(main, /applySemanticPositions\(targetPane, true, vectors, false, false\)/);
   assert.match(main, /returnToSemanticPosition/);
   assert.match(main, /activateSemanticLayoutForPane\(pi, true\)/);
   assert.doesNotMatch(main, /graphNode\.layout\s*=/);

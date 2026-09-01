@@ -4,11 +4,13 @@ import { MobileToolbarGesture } from './mobile-toolbar-gesture';
 
 const isTouchDevice = (): boolean => {
   if (isCapacitor()) return true;
-  if (window.innerWidth < 700) return true;
+  if (window.innerWidth < 820) return true;
   return matchMedia('(any-pointer: coarse)').matches;
 };
 
 export interface MobileToolbarSelectionState {
+  /** Whether one card/node is selected and can be opened or entered. */
+  hasSelection: boolean;
   /** True only when the selection is one ordinary (non-structure) node. */
   isSingleOrdinaryNode: boolean;
   /** Whether the selected node's heading may be promoted. */
@@ -21,6 +23,8 @@ export interface MobileToolbarCallbacks {
   createNode: () => void;
   /** Creates a child for the single selected ordinary node. */
   createChildNode?: () => void;
+  /** Opens the selected card, source, reference, structure, or local context. */
+  activateSelection?: () => void;
   /** Promotes the selected node's heading level. */
   raiseHeading?: () => void;
   /** Demotes the selected node's heading level. */
@@ -62,7 +66,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
   };
 
   bar.style.cssText = [
-    'position:fixed; bottom:12px; left:50%; transform:translateX(-50%)',
+    'position:fixed; bottom:calc(10px + env(safe-area-inset-bottom, 0px) + var(--ns-visual-bottom, 0px)); left:50%; transform:translateX(-50%)',
     `z-index:${Z_MOBILE_TOOLBAR}`,
     'display:flex; gap:6px; padding:6px 10px',
     `background:${V('--fg-surface-glass', 'rgba(63,63,63,0.85)')}`,
@@ -71,7 +75,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     `border:1px solid ${V('--fg-glass-border', 'rgba(255,255,255,0.08)')}`,
     `border-radius:${V('--fg-radius-lg', '14px')}`,
     `box-shadow:${V('--fg-shadow-md', '0 4px 16px rgba(0,0,0,0.4)')}`,
-    'padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px))',
+    'padding-bottom:6px',
     'touch-action:none',
     'transition:opacity 0.25s ease',
   ].join(';');
@@ -154,6 +158,14 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
   redoBtn.setAttribute('role', 'menuitem');
   redoBtn.style.width = '100%';
 
+  const openBtn = makeBtn('↗', '打开所选内容', () => {
+    if (callbacks.activateSelection) runAndSync(callbacks.activateSelection);
+    setMenuOpen(false);
+  }, '打开');
+  openBtn.classList.add('fg-mobile-menu-action');
+  openBtn.setAttribute('role', 'menuitem');
+  openBtn.style.width = '100%';
+
   const boxBtn = makeBtn('⬚', '框选模式', () => {
     runAndSync(callbacks.toggleBoxSelectMode);
     setMenuOpen(false);
@@ -179,7 +191,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
   lowerHeadingBtn.setAttribute('role', 'menuitem');
   lowerHeadingBtn.style.width = '100%';
 
-  menu.append(redoBtn, boxBtn);
+  menu.append(openBtn, redoBtn, boxBtn);
   menu.append(raiseHeadingBtn, lowerHeadingBtn);
   bar.append(createBtn, undoBtn, linkBtn, fitBtn, moreBtn, menu);
 
@@ -197,6 +209,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
 
   const sync = () => {
     const selection = callbacks.getSelectionState?.() ?? {
+      hasSelection: false,
       isSingleOrdinaryNode: false,
       canRaiseHeading: false,
       canLowerHeading: false,
@@ -215,6 +228,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     boxBtn.style.opacity = boxBtn.disabled ? '0.45' : '';
     syncDisabled(raiseHeadingBtn, !callbacks.raiseHeading || !selection.canRaiseHeading);
     syncDisabled(lowerHeadingBtn, !callbacks.lowerHeading || !selection.canLowerHeading);
+    syncDisabled(openBtn, !callbacks.activateSelection || !selection.hasSelection);
     syncDisabled(undoBtn, !callbacks.canUndo());
     syncDisabled(redoBtn, !callbacks.canRedo());
   };
@@ -237,6 +251,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
 
   const updateViewport = () => {
     const visible = isTouchDevice();
+    document.documentElement.classList.toggle('has-mobile-toolbar', visible);
     bar.style.display = visible ? 'flex' : 'none';
     if (!visible) {
       setMenuOpen(false);
@@ -337,6 +352,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     window.removeEventListener('orientationchange', updateViewport);
     window.visualViewport?.removeEventListener('resize', updateViewport);
     window.visualViewport?.removeEventListener('scroll', updateViewport);
+    document.documentElement.classList.remove('has-mobile-toolbar');
     bar.remove();
   };
 

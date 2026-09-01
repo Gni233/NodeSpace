@@ -1,6 +1,8 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import type { SemanticEcho, SemanticRegion } from './layouts/semantic';
 import { WORLD_TEXT_SAMPLING } from './pixi-text-quality';
+import { semanticZoomProfile } from './semantic-zoom';
+import type { LocalContextState } from './local-context';
 
 const PALETTE = [0x5e81ac, 0x88c0d0, 0x8fbcbb, 0xa3be8c, 0xb48ead, 0xd08770, 0xebcb8b];
 const LABEL_RESOLUTION = Math.max(2, (window.devicePixelRatio || 1) * 1.5);
@@ -17,6 +19,11 @@ interface SemanticSceneOptions {
   echoes?: readonly SemanticEcho[];
   focusNodeId?: string | null;
   zoom?: number;
+  regionLabelBudget?: number;
+  echoBudget?: number;
+  localContext?: LocalContextState | null;
+  accentColor?: number;
+  accentAltColor?: number;
 }
 
 function ensureState(layer: Container): SemanticSceneState {
@@ -29,11 +36,6 @@ function ensureState(layer: Container): SemanticSceneState {
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
-const smoothstep = (min: number, max: number, value: number): number => {
-  const t = clamp((value - min) / Math.max(1e-6, max - min), 0, 1);
-  return t * t * (3 - 2 * t);
-};
-
 function echoColor(echo: SemanticEcho): number {
   if (echo.kind === 'hybrid') return 0x88c0d0;
   if (echo.kind === 'embedding') return 0xb48ead;
@@ -110,9 +112,13 @@ export function renderSemanticScene(
   state.surface.clear();
   const activeLabels = new Set<string>();
   const zoom = Number.isFinite(options.zoom) ? Number(options.zoom) : 1;
+  const zoomProfile = semanticZoomProfile(zoom);
   // At overview scale the broad domain is legible; as the user approaches,
   // topic/course regions take over without an abrupt frame replacement.
-  const topicBlend = smoothstep(0.32, 0.66, zoom);
+  const topicBlend = zoomProfile.topicBlend;
+  const regionLabelBudget = Number.isFinite(options.regionLabelBudget)
+    ? Math.max(0, Math.floor(Number(options.regionLabelBudget)))
+    : Number.POSITIVE_INFINITY;
 
   const orderedRegions = [...regions].sort((a, b) => Number(a.level === 'topic') - Number(b.level === 'topic'));
   for (const region of orderedRegions) {
@@ -133,6 +139,8 @@ export function renderSemanticScene(
       .stroke({ color, width: topic ? 2.25 : 1.8, alpha: accentAlpha, cap: 'round' });
 
     if (!region.label) continue;
+    const labelAlpha = topic ? 0.72 * topicBlend : 0.62 * (1 - topicBlend * 0.9);
+    if (labelAlpha <= 0.055 || activeLabels.size >= regionLabelBudget) continue;
     activeLabels.add(region.id);
     let label = state.labels.get(region.id);
     if (!label || label.destroyed) {
@@ -157,7 +165,7 @@ export function renderSemanticScene(
     label.style.fontSize = topic ? 11 : 10;
     label.style.fontWeight = topic ? '600' : '500';
     label.position.set(region.x + 18, region.y + 30);
-    label.alpha = topic ? 0.72 * topicBlend : 0.62 * (1 - topicBlend * 0.9);
+    label.alpha = labelAlpha;
     label.visible = label.alpha > 0.055;
   }
 
@@ -168,10 +176,54 @@ export function renderSemanticScene(
     state.labels.delete(id);
   }
 
+  if (options.localContext && options.nodes) {
+    const contextAccent = options.accentColor ?? 0x88c0d0;
+    const contextAlt = options.accentAltColor ?? 0xb48ead;
+    const nodesById = new Map(options.nodes.map(node => [String(node.id), node]));
+    const memberIds = new Set(options.localContext.members.map(member => member.id));
+    const path = options.localContext.path.map(id => nodesById.get(id)).filter(Boolean) as any[];
+    for (let index = 1; index < path.length; index++) {
+      const startNode = path[index - 1], endNode = path[index];
+      const dx = endNode.x - startNode.x, dy = endNode.y - startNode.y;
+      const length = Math.hypot(dx, dy);
+      if (!Number.isFinite(length) || length < 2) continue;
+      const ux = dx / length, uy = dy / length;
+      const startDistance = boundaryOffset(startNode, ux, uy, 9);
+      const endDistance = boundaryOffset(endNode, -ux, -uy, 9);
+      const start = { x: startNode.x + ux * startDistance, y: startNode.y + uy * startDistance };
+      const end = { x: endNode.x - ux * endDistance, y: endNode.y - uy * endDistance };
+      const bend = Math.min(52, Math.max(18, length * 0.12)) * (index % 2 ? 1 : -1);
+      const control = { x: (start.x + end.x) / 2 - uy * bend, y: (start.y + end.y) / 2 + ux * bend };
+      drawDashedQuadratic(state.surface, start, control, end, contextAccent, 2.1, 0.28 + zoomProfile.edgeDetailAlpha * 0.18);
+    }
+    for (const id of memberIds) {
+      const node = nodesById.get(id);
+      if (!node) continue;
+      const current = id === options.localContext.currentId;
+      const root = id === options.localContext.rootId;
+      const color = current ? contextAccent : root ? contextAlt : contextAccent;
+      const alpha = current ? 0.72 : root ? 0.48 : 0.14;
+      const card = node._semanticCard;
+      if (card?.form === 'card') {
+        state.surface.roundRect(
+          node.x - card.width / 2 - (current ? 8 : 5),
+          node.y - card.height / 2 - (current ? 8 : 5),
+          card.width + (current ? 16 : 10),
+          card.height + (current ? 16 : 10),
+          14,
+        ).stroke({ color, width: current ? 2 : 1, alpha });
+      } else {
+        const radius = Math.max(8, Number(card?.nodeRadius) || Number(node.radius) || 9) + (current ? 8 : 5);
+        state.surface.circle(node.x, node.y, radius).stroke({ color, width: current ? 2 : 1, alpha });
+      }
+    }
+  }
+
   const activeEchoLabels = new Set<string>();
   const focusNodeId = options.focusNodeId ? String(options.focusNodeId) : null;
-  const echoLimit = zoom < 0.46 ? 2 : zoom < 0.9 ? 3 : 4;
-  const showReasonLabels = zoom >= 0.56;
+  const echoLimit = Number.isFinite(options.echoBudget)
+    ? Math.max(0, Math.floor(Number(options.echoBudget)))
+    : zoomProfile.band === 'overview' ? 2 : zoomProfile.band === 'reading' ? 4 : 3;
   if (focusNodeId && options.nodes && options.echoes) {
     const nodesById = new Map(options.nodes.map(node => [String(node.id), node]));
     const incident = options.echoes
@@ -196,11 +248,11 @@ export function renderSemanticScene(
       const bend = sign * Math.min(44, Math.max(16, length * 0.1));
       const control = { x: (start.x + end.x) / 2 - uy * bend, y: (start.y + end.y) / 2 + ux * bend };
       const color = echoColor(echo);
-      const zoomAlpha = zoom < 0.46 ? 0.66 : zoom < 0.72 ? 0.84 : 1;
+      const zoomAlpha = 0.66 + zoomProfile.edgeDetailAlpha * 0.34;
       const alpha = clamp(0.26 + echo.score * 0.34, 0.3, 0.62) * zoomAlpha;
       drawDashedQuadratic(state.surface, start, control, end, color, 1.15 + echo.score * 0.7, alpha);
 
-      if (zoom >= 0.4) {
+      if (zoomProfile.titleAlpha > 0.015) {
         const targetCard = endNode._semanticCard;
         if (targetCard?.form === 'card') {
           state.surface.roundRect(
@@ -209,10 +261,10 @@ export function renderSemanticScene(
             targetCard.width + 10,
             targetCard.height + 10,
             12,
-          ).stroke({ color, width: 1.2, alpha: alpha * 0.46 });
+          ).stroke({ color, width: 1.2, alpha: alpha * 0.46 * zoomProfile.titleAlpha });
         } else {
           state.surface.circle(endNode.x, endNode.y, Math.max(9, Number(targetCard?.nodeRadius) || Number(targetCard?.width) / 2) + 5)
-            .stroke({ color, width: 1.2, alpha: alpha * 0.52 });
+            .stroke({ color, width: 1.2, alpha: alpha * 0.52 * zoomProfile.titleAlpha });
         }
       }
 
@@ -240,8 +292,8 @@ export function renderSemanticScene(
       label.text = `↝ ${echo.reason}`;
       label.style.fill = color;
       label.position.set(midpoint.x - uy * sign * 8, midpoint.y + ux * sign * 8);
-      label.alpha = clamp(alpha + 0.12, 0.5, 0.78);
-      label.visible = showReasonLabels;
+      label.alpha = clamp(alpha + 0.12, 0.5, 0.78) * zoomProfile.echoReasonAlpha;
+      label.visible = label.alpha > 0.025;
     }
   }
   for (const [id, label] of state.echoLabels) {

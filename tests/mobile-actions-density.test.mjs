@@ -42,12 +42,17 @@ test('mobile toolbar exposes contextual child creation and heading actions in it
   assert.match(source, /raiseHeading\?: \(\) => void/);
   assert.match(source, /lowerHeading\?: \(\) => void/);
   assert.match(source, /getSelectionState\?: \(\) => MobileToolbarSelectionState/);
+  assert.match(source, /activateSelection\?: \(\) => void/);
   assert.match(source, /createsChild \? '新建子节点' : '新建节点'/);
   assert.match(source, /runAndSync\(callbacks\.createChildNode\)/);
   assert.match(source, /raiseHeadingBtn/);
   assert.match(source, /lowerHeadingBtn/);
+  assert.match(source, /openBtn/);
   assert.match(source, /syncDisabled\(raiseHeadingBtn, !callbacks\.raiseHeading \|\| !selection\.canRaiseHeading\)/);
   assert.match(source, /syncDisabled\(lowerHeadingBtn, !callbacks\.lowerHeading \|\| !selection\.canLowerHeading\)/);
+  assert.match(source, /syncDisabled\(openBtn, !callbacks\.activateSelection \|\| !selection\.hasSelection\)/);
+  assert.match(source, /classList\.toggle\('has-mobile-toolbar', visible\)/);
+  assert.match(source, /classList\.remove\('has-mobile-toolbar'\)/);
 });
 
 test('main integrates focused-pane child creation and hierarchy actions', async () => {
@@ -60,6 +65,7 @@ test('main integrates focused-pane child creation and hierarchy actions', async 
   assert.match(source, /selectAndEditFocusedNode\(childId, targetPane\)/);
   assert.match(source, /reinitializeRuntimeViews\(targetPane\?\.runtime \?\? primaryRuntime\)/);
   assert.match(source, /getSelectionState: focusedMobileSelectionState/);
+  assert.match(source, /activateSelection:[\s\S]*?enterStructureForPane/);
   assert.match(source, /raiseHeading: \(\) => changeFocusedHeading\(-1\)/);
   assert.match(source, /lowerHeading: \(\) => changeFocusedHeading\(1\)/);
   assert.match(source, /node\.radius = undefined;\s*node\.radiusMode = undefined/);

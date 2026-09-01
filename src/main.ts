@@ -36,12 +36,15 @@ import { computeRadialLayout } from './layouts/radial';
 import { computeSemanticLayout, semanticGraphSignature, SemanticLayoutController, stabilizeSemanticLayout, type SemanticLayoutSource } from './layouts/semantic';
 import { LocalSemanticEmbeddingProvider, type LocalSemanticState } from './semantic-embeddings';
 import { computeSemanticLens, resolveSemanticLensBand } from './semantic-lens';
+import { semanticZoomProfile } from './semantic-zoom';
 import { CardGridController, getCardLabelSize } from './cardgrid';
 import { clearCards } from './cardgrid/render';
 import { BlurFilter, Container, Graphics, Text } from 'pixi.js';
 import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia } from './media-nodes';
+import { createMarkdownSourceEditor, type MarkdownSourceEditor } from './markdown-source-editor';
 import { createSettingsPanel } from './settings-panel';
 import { createMobileToolbar } from './ui-mobile-toolbar';
+import { createMobileViewportCoordinator } from './mobile-viewport';
 import { UndoManager } from './undo-redo';
 import { showToast, confirmAction } from './toast';
 import { startNodeAnimation } from './utils/animate-nodes';
@@ -60,7 +63,7 @@ import { canDissolveStructure, createStructureNode, detachNodeFromStructure, dis
 import { createPaneStructureView, createStructureBreadcrumb, getPaneOriginalEdgeIndex, isPaneStructureProxyEdge, isPaneStructureProxyNode, PaneStructureView, StructureNavigationState } from './structure-view';
 import { assignCreatedOrder, assignCreatedOrders, repairCreatedOrders } from './node-order';
 import { createTextViewEditor, TextViewEditor } from './text-view/editor';
-import { createNodeSprite, updateNodePosition, applyNodeVisual, getHeadingColor, getSpectrumColor, getNarrowSpectrumColor, NodeSprite, NodeVisualState, setNodeFontFamily } from './pixi-nodes';
+import { createNodeSprite, updateNodePosition, applyNodeVisual, getHeadingColor, getSpectrumColor, getNarrowSpectrumColor, NodeSprite, NodeVisualState, setNodeFontFamily, updateSemanticBodiesForViewport } from './pixi-nodes';
 import { getNodeVisualRadius, updateEdges } from './pixi-edges';
 import { hitTestEdge, nodeContainsPoint } from './geometry/hit';
 import { semanticEdgePolyline } from './semantic-edge-grammar';
@@ -72,7 +75,12 @@ import { updateGrid, clearGridCache } from './pixi-grid';
 import { attachmentToGraph, isVaultLocationTabId, isVaultSpaceTabId, joinVaultPath, markdownToGraph, normalizeVaultPath, vaultDisplayName, vaultFolderToGraph, vaultGraphFileName, vaultPathFromTabId, vaultSpacePathFromTabId, vaultSpaceTabId, vaultTabId, type VaultIndex, type VaultResource, type VaultResourceKind, type VaultSourceRef } from './vault';
 import { createVaultSpaceBreadcrumb, VaultViewportMemory } from './vault-navigation';
 import { resolveNodeDisplayLabel } from './node-display';
-import { createResourceReferenceNode, createVaultResourceReference, isResourceReferenceNode, reconcileGraphResourceReferences, resourceReferenceForPath, resourceReferencePreviewMarkdown, rewriteGraphResourceReferencePaths, type ResourceReference } from './resource-references';
+import { createResourceReferenceNode, createVaultResourceReference, isResourceReferenceLoadingPreview, isResourceReferenceNode, markdownResourceReferenceExcerpt, markdownSectionForResourceReference, reconcileGraphResourceReferences, resourceReferenceCardFallback, resourceReferenceForPath, resourceReferencePreviewMarkdown, rewriteGraphResourceReferencePaths, type ResourceReference } from './resource-references';
+import { createFragmentSpaceReference, createNodeSpaceReference, createSpaceFragment, createSpaceReferenceNode, createWholeSpaceReference, hydrateSpaceReferenceNode, isSpaceReferenceNode, navigationWouldCycle, normalizeSpaceGraphId, resolveSpaceReference, rewriteSpaceReferenceGraphIds, spaceReferenceKey, type ResolvedSpaceReference, type SpaceReference } from './space-composition';
+import { expandedSpacePortalRect, normalizeSpacePortalAnchor, resolveSpacePortalAnchor, type NormalizedSpacePortalAnchor, type RectLike } from './space-navigation';
+import { backLocalContext, buildLocalContext, extendLocalContext, localContextInternalEdgeIndexes, localContextMemberIds, startLocalContext, type LocalContextState } from './local-context';
+import { createLocalContextNavigator } from './local-context-navigation';
+import { composeCrossSpaceProjection, createCrossSpaceBranch, isCrossSpaceProxyEdge, isCrossSpaceProxyNode, retainCrossSpaceBranches, type CrossSpaceBranch, type CrossSpaceTarget } from './cross-space-context';
 
 const DEFAULT_SETTINGS: GraphSettings = {
   linkDist: 120, labelSize: 18, charge: -100, linkStr: 0.3,
@@ -205,6 +213,8 @@ async function main() {
   appShell.className = 'fg-app-shell';
   appShell.style.cssText = 'position:relative;width:100vw;height:100vh;height:100dvh;overflow:hidden;padding-bottom:env(safe-area-inset-bottom,0px);';
   appEl.appendChild(appShell);
+  const mobileViewport = createMobileViewportCoordinator(appShell);
+  window.addEventListener('beforeunload', () => mobileViewport.destroy(), { once: true });
 
   // 选中节点 tooltip（独立于各窗格的 tooltip，全局唯一）
   const selTooltip = document.createElement('div');
@@ -266,6 +276,12 @@ async function main() {
   floatingTop.className = 'fg-glass fg-command-center' + (isElectron ? ' fg-drag-region' : '');
   floatingTop.style.cssText = `position:absolute;left:${sidebarCollapsedLeft()}px;top:6px;right:${floatingRight};z-index:${Z_FLOATING_UI};display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;transition:left 0.25s ease;`;
   appShell.appendChild(floatingTop);
+  interface SpacePortalTransitionSnapshot {
+    anchor: NormalizedSpacePortalAnchor;
+    label: string;
+    kind: 'node' | 'space' | 'fragment' | VaultResourceKind;
+    miniMap: ResolvedSpaceReference['miniMap'];
+  }
   interface ReferenceJourneyState {
     originTab: string;
     originLabel: string;
@@ -273,14 +289,19 @@ async function main() {
     targetLabel: string;
     targetKind: 'vault' | 'graph';
     viewport: { centerX: number; centerY: number; scale: number } | null;
+    spaceTransition?: SpacePortalTransitionSnapshot;
   }
-  const referenceJourneys = new Map<number, ReferenceJourneyState>();
+  const referenceJourneys = new Map<number, ReferenceJourneyState[]>();
   let returnFromResourceReference: () => Promise<void> = async () => {};
 
   // --- 标签栏 ---
   let blockForTextDraft = (_action: string) => false;
   let hasActiveTextDraft = () => false;
   let blockExternalForTextDraft = (_graphName: string) => false;
+  let markdownSourceEditor: MarkdownSourceEditor | null = null;
+  let openMarkdownSourceEditor: (_pane: PaneState, _node: any) => Promise<void> = async () => {
+    showToast('Markdown 编辑器尚未就绪', 'warning', 2200);
+  };
   let renderTabs: (groups: { tabs: string[]; active: string; dirty?: Set<string> }[]) => void;
   const tabBarInit = createTabBar(floatingTop, {
     onSwitchTab: (fileName) => {
@@ -493,6 +514,7 @@ async function main() {
 
   // 多媒体覆盖层容器
   const mediaOverlayContainer = document.createElement('div');
+  mediaOverlayContainer.className = 'fg-media-overlay-root';
   mediaOverlayContainer.style.cssText = `position:fixed;top:0;left:0;z-index:${Z_MEDIA_OVERLAY};pointer-events:none;`;
   document.body.appendChild(mediaOverlayContainer);
   let hoveredMediaId = '';
@@ -923,6 +945,11 @@ async function main() {
   let graphStorageMountPath: string | null = null;
   let vaultIndex: VaultIndex | null = null;
   let refreshOpenResourceReferences: () => void = () => {};
+  let hydrateGraphResourceReferencePreviews: (data: GraphData) => Promise<boolean> = async () => false;
+  let ensureGraphResourceReferencePreviews: (data: GraphData) => void = () => {};
+  let hydrateGraphSpaceReferences: (data: GraphData, ownerGraph: string) => Promise<boolean> = async () => false;
+  let ensureGraphSpaceReferences: (data: GraphData, ownerGraph: string) => void = () => {};
+  let refreshOpenSpaceReferences: (sourceGraph?: string) => Promise<void> = async () => {};
   let referenceVaultPathIntoFocusedGraph: (path: string, kind: VaultResourceKind) => Promise<void> = async () => {
     showToast('引用功能尚未就绪', 'warning', 2200);
   };
@@ -978,7 +1005,13 @@ async function main() {
     if (kind === 'markdown') {
       const raw = await ea.readFile(absolutePath);
       if (typeof raw !== 'string') return null;
-      return repairGraphCreatedOrders(markdownToGraph(relativePath, raw, resource || undefined));
+      return repairGraphCreatedOrders(markdownToGraph(
+        relativePath,
+        raw,
+        resource || undefined,
+        vaultIndex || undefined,
+        fileSystemMountPath || vaultIndex?.rootPath || '',
+      ));
     }
     if (kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'pdf') {
       return repairGraphCreatedOrders(attachmentToGraph(relativePath, absolutePath, kind));
@@ -1153,6 +1186,11 @@ async function main() {
           if (rewriteGraphResourceReferencePaths(openRuntime.graph, oldVaultPath, newVaultPath) > 0) {
             scheduleSaveForRuntime(openRuntime);
           }
+        }
+      }
+      for (const openRuntime of runtimeRegistry.values()) {
+        if (rewriteSpaceReferenceGraphIds(openRuntime.graph, oldPath, newPath) > 0) {
+          scheduleSaveForRuntime(openRuntime);
         }
       }
       if (data) {
@@ -1416,11 +1454,16 @@ async function main() {
     const last = _extChangeLast.get(key) || 0;
     if (now - last < EXT_CHANGE_DEBOUNCE) return;
     _extChangeLast.set(key, now);
+    await markdownSourceEditor?.handleExternalChange(normalized);
     await refreshVaultIndex();
-    await reloadVaultResourceViews(vaultTabId(normalized));
+    const affectedTabs = new Set<string>([vaultTabId(normalized)]);
     for (const runtime of runtimeRegistry.values()) {
-      if (isVaultSpaceTabId(runtime.fileName)) await reloadVaultResourceViews(runtime.fileName);
+      // A single note edit can change another open note's backlinks as well as
+      // every open folder projection. Refresh only live Vault views, not the
+      // user's writable NodeSpace graphs.
+      if (isVaultLocationTabId(runtime.fileName)) affectedTabs.add(runtime.fileName);
     }
+    for (const tabId of affectedTabs) await reloadVaultResourceViews(tabId);
   }
 
   async function handleExternalGraphChange(graphName: string) {
@@ -1449,7 +1492,10 @@ async function main() {
     const extraIdx = extraPanes.slice(1).findIndex(ep => clean(ep.activeTab) === gnClean);
     const targetRuntime = runtimeRegistry.values().find(runtime => clean(runtime.fileName) === gnClean) ?? null;
 
-    if (!isMain && !isPane1 && extraIdx < 0 && !targetRuntime) return;
+    if (!isMain && !isPane1 && extraIdx < 0 && !targetRuntime) {
+      await refreshOpenSpaceReferences(graphName);
+      return;
+    }
 
     if (targetRuntime?.dirty) {
       targetRuntime.markExternalConflict();
@@ -1497,6 +1543,7 @@ async function main() {
         const saved = await readGraphData(graphName);
         newData = saved || { nodes: [], edges: [], groups: [] };
       }
+      await hydrateGraphSpaceReferences(newData, graphName);
 
       // 3) 计算差异
       const newIds = new Set((newData.nodes || []).map(n => n.id));
@@ -1578,6 +1625,7 @@ async function main() {
         primaryRuntime.clearExternalConflict();
         clearRuntimeDirty(primaryRuntime);
         draw();
+        await refreshOpenSpaceReferences(graphName);
         return;
       }
 
@@ -1654,6 +1702,7 @@ async function main() {
 
       // 11) 最终渲染
       draw();
+      await refreshOpenSpaceReferences(graphName);
       return;
     }
 
@@ -1695,6 +1744,7 @@ async function main() {
       targetRuntime.clearExternalConflict();
       clearRuntimeDirty(targetRuntime);
       draw();
+      await refreshOpenSpaceReferences(graphName);
     }
   }
 
@@ -1727,6 +1777,12 @@ async function main() {
   let refreshStructureViews: (runtime: GraphRuntime) => void = () => {};
   let activateSemanticLayoutForPane: (pane: PaneState | any, animate?: boolean) => void = () => {};
   let refreshSemanticLensForPane: (pane: PaneState | any) => void = () => {};
+  let openLocalContextForPane: (pane: PaneState, nodeId: string) => void = () => {};
+  let backLocalContextForPane: (pane: PaneState) => void = () => {};
+  let closeLocalContextForPane: (pane: PaneState) => void = () => {};
+  let jumpLocalContextForPane: (pane: PaneState, pathIndex: number) => void = () => {};
+  let syncLocalContextNavigator: (pane: PaneState) => void = () => {};
+  let expandCrossSpaceLocalContextForPane: (pane: PaneState, nodeId: string) => Promise<void> = async () => {};
 
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {
@@ -1735,6 +1791,11 @@ async function main() {
     sharedState.hoverNodeId = null;
     sharedState.focusHoverNodeId = null;
     clearPaneLayout(pane0);
+    pane0.spaceFocusNodeIds = null;
+    pane0.localContext = null;
+    pane0.localContextNavigator?.update(null, () => '');
+    pane0.localContextProjection?.simManager?.getSim?.()?.stop?.();
+    pane0.localContextProjection = null;
     saveVaultViewportForPane(pane0 as unknown as PaneState, primaryRuntime?.fileName || activeTab);
     loadingOverlay.style.display = 'flex';
     activeTab = fileName;
@@ -1803,6 +1864,9 @@ async function main() {
       }
     }
     graph.settings = { ...DEFAULT_SETTINGS, ...(graph.settings || {}) };
+    await hydrateGraphResourceReferencePreviews(graph);
+    await hydrateGraphSpaceReferences(graph, fileName);
+    if (activeTab !== fileName) { loadingOverlay.style.display = 'none'; return; }
     applyPrimaryPaneSettings(graph.settings);
     sharedState.setFocusModeFn(() => $.focusMode);
     applyPaneCanvasBg(pixiContainer, graphTheme);
@@ -1863,6 +1927,11 @@ async function main() {
     sharedState.hoverNodeId = null;
     sharedState.focusHoverNodeId = null;
     clearPaneLayout(pane1);
+    pane1.spaceFocusNodeIds = null;
+    pane1.localContext = null;
+    pane1.localContextNavigator?.update(null, () => '');
+    pane1.localContextProjection?.simManager?.getSim?.()?.stop?.();
+    pane1.localContextProjection = null;
     pane1.runtime.cancelPendingSave();
     if (pane1.activeTab !== fileName) {
       const saved = await saveRuntimeNow(pane1.runtime, collectPaneSettings(pane1));
@@ -1929,6 +1998,9 @@ async function main() {
       if (pane1.graph.settings) applyPaneSettings(pane1, pane1.graph.settings);
     }
     pane1.graph.settings = { ...DEFAULT_SETTINGS, ...(pane1.graph.settings || {}) };
+    await hydrateGraphResourceReferencePreviews(pane1.graph);
+    await hydrateGraphSpaceReferences(pane1.graph, fileName);
+    if (pane1.activeTab !== fileName) return;
     applyPaneSettings(pane1, pane1.graph.settings);
     // 自动模式直接建立静态位置源；其他模式按需创建 D3 simulation。
     simManager1.setStaticMode(pane1.activeMode === 'auto');
@@ -1972,6 +2044,11 @@ async function main() {
     sharedState.hoverNodeId = null;
     sharedState.focusHoverNodeId = null;
     clearPaneLayout(pane);
+    pane.spaceFocusNodeIds = null;
+    pane.localContext = null;
+    pane.localContextNavigator?.update(null, () => '');
+    pane.localContextProjection?.simManager?.getSim?.()?.stop?.();
+    pane.localContextProjection = null;
     saveVaultViewportForPane(pane, pane.runtime?.fileName || pane.activeTab);
     const extraIndex = extraPanes.indexOf(pane);
     pane.activeTab = fileName;
@@ -2028,6 +2105,9 @@ async function main() {
       applyPaneSettings(pane, pane.graph.settings);
     }
     pane.graph.settings = { ...DEFAULT_SETTINGS, ...(pane.graph.settings || {}) };
+    await hydrateGraphResourceReferencePreviews(pane.graph);
+    await hydrateGraphSpaceReferences(pane.graph, fileName);
+    if (pane.activeTab !== fileName) return;
     applyPaneSettings(pane, pane.graph.settings);
     // 自动模式直接建立静态位置源；其他模式按需创建 D3 simulation。
     pane.simManager?.setStaticMode(pane.activeMode === 'auto');
@@ -2048,6 +2128,7 @@ async function main() {
 
   /** 从 settings 对象恢复窗格配置 */
   function applyPaneSettings(pane: PaneState, s: any) {
+    s ||= {};
     pane.linkDist = s.linkDist ?? pane.linkDist; pane.labelSize = s.labelSize ?? pane.labelSize;
     pane.charge = s.charge ?? pane.charge; pane.linkStr = s.linkStr ?? pane.linkStr;
     pane.collideR = s.collideR ?? pane.collideR; pane.centerS = s.centerS ?? pane.centerS;
@@ -2075,7 +2156,8 @@ async function main() {
     pane.cardBorderStyle = (s as any).cardBorderStyle || pane.cardBorderStyle;
   }
 
-  function applyPrimaryPaneSettings(s: GraphSettings) {
+  function applyPrimaryPaneSettings(settings?: Partial<GraphSettings> | null) {
+    const s = { ...DEFAULT_SETTINGS, ...(settings || {}) };
     applyPaneSettings(pane0 as unknown as PaneState, s);
     layoutMode = normalizeLayoutMode(s.layoutMode);
     starRotateMode = s.starRotateMode ?? starRotateMode;
@@ -2378,7 +2460,10 @@ async function main() {
     if (e.key === 'w' || e.key === 'a' || e.key === 's' || e.key === 'd') { _wasd.pressed[e.key] = false; }
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       const dir = ({ ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' } as Record<string,string>)[e.key];
-      if (dir) _wasd.zoom[dir] = false;
+      if (dir) {
+        _wasd.zoom[dir] = false;
+        requestAnimationFrame(() => refreshSemanticLensForPane(pane0));
+      }
     }
     if (e.key === 'Alt') { _wasd.zoom.up = _wasd.zoom.down = _wasd.zoom.left = _wasd.zoom.right = false; }
   });
@@ -2683,6 +2768,10 @@ async function main() {
   get dirtyTabs() { return dirtyTabs; },
   get currentAnimationCancel() { return currentAnimationCancel; }, set currentAnimationCancel(v) { currentAnimationCancel = v; },
   semanticLensState: null as PaneState['semanticLensState'],
+  localContext: null as LocalContextState | null,
+  localContextNavigator: null as PaneState['localContextNavigator'],
+  localContextProjection: null as PaneState['localContextProjection'],
+  spaceFocusNodeIds: null as string[] | null,
   get searchDebounceTimer() { return searchDebounceTimer; }, set searchDebounceTimer(v) { searchDebounceTimer = v; },
   get searchMatchIndex() { return searchMatchIndex; }, set searchMatchIndex(v) { searchMatchIndex = v; },
   get lastSearchTerm() { return lastSearchTerm; }, set lastSearchTerm(v) { lastSearchTerm = v; },
@@ -2758,6 +2847,7 @@ async function main() {
       runtime.clearExternalConflict();
       clearRuntimeDirty(runtime);
       runtimeRegistry.prune(runtime);
+      void refreshOpenSpaceReferences(runtime.fileName);
     }
     renderAllTabs();
     return result.saved && result.current;
@@ -3076,16 +3166,23 @@ async function main() {
   };
   let focusedPaneIndex = PANE_LEFT;
   let syncFocusedCommands = () => {};
+  const referenceNavigationInFlight = new Set<number>();
   const syncVaultSpaceBreadcrumb = () => {
     const tabId = focusedPaneIndex === PANE_LEFT
       ? activeTab
       : (extraPanes[focusedPaneIndex - 1]?.activeTab || '');
-    const candidate = referenceJourneys.get(focusedPaneIndex);
+    const stack = referenceJourneys.get(focusedPaneIndex) || [];
+    const candidate = stack[stack.length - 1];
     const journey = candidate && (
       (candidate.targetKind === 'vault' && isVaultLocationTabId(tabId))
       || (candidate.targetKind === 'graph' && candidate.targetTab === tabId)
     ) ? candidate : null;
-    if (candidate && !journey && !isVaultLocationTabId(tabId)) referenceJourneys.delete(focusedPaneIndex);
+    if (
+      candidate
+      && !journey
+      && !isVaultLocationTabId(tabId)
+      && !referenceNavigationInFlight.has(focusedPaneIndex)
+    ) referenceJourneys.delete(focusedPaneIndex);
     vaultSpaceBreadcrumb.update(vaultIndex, tabId, journey ? {
       originLabel: journey.originLabel,
       targetLabel: journey.targetLabel,
@@ -3208,6 +3305,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       clearPaneStructureBoundaries(st);
       return;
     }
+    ensureGraphResourceReferencePreviews(g);
+    ensureGraphSpaceReferences(g, paneLoadedTab(st));
     const graph = st.structureView?.graph ?? g;
     const pixi = px;
     const simManager = st.structureView?.simManager ?? sm;
@@ -3388,12 +3487,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
     const semanticScene = (graph as any)._semanticScene;
     const semanticRegions = semanticScene?.regions;
+    const semanticLens = semanticScene?.lens ?? st.semanticLensState;
     if (st.activeMode === 'auto' && Array.isArray(semanticRegions)) {
       renderSemanticScene(pixi.semanticLayer, semanticRegions, {
         nodes,
         echoes: Array.isArray(semanticScene?.echoes) ? semanticScene.echoes : [],
-        focusNodeId: st.selNode || sharedState.focusHoverNodeId || null,
+        focusNodeId: st.localContext?.currentId || st.selNode || sharedState.focusHoverNodeId || null,
+        localContext: st.localContext,
+        accentColor: st.themeAccentColor,
+        accentAltColor: st.themeAccentAltColor,
         zoom: pixi.viewport.scale.x,
+        regionLabelBudget: semanticLens?.regionLabelBudget,
+        echoBudget: semanticLens?.echoBudget,
       });
     } else {
       clearSemanticScene(pixi.semanticLayer);
@@ -3422,7 +3527,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (tgt === nodeId) { focusNeighborIds.add(src); focusEdgeIndices.add(idx); }
       });
     }
-    if (sharedState.focusMode) {
+    if (sharedState.focusMode && !st.localContext) {
       // 悬浮聚焦锁存到下一节点或点击节点外区域
       if (sharedState.focusHoverNodeId) {
         focusActive = true;
@@ -3440,6 +3545,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         for (const sid of selIds) addFocusNode(sid);
       }
     }
+    if (st.spaceFocusNodeIds?.length) {
+      const fragmentIds = new Set(st.spaceFocusNodeIds);
+      focusActive = true;
+      for (const id of fragmentIds) focusNeighborIds.add(id);
+      structureProjection.edges.forEach((edge, index) => {
+        const source = String(typeof edge.source === 'object' ? edge.source.id : edge.source);
+        const target = String(typeof edge.target === 'object' ? edge.target.id : edge.target);
+        if (fragmentIds.has(source) && fragmentIds.has(target)) focusEdgeIndices.add(index);
+      });
+    }
+    if (st.localContext) {
+      const memberIds = localContextMemberIds(st.localContext);
+      focusActive = true;
+      for (const id of memberIds) focusNeighborIds.add(id);
+      const internalEdges = localContextInternalEdgeIndexes(graph, st.localContext);
+      for (const index of internalEdges) focusEdgeIndices.add(index);
+    }
+    syncLocalContextNavigator(st);
 
     // 动画中的节点暂不视为隐藏（光晕、节点、连线保持一致）
     const animatingIds = new Set<string>();
@@ -3583,7 +3706,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       // 标签在缩放 0.3-0.45 区间淡入淡出，并与折叠/展开动画同步过渡
       sprite.radius = nodeRadius;
 	      const zoom = pixi.viewport.scale.x;
-      const zoomAlpha = Math.max(0, Math.min(1, (zoom - 0.3) / 0.15));
+      const zoomAlpha = st.activeMode === 'auto'
+        ? semanticZoomProfile(zoom, semanticLens?.band).titleAlpha
+        : Math.max(0, Math.min(1, (zoom - 0.3) / 0.15));
       // 折叠/展开动画中标签与节点同步淡入淡出
       let animLabelMult = 1;
       if (collapseProgress >= 0) animLabelMult = Math.max(0, 1 - collapseProgress * collapseProgress);
@@ -3636,12 +3761,19 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         vaultResourceKind: graphNodeForVisual?.sourceRef?.kind || n.sourceRef?.kind || (n as any).vaultRole || undefined,
         resourceReferenceKind: graphNodeForVisual?.resourceRef?.kind || n.resourceRef?.kind || undefined,
         resourceReferenceStatus: graphNodeForVisual?._resourceReferenceStatus || n._resourceReferenceStatus || undefined,
+        resourceReferencePreview: graphNodeForVisual?._resourceReferencePreview || n._resourceReferencePreview || undefined,
+        spaceReferenceKind: graphNodeForVisual?.spaceRef?.kind || n.spaceRef?.kind || undefined,
+        spaceReferenceStatus: graphNodeForVisual?._spaceReferenceStatus || n._spaceReferenceStatus || undefined,
+        spaceReferencePreview: graphNodeForVisual?._spaceReferencePreview || n._spaceReferencePreview || undefined,
+        spaceReferenceMiniMap: graphNodeForVisual?._spaceReferenceMiniMap || n._spaceReferenceMiniMap || undefined,
+        localContextProxy: isCrossSpaceProxyNode(graphNodeForVisual || n),
         mediaExpanded: isExpanded(n.id),
         mediaUrl: n.mediaUrl || undefined,
         hyperlink: n.hyperlink || undefined,
         structureMemberCount: isStructureNode(n) ? n.structure.memberIds.length : undefined,
         semanticCard: st.activeMode === 'auto' ? (n as any)._semanticCard : undefined,
         semanticZoom: st.activeMode === 'auto' ? pixi.viewport.scale.x : undefined,
+        semanticTransitionAlpha: st.activeMode === 'auto' ? animLabelMult : undefined,
       });
       if ((n as any)._isNew) (n as any)._isNew = false;
 
@@ -3760,7 +3892,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       edgeWidthByLevel,
       semanticMode: st.activeMode === 'auto',
       semanticZoom: pixi.viewport.scale.x,
-      semanticFocusNodeId: st.selNode || sharedState.focusHoverNodeId || null,
+      semanticFocusNodeId: st.localContext?.currentId || st.selNode || sharedState.focusHoverNodeId || null,
+      semanticLabelBudget: semanticLens?.edgeLabelBudget,
     });
     // 连线模式 / 右键拖拽连线：从源节点到光标的实时贝塞尔预览线
     const dragLink = sharedState.rightDragLink;
@@ -3988,6 +4121,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     s.structurePath = [...pane0.structurePath];
     s.structureBoundaryShapes = pane0.structureBoundaryShapes;
     s.hoverStructureId = pane0.hoverStructureId;
+    s.localContext = pane0.localContext;
+    s.localContextNavigator = pane0.localContextNavigator;
+    s.localContextProjection = pane0.localContextProjection;
+    s.semanticLensState = pane0.semanticLensState;
     renderPane(pixi!, scopedPaneGraph(s), scopedPaneSimulationManager(s), nodeSprites, s);
     pane0.hoverStructureId = s.hoverStructureId;
   };
@@ -4048,6 +4185,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const nodes = scopedPaneSimulationManager(pane0 as unknown as PaneState)?.getSim()?.nodes() || [];
         const vp = pixi.viewport;
         const t = vp ? { k: vp.scale.x, x: vp.x, y: vp.y } : { k: 1, x: 0, y: 0 };
+        updateSemanticBodiesForViewport(nodeSprites.values(), t.k);
         updateGrid(pixi.gridLayer, cw, ch, { gridVis: $.gridVis, gridMode: $.gridMode, axisVis: $.axisVis, axisTicks: $.axisTicks, gridSp: $.gridSp, gridWidth: $.gridWidth, nodes, transform: t, dragX: $.draggingNode?.x ?? null, dragY: $.draggingNode?.y ?? null });
       }
       for (let i = 0; i < extraPanes.length; i++) {
@@ -4057,6 +4195,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const sm = scopedPaneSimulationManager(pi); const nodes = sm?.getSim()?.nodes() || [];
         const vp = px.viewport;
         const t = vp ? { k: vp.scale.x, x: vp.x, y: vp.y } : { k: 1, x: 0, y: 0 };
+        updateSemanticBodiesForViewport(extraSprites[i]?.values() || [], t.k);
         updateGrid(px.gridLayer, cw, ch, { gridVis: pi.gridVis, gridMode: pi.gridMode, axisVis: pi.axisVis, axisTicks: pi.axisTicks, gridSp: pi.gridSp, gridWidth: pi.gridWidth, nodes, transform: t, dragX: pi.draggingNode?.x ?? null, dragY: pi.draggingNode?.y ?? null });
       }
       renderPixiFrames();
@@ -4106,7 +4245,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   };
   const editCtx = createEditPanel(appShell, {
     get graph() { return paneRuntimeGraph(focusedPaneState()); },
-    getSelNode: () => $.selNode, setSelNode: v => { $.selNode = v; },
+    getSelNode: () => $.selNode, setSelNode: v => { $.selNode = v; syncFocusedCommands(); },
     getSelEdge: () => originalEdgeIndexForPane(focusedPaneState(), $.selEdge),
     setSelEdge: v => { $.selEdge = projectedEdgeIndexForPane(focusedPaneState(), v); },
     getSelGroup: () => $.selGroup, setSelGroup: v => { $.selGroup = v; },
@@ -5238,6 +5377,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const isSingleOrdinaryNode = !!node && hasSingleSelection && !isStructureNode(node);
     const level = node?.headingLevel || 6;
     return {
+      hasSelection: !!node && hasSingleSelection,
       isSingleOrdinaryNode,
       canRaiseHeading: isSingleOrdinaryNode && level > 1,
       canLowerHeading: isSingleOrdinaryNode && level < 6,
@@ -5278,6 +5418,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   };
   addBtn.onclick = createNodeInFocusedPane;
   addBtn.textContent = '+ 节点';
+  addBtn.dataset.mobileDuplicate = 'true';
   primaryRow.appendChild(addBtn);
   // 多分屏扩展数组（初始包含 pane1）
   const extraContainers: HTMLDivElement[] = [pane1Container];
@@ -5287,8 +5428,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const allPaneOwners = (): PaneState[] => [pane0 as unknown as PaneState, ...extraPanes];
   const paneRuntimeGraph = (pane: PaneState): GraphData => pane.index === PANE_LEFT ? graph : pane.runtime.graph;
-  const scopedPaneGraph = (pane: PaneState): GraphData => pane.structureView?.graph ?? paneRuntimeGraph(pane);
+  const scopedPaneGraph = (pane: PaneState): GraphData => pane.structureView?.graph
+    ?? pane.localContextProjection?.graph
+    ?? paneRuntimeGraph(pane);
   const scopedPaneSimulationManager = (pane: PaneState): any => pane.structureView?.simManager
+    ?? pane.localContextProjection?.simManager
     ?? (pane.index === PANE_LEFT ? simManager : pane.simManager);
 
   const canStartMembershipDrag = (pane: PaneState, runtime: GraphRuntime, nodeId: string): boolean => {
@@ -5531,7 +5675,22 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   };
   const enterStructureForPane = (pane: PaneState, id: string): void => {
     const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
-    const node = runtime.graph.nodes.find(candidate => candidate.id === id);
+    const node = scopedPaneGraph(pane).nodes.find(candidate => candidate.id === id);
+    const markdownSource = node?.resourceRef?.kind === 'markdown'
+      ? node.resourceRef
+      : node?.sourceRef?.kind === 'markdown' ? node.sourceRef : null;
+    if (markdownSource) {
+      void openMarkdownSourceEditor(pane, node);
+      return;
+    }
+    if (isCrossSpaceProxyNode(node)) {
+      openLocalContextForPane(pane, id);
+      return;
+    }
+    if (isSpaceReferenceNode(node)) {
+      void openSpaceReferenceTarget(pane, node);
+      return;
+    }
     if (isResourceReferenceNode(node)) {
       void openResourceReferenceTarget(pane, node);
       return;
@@ -5540,12 +5699,16 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       void openVaultProjectionTarget(pane, node);
       return;
     }
-    if (!isStructureNode(node)) return;
+    if (!isStructureNode(node)) {
+      openLocalContextForPane(pane, id);
+      return;
+    }
     if (pane.textViewActive || runtime.textEditActive) {
       showToast('文字视图或文字编辑锁已激活，无法进入结构内部', 'warning', 4000);
       return;
     }
     if (pane.structureView || !pane.structureController.enter(id)) return;
+    closeLocalContextForPane(pane);
     clearPaneStructureBoundaries(pane);
     pane.currentAnimationCancel?.();
     pane.currentAnimationCancel = null;
@@ -5587,8 +5750,21 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
     pane.disposeStructureBreadcrumb = () => pane.structureBreadcrumb?.dispose();
   };
+  const attachLocalContextNavigation = (pane: PaneState) => {
+    pane.localContextNavigator?.dispose();
+    pane.localContextNavigator = createLocalContextNavigator(
+      pane.index === PANE_LEFT ? pixiContainer : pane.canvasContainer,
+      {
+        back: () => backLocalContextForPane(pane),
+        close: () => closeLocalContextForPane(pane),
+        jump: pathIndex => jumpLocalContextForPane(pane, pathIndex),
+      },
+    );
+  };
   attachStructureNavigation(pane0 as unknown as PaneState);
+  attachLocalContextNavigation(pane0 as unknown as PaneState);
   attachStructureNavigation(pane1);
+  attachLocalContextNavigation(pane1);
 
   deleteNodesForPane = (pane, requestedIds) => {
     const runtimeGraph = paneRuntimeGraph(pane);
@@ -5651,7 +5827,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   deleteEdgesForPane = (pane, projectedIndexes) => {
     const runtimeGraph = paneRuntimeGraph(pane);
     if (runtimeGraph.settings?.sourceMode === 'vault-readonly') {
-      showToast('章节关系来自 Markdown 标题层级，不能在投影视图中删除', 'info', 3500);
+      showToast('这些关系来自 Markdown 原文（显式链接或标题层级），不能在投影视图中删除', 'info', 3800);
       return false;
     }
     const originalIndexes = [...new Set(projectedIndexes.map(index => originalEdgeIndexForPane(pane, index)))];
@@ -5793,7 +5969,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const runtime = paneRuntime(pane);
         if (runtime.graph.settings?.sourceMode === 'vault-readonly') {
           const source = runtime.graph.nodes[0]?.sourceRef as VaultSourceRef | undefined;
-          if (source?.path) void openVaultResourceInObsidian(source.path, source.heading);
+          if (source?.path) void openVaultResourceInObsidian(source.path, source.block ? `^${source.block}` : source.heading);
           showToast('Vault 文档保持单一原文；已交给 Obsidian 编辑', 'info', 3500);
           return;
         }
@@ -5954,6 +6130,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     extraSims.push(null);
     extraSprites.push(new Map());
     attachStructureNavigation(np);
+    attachLocalContextNavigation(np);
     mountTextEditor(np);
     // 先设置标签（同步），确保 renderAllTabs 能立即显示
     np.openTabs = [fileName]; np.activeTab = fileName;
@@ -5995,6 +6172,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (idx === 0 && extraPanes.length === 1) {
       // 仅剩 pane1 → 隐藏分屏（复用 pane1 数据）
       exitStructureForPane(extraPanes[0]);
+      extraPanes[0].localContextProjection?.simManager?.getSim?.()?.stop?.();
+      extraPanes[0].localContextProjection = null;
+      extraPanes[0].localContext = null;
+      extraPanes[0].localContextNavigator?.update(null, () => '');
       clearPaneStructureBoundaries(extraPanes[0]);
       clearPaneLayout(extraPanes[0]);
       dualPane.paneContainers[PANE_RIGHT].style.display = 'none';
@@ -6015,6 +6196,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     // 销毁目标窗格的布局与 pixi
     const np = extraPanes[idx];
     exitStructureForPane(np);
+    np.localContextProjection?.simManager?.getSim?.()?.stop?.();
+    np.localContextProjection = null;
+    np.localContext = null;
+    np.localContextNavigator?.dispose();
+    np.localContextNavigator = null;
     np.disposeStructureBreadcrumb?.();
     np.disposeStructureBreadcrumb = null;
     textEditors.get(np)?.dispose();
@@ -6166,7 +6352,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const topInset = topRect.bottom > canvasRect.top && topRect.top < canvasRect.bottom
       ? Math.max(14, topRect.bottom - canvasRect.top + 14)
       : 14;
-    const rightInset = 22, bottomInset = 30;
+    const mobileBar = document.querySelector<HTMLElement>('.fg-mobile-toolbar');
+    const mobileBarStyle = mobileBar ? getComputedStyle(mobileBar) : null;
+    const mobileBarRect = mobileBar && mobileBarStyle?.display !== 'none' && mobileBarStyle?.visibility !== 'hidden'
+      ? mobileBar.getBoundingClientRect() : null;
+    const rightInset = 22;
+    const bottomInset = mobileBarRect
+      ? Math.max(30, canvasRect.bottom - mobileBarRect.top + 18)
+      : 30;
     const availableWidth = Math.max(1, viewport.screenWidth - leftInset - rightInset);
     const availableHeight = Math.max(1, viewport.screenHeight - topInset - bottomInset);
     const width = Math.max(1, maxX - minX + 90);
@@ -6185,6 +6378,53 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
   }
 
+  /** Keep the reader's zoom and framing unless newly revealed content falls
+   * outside the usable canvas. In that case, pan only by the missing margin. */
+  function revealPaneNodes(targetPane: PaneState | any, nodes: any[], time = 280) {
+    const targetPixi = targetPane?.pixi ?? (targetPane === pane0 ? pixi : null);
+    if (!targetPixi || nodes.length === 0) return;
+    const viewport = targetPixi.viewport;
+    const scale = Math.max(0.01, viewport.scale.x || 1);
+    const canvasRect = targetPixi.app.canvas.getBoundingClientRect();
+    const sidebarRect = sidebar.sidebar.getBoundingClientRect();
+    const topRect = floatingTop.getBoundingClientRect();
+    const left = (sidebarRect.right > canvasRect.left && sidebarRect.left < canvasRect.right
+      ? Math.max(18, sidebarRect.right - canvasRect.left + 18)
+      : 18) + 22;
+    const top = (topRect.bottom > canvasRect.top && topRect.top < canvasRect.bottom
+      ? Math.max(18, topRect.bottom - canvasRect.top + 18)
+      : 18) + 22;
+    const right = viewport.screenWidth - 42;
+    const mobileBar = document.querySelector<HTMLElement>('.fg-mobile-toolbar');
+    const mobileBarStyle = mobileBar ? getComputedStyle(mobileBar) : null;
+    const mobileBarRect = mobileBar && mobileBarStyle?.display !== 'none' && mobileBarStyle?.visibility !== 'hidden'
+      ? mobileBar.getBoundingClientRect() : null;
+    const bottom = viewport.screenHeight - (mobileBarRect
+      ? Math.max(50, canvasRect.bottom - mobileBarRect.top + 20)
+      : 50);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const node of nodes) {
+      const screen = viewport.toScreen(node.x, node.y);
+      const card = node._semanticCard;
+      const halfWidth = (card?.width ? card.width / 2 : (node.radius || 9)) * scale;
+      const halfHeight = (card?.height ? card.height / 2 : (node.radius || 9)) * scale;
+      minX = Math.min(minX, screen.x - halfWidth);
+      maxX = Math.max(maxX, screen.x + halfWidth);
+      minY = Math.min(minY, screen.y - halfHeight);
+      maxY = Math.max(maxY, screen.y + halfHeight);
+    }
+    let dx = 0, dy = 0;
+    if (minX < left) dx = minX - left;
+    else if (maxX > right) dx = maxX - right;
+    if (minY < top) dy = minY - top;
+    else if (maxY > bottom) dy = maxY - bottom;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    viewport.animate({
+      position: { x: viewport.center.x + dx / scale, y: viewport.center.y + dy / scale },
+      time,
+    });
+  }
+
   function fitFocusedPane() {
     const targetPane = focusedExtraPane();
     const focusedPane = targetPane ?? pane0 as unknown as PaneState;
@@ -6196,6 +6436,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   linkBtn.className = 'fg-action fg-action-toggle';
   linkBtn.setAttribute('aria-pressed', 'false');
   linkBtn.textContent = '连线';
+  linkBtn.dataset.mobileDuplicate = 'true';
   linkBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   linkBtn.onclick = toggleFocusedLinkMode;
   primaryRow.appendChild(linkBtn);
@@ -6204,6 +6445,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const mobileToolbar = createMobileToolbar({
     createNode: createNodeInFocusedPane,
     createChildNode: createChildNodeInFocusedPane,
+    activateSelection: () => {
+      const pane = focusedPaneState();
+      const nodeId = pane.selNode;
+      if (nodeId) enterStructureForPane(pane, nodeId);
+    },
     raiseHeading: () => changeFocusedHeading(-1),
     lowerHeading: () => changeFocusedHeading(1),
     getSelectionState: focusedMobileSelectionState,
@@ -6848,32 +7094,39 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     suppliedVectors?: ReadonlyMap<string, readonly number[]>,
     requestLocalVectors = true,
     fitAfter = false,
+    animationDuration = 260,
   ) => {
-    const targetGraph = targetPane.graph as GraphData;
-    const targetSimManager = targetPane.simManager;
+    const targetGraph = scopedPaneGraph(targetPane as PaneState);
+    const targetSimManager = scopedPaneSimulationManager(targetPane as PaneState);
     if (!targetGraph || !targetSimManager) return;
     const signature = semanticGraphSignature(targetGraph);
     const cached = semanticVectorsByGraph.get(targetGraph);
     const semanticVectors = suppliedVectors ?? (cached?.signature === signature ? cached.vectors : undefined);
     const density = targetGraph.settings?.semanticCardDensity ?? 'mixed';
+    const localContext = targetPane.localContext as LocalContextState | null | undefined;
+    const localContextForms = { ...(targetGraph.settings?.semanticCardForms || {}) };
+    for (const member of localContext?.members || []) localContextForms[member.id] = 'card';
     const viewport = targetPane.pixi?.viewport;
     const previousScene = (targetGraph as any)._semanticScene;
     const lens = computeSemanticLens({
       nodes: targetGraph.nodes,
       edges: targetGraph.edges,
       echoes: Array.isArray(previousScene?.echoes) ? previousScene.echoes : [],
-      density,
+      density: localContext && density === 'nodes' ? 'mixed' : density,
       zoom: viewport?.scale?.x ?? 1,
       viewportWidth: targetPane.pixi?.app?.screen?.width ?? targetPane.gw ?? 960,
       viewportHeight: targetPane.pixi?.app?.screen?.height ?? targetPane.gh ?? 640,
-      focusNodeId: targetPane.selNode ?? null,
+      focusNodeId: localContext?.currentId ?? targetPane.selNode ?? null,
       previous: targetPane.semanticLensState,
-      manualForms: targetGraph.settings?.semanticCardForms,
+      manualForms: localContext ? localContextForms : targetGraph.settings?.semanticCardForms,
     });
     const collapsedNodeIds = lens.collapsedNodeIds;
     targetPane.semanticLensState = {
       band: lens.band,
       budget: lens.budget,
+      edgeLabelBudget: lens.edgeLabelBudget,
+      regionLabelBudget: lens.regionLabelBudget,
+      echoBudget: lens.echoBudget,
       focusNodeId: lens.focusNodeId,
       expandedNodeIds: lens.expandedNodeIds,
     };
@@ -6915,8 +7168,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (vectors.size < 2 || semanticGraphSignature(targetGraph) !== signature) return;
         semanticVectorsByGraph.set(targetGraph, { signature, vectors });
         const stillAutomatic = targetPane === pane0 ? activeMode === 'auto' : targetPane.activeMode === 'auto';
-        if (stillAutomatic && targetPane.graph === targetGraph) {
-          applySemanticPositions(targetPane, true, vectors, false, true);
+        if (stillAutomatic && scopedPaneGraph(targetPane as PaneState) === targetGraph) {
+          // Dense vectors arrive asynchronously. Refining card positions must
+          // not also take over the reader's camera or erase their current
+          // zoom/pan context.
+          applySemanticPositions(targetPane, true, vectors, false, false);
         }
       });
     }
@@ -6965,7 +7221,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       const controller = targetPane.layout.current;
       if (controller instanceof SemanticLayoutController) controller.markApplied();
       draw();
-      if (!animate || fitAfter) {
+      // Camera fitting is an explicit interaction. A synchronous/background
+      // layout pass is not permission to recenter the viewport.
+      if (fitAfter) {
         const fittedNodes = [...result.positions.values()].map(position => ({
           x: position.x,
           y: position.y,
@@ -6984,7 +7242,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       nodes: animationNodes,
       simNodes,
       getTarget: node => result.positions.get(node.id) ?? null,
-      duration: 420,
+      duration: animationDuration,
       easing: EASING.smoothStep,
       onFrame: () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); },
       onComplete: settle,
@@ -6995,12 +7253,111 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     let controller = targetPane.layout.current;
     if (!(controller instanceof SemanticLayoutController)) {
       controller = new SemanticLayoutController(
-        () => targetPane.graph,
+        () => scopedPaneGraph(targetPane as PaneState),
         () => applySemanticPositions(targetPane, true),
       );
       targetPane.layout.set(controller);
     }
     applySemanticPositions(targetPane, animate);
+  };
+
+  const LOCAL_CONTEXT_OPTIONS = { maxPerStep: 6, maxMembers: 24, maxDepth: 6 } as const;
+  const localContextEchoes = (pane: PaneState): readonly any[] => {
+    const scene = (scopedPaneGraph(pane) as any)._semanticScene
+      ?? (paneRuntimeGraph(pane) as any)._semanticScene;
+    return Array.isArray(scene?.echoes) ? scene.echoes : [];
+  };
+  const localContextNodeLabel = (pane: PaneState, id: string): string => {
+    const contextGraph = scopedPaneGraph(pane);
+    const node = contextGraph.nodes.find(candidate => String(candidate.id) === id);
+    if (!node) return '已离开的节点';
+    return resolveNodeDisplayLabel(node, new Map(contextGraph.nodes.map(candidate => [String(candidate.id), candidate])));
+  };
+  const installCrossSpaceProjection = (pane: PaneState, branches: readonly CrossSpaceBranch[]): void => {
+    pane.localContextProjection?.simManager?.getSim?.()?.stop?.();
+    if (branches.length === 0) {
+      pane.localContextProjection = null;
+      return;
+    }
+    const projection = composeCrossSpaceProjection(paneRuntimeGraph(pane), branches);
+    const view = { ...projection, simManager: null as any };
+    view.simManager = createSimManager(
+      view.graph,
+      () => pane.gw, () => pane.gh,
+      () => pane.linkDist, () => pane.linkStr, () => pane.charge, () => pane.centerS,
+      () => pane.collideR, () => pane.groupBound,
+      () => pane.alphaTarget, () => pane.heatingTime,
+      () => getCollapsedHierarchyHiddenNodeIds(view.graph),
+      () => draw(),
+    );
+    view.simManager.setStaticMode(true);
+    view.simManager.initStatic();
+    pane.localContextProjection = view;
+  };
+  const pruneCrossSpaceProjection = (pane: PaneState, next: LocalContextState | null): boolean => {
+    const projection = pane.localContextProjection;
+    if (!projection) return false;
+    const retained = next ? retainCrossSpaceBranches(projection.branches, next.path) : [];
+    if (retained.length === projection.branches.length) return false;
+    installCrossSpaceProjection(pane, retained);
+    return true;
+  };
+  const applyLocalContextState = (pane: PaneState, next: LocalContextState | null, animate = true): void => {
+    const projectionChanged = pruneCrossSpaceProjection(pane, next);
+    const resolved = projectionChanged && next
+      ? buildLocalContext(scopedPaneGraph(pane), localContextEchoes(pane), next.path, LOCAL_CONTEXT_OPTIONS)
+      : next;
+    pane.localContext = resolved;
+    if (resolved) {
+      pane.selNode = resolved.currentId;
+      pane.selEdge = null;
+      pane.selGroup = null;
+    }
+    syncLocalContextNavigator(pane);
+    if (pane.activeMode === 'auto' && !pane.structureView) activateSemanticLayoutForPane(pane, animate);
+    else draw();
+  };
+  syncLocalContextNavigator = pane => {
+    pane.localContextNavigator?.update(pane.localContext, id => localContextNodeLabel(pane, id));
+  };
+  openLocalContextForPane = (pane, nodeId) => {
+    if (pane.structureView || pane.activeMode !== 'auto') {
+      showToast('局部空间目前只在自动布局的整图中展开', 'info', 3000);
+      return;
+    }
+    const targetGraph = scopedPaneGraph(pane);
+    if (!targetGraph.nodes.some(node => String(node.id) === String(nodeId))) return;
+    const echoes = localContextEchoes(pane);
+    const previous = pane.localContext;
+    const next = previous
+      ? extendLocalContext(targetGraph, echoes, previous, nodeId, LOCAL_CONTEXT_OPTIONS)
+      : startLocalContext(targetGraph, echoes, nodeId, LOCAL_CONTEXT_OPTIONS);
+    if (!next) return;
+    if (previous && previous.path.length >= LOCAL_CONTEXT_OPTIONS.maxDepth && next.path.join('\u0000') === previous.path.join('\u0000')
+      && next.currentId !== String(nodeId)) {
+      showToast(`已经展开到 ${LOCAL_CONTEXT_OPTIONS.maxDepth} 层；可以先退回一层，再选择另一条脉络`, 'info', 3200);
+      return;
+    }
+    const first = !previous || next.rootId !== previous.rootId;
+    applyLocalContextState(pane, next, true);
+    if (first) showToast('已展开局部上下文 · 双击周围卡片可以继续深入', 'info', 3200);
+  };
+  backLocalContextForPane = pane => {
+    const current = pane.localContext;
+    if (!current) return;
+    applyLocalContextState(pane, backLocalContext(scopedPaneGraph(pane), localContextEchoes(pane), current, LOCAL_CONTEXT_OPTIONS), true);
+  };
+  closeLocalContextForPane = pane => applyLocalContextState(pane, null, true);
+  jumpLocalContextForPane = (pane, pathIndex) => {
+    const current = pane.localContext;
+    if (!current || pathIndex < 0 || pathIndex >= current.path.length) return;
+    const next = buildLocalContext(
+      scopedPaneGraph(pane),
+      localContextEchoes(pane),
+      current.path.slice(0, pathIndex + 1),
+      LOCAL_CONTEXT_OPTIONS,
+    );
+    applyLocalContextState(pane, next, true);
   };
 
   reloadVaultResourceViews = async (tabId: string) => {
@@ -7039,7 +7396,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const semanticLensTimers = new WeakMap<object, ReturnType<typeof setTimeout>>();
   refreshSemanticLensForPane = (targetPane) => {
-    const targetGraph = targetPane?.graph as GraphData | undefined;
+    const targetGraph = targetPane ? scopedPaneGraph(targetPane as PaneState) : undefined;
     if (!targetGraph || targetPane.activeMode !== 'auto'
       || (targetGraph.settings?.semanticCardDensity ?? 'mixed') !== 'mixed') return;
     const previous = targetPane.semanticLensState;
@@ -7048,17 +7405,25 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (previous?.band === nextBand && previous.focusNodeId === focusNodeId) return;
     const priorTimer = semanticLensTimers.get(targetPane);
     if (priorTimer) clearTimeout(priorTimer);
+    const focusChanged = previous?.focusNodeId !== focusNodeId;
+    if (focusChanged) {
+      semanticLensTimers.delete(targetPane);
+      applySemanticPositions(targetPane, true, undefined, true, false, 120);
+      return;
+    }
     const timer = setTimeout(() => {
       semanticLensTimers.delete(targetPane);
-      if (targetPane.activeMode === 'auto' && targetPane.graph === targetGraph) {
-        applySemanticPositions(targetPane, true, undefined, true, false);
+      if (targetPane.activeMode === 'auto' && scopedPaneGraph(targetPane as PaneState) === targetGraph) {
+        applySemanticPositions(targetPane, true, undefined, true, false, 160);
       }
-    }, 90);
+    }, 24);
     semanticLensTimers.set(targetPane, timer);
   };
 
   const exitLayoutMode = (toMode = 'auto') => {
     currentAnimationCancel?.();
+    const focused = focusedPaneIndex === PANE_LEFT ? pane0 as unknown as PaneState : extraPanes[focusedPaneIndex - 1];
+    if (toMode !== 'auto' && focused?.localContext) closeLocalContextForPane(focused);
     if (activeMode === 'tree') {
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
@@ -7178,6 +7543,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       return;
     }
     currentAnimationCancel?.(); // 取消正在进行的动画
+    if (mode !== 'auto' && layoutPane?.localContext) closeLocalContextForPane(layoutPane as PaneState);
     // 自动和力导向都尊重用户固定状态；进入展示布局前暂存。
     if ((activeMode === 'auto' || activeMode === 'force') && activeMode !== mode) saveFixedState();
     // 清理当前模式
@@ -7577,6 +7943,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     const legendEntries = [
       { text: '⌒ 明确', title: '用户创建的明确关系：稳定浅弧，不暗示方向' },
+      { text: '↗ 引用', title: 'Obsidian 双链、嵌入与反向链接：来自原文的权威关系，不是语义猜测' },
       { text: '⌁ 方向', title: '箭头、因果、依赖或先后关系：弧线与方向记号' },
       { text: '└ 结构', title: '层级、包含或归属关系：骨架式曲线' },
       { text: '┄ 回声', title: '算法观察到的语义相近：只在相关焦点附近出现' },
@@ -7610,6 +7977,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   controlsDiv.appendChild(controlsRow2);
 
   const groupDropdown = document.createElement('div');
+  groupDropdown.className = 'fg-group-dropdown';
   groupDropdown.style.cssText = `position:absolute;z-index:${Z_DROPDOWN};background:${V('--fg-surface','#fff')};border:1px solid ${V('--fg-border','#d0d0d0')};border-radius:4px;max-height:150px;overflow-y:auto;display:none;font-size:${V('--fg-font-md', '0.85em')};min-width:160px;`;
   groupInput.parentElement!.style.position = 'relative';
   groupInput.parentElement!.appendChild(groupDropdown);
@@ -7621,6 +7989,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (matched.length > 0) {
       matched.forEach(g => {
         const item = document.createElement('div');
+        item.className = 'fg-group-dropdown-item';
         item.style.cssText = 'padding:4px 8px;cursor:pointer;display:flex;align-items:center;gap:6px;';
         const dot = document.createElement('span');
         dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${g.color};flex-shrink:0;`;
@@ -7632,6 +8001,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       });
     }
     const createItem = document.createElement('div');
+    createItem.className = 'fg-group-dropdown-item fg-group-dropdown-create';
     createItem.style.cssText = `padding:4px 8px;cursor:pointer;color:#5B8FF9;font-style:italic;border-top:1px solid ${V('--fg-border-light','#eee')};`;
     createItem.textContent = `+ 创建集合 "${q}"`;
     createItem.onmousedown = (ev) => {
@@ -7654,42 +8024,788 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const referenceDestinationTabs = (sourcePane: PaneState): string[] => {
     const paneTabs = sourcePane.index === PANE_LEFT ? openTabs : sourcePane.openTabs;
-    const journeyOrigin = referenceJourneys.get(sourcePane.index)?.originTab;
+    const journeyStack = referenceJourneys.get(sourcePane.index) || [];
+    const journeyOrigin = journeyStack[journeyStack.length - 1]?.originTab;
     const current = paneLoadedTab(sourcePane);
     return [...new Set([
       ...(!isVaultLocationTabId(current) ? [current] : []),
       ...(journeyOrigin ? [journeyOrigin] : []),
       ...[...paneTabs].reverse(),
+      ..._flatTreePaths,
     ])].filter(tab => tab && !isVaultLocationTabId(tab) && !isBuiltin(tab));
+  };
+
+  const resourceReferencePreviewCache = new Map<string, Promise<string>>();
+  const vaultReadPermissionCache = new Map<string, Promise<boolean>>();
+  const referencePreviewHydrations = new WeakMap<object, Promise<boolean>>();
+
+  const graphReferenceCardSummary = (target: GraphData): string => {
+    const labels = (target.nodes || []).slice(0, 7)
+      .map((candidate: any) => String(candidate.label || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const counts = `${target.nodes?.length || 0} 个节点 · ${target.edges?.length || 0} 条线`;
+    return labels.length > 0 ? `${counts} · ${labels.join(' · ')}` : counts;
+  };
+
+  const unavailableReferenceCardPreview = (reference: ResourceReference): string => {
+    if (reference.kind === 'markdown') return '暂时无法读取笔记摘要 · 双击阅读';
+    if (reference.kind === 'graph') return '暂时无法读取图空间摘要 · 双击进入';
+    return vaultIndex ? resourceReferenceCardFallback(reference, vaultIndex) : '引用内容暂时不可用';
+  };
+
+  const ensureVaultReadPermission = (rootPath: string): Promise<boolean> => {
+    const cached = vaultReadPermissionCache.get(rootPath);
+    if (cached) return cached;
+    const ea = (window as any).electronAPI;
+    const request = Promise.resolve(ea?.addAllowedDir ? ea.addAllowedDir(rootPath) : { ok: true })
+      .then((result: any) => result?.error == null)
+      .catch(() => false);
+    vaultReadPermissionCache.set(rootPath, request);
+    return request;
+  };
+
+  const readVaultTextForPreview = async (relativePath: string): Promise<string | null> => {
+    const ea = (window as any).electronAPI;
+    const rootPath = vaultIndex?.rootPath || fileSystemMountPath;
+    if (!ea?.readFile || !rootPath || !await ensureVaultReadPermission(rootPath)) return null;
+    const raw = await ea.readFile(joinVaultPath(rootPath, relativePath));
+    return typeof raw === 'string' ? raw : null;
+  };
+
+  const readMarkdownEditorSource = async (target: { absolutePath: string }): Promise<string> => {
+    const ea = (window as any).electronAPI;
+    const rootPath = vaultIndex?.rootPath || fileSystemMountPath;
+    if (!ea?.readFile || !rootPath || !await ensureVaultReadPermission(rootPath)) {
+      throw new Error('Vault 目录尚未获得读取权限');
+    }
+    const raw = await ea.readFile(target.absolutePath);
+    if (typeof raw !== 'string') throw new Error(raw?.error || '文件无法读取');
+    return raw;
+  };
+
+  markdownSourceEditor = createMarkdownSourceEditor(appShell, {
+    readFile: readMarkdownEditorSource,
+    writeFile: async (target, content) => {
+      const ea = (window as any).electronAPI;
+      const rootPath = vaultIndex?.rootPath || fileSystemMountPath;
+      if (!ea?.writeFile || !rootPath || !await ensureVaultReadPermission(rootPath)) {
+        throw new Error('当前环境不能写入 Vault 原文');
+      }
+      const result = await ea.writeFile(target.absolutePath, content);
+      if (!result?.ok) throw new Error(result?.error || '写入没有完成');
+    },
+    confirmDiscard: title => confirmAction(
+      `“${title}”还有尚未保存的原文修改。`,
+      { confirm: '放弃修改', cancel: '继续编辑' },
+    ),
+    openInObsidian: target => {
+      void openVaultResourceInObsidian(target.path, target.block ? `^${target.block}` : target.heading);
+    },
+    notify: (message, type = 'info') => showToast(message, type, type === 'error' ? 6000 : 3200),
+    onSaved: async target => {
+      resourceReferencePreviewCache.clear();
+      await refreshVaultIndex();
+      const affectedTabs = new Set<string>([vaultTabId(target.path)]);
+      for (const runtime of runtimeRegistry.values()) {
+        if (isVaultLocationTabId(runtime.fileName)) affectedTabs.add(runtime.fileName);
+      }
+      for (const tabId of affectedTabs) await reloadVaultResourceViews(tabId);
+      draw();
+    },
+  });
+
+  openMarkdownSourceEditor = async (sourcePane, node) => {
+    const reference = (node?.resourceRef?.kind === 'markdown'
+      ? node.resourceRef
+      : node?.sourceRef?.kind === 'markdown' ? node.sourceRef : null) as VaultSourceRef | null;
+    const rootPath = vaultIndex?.rootPath || fileSystemMountPath;
+    if (!reference?.path || !rootPath || !markdownSourceEditor) {
+      showToast('Vault 尚未连接，暂时无法编辑原文', 'warning', 3500);
+      return;
+    }
+    if (node?._resourceReferenceStatus === 'broken') {
+      showToast(`引用目标不存在：${reference.path}`, 'warning', 4200);
+      return;
+    }
+    const title = String(node?.label || reference.displayLabel || vaultDisplayName(vaultTabId(reference.path))).trim() || '未命名笔记';
+    const opened = await markdownSourceEditor.open({
+      path: normalizeVaultPath(reference.path),
+      absolutePath: joinVaultPath(rootPath, reference.path),
+      title,
+      heading: reference.heading,
+      headingPath: reference.headingPath,
+      block: reference.block,
+      line: reference.line,
+      editable: !!(window as any).electronAPI?.writeFile,
+    });
+    if (opened && focusedPaneIndex !== sourcePane.index) switchFocusedPane(sourcePane.index);
+  };
+
+  const loadResourceReferenceCardPreview = (reference: ResourceReference): Promise<string> => {
+    if (!vaultIndex) return Promise.resolve('连接 Vault 后读取内容');
+    const fallback = resourceReferenceCardFallback(reference, vaultIndex);
+    if (reference.kind === 'folder') return Promise.resolve(fallback);
+    const fingerprint = reference.fingerprint
+      ? `${reference.fingerprint.size}:${reference.fingerprint.mtime}`
+      : 'unversioned';
+    const key = `${normalizeVaultPath(vaultIndex.rootPath || fileSystemMountPath || '')}:${reference.kind}:${normalizeVaultPath(reference.path)}:${reference.heading || ''}:${reference.block || ''}:${reference.line || ''}:${fingerprint}`;
+    const cached = resourceReferencePreviewCache.get(key);
+    if (cached) return cached;
+    let cacheable = true;
+    const request = (async () => {
+      if (reference.kind === 'markdown') {
+        const raw = await readVaultTextForPreview(reference.path);
+        if (typeof raw !== 'string') {
+          cacheable = false;
+          return unavailableReferenceCardPreview(reference);
+        }
+        return markdownResourceReferenceExcerpt(raw, reference) || '空白笔记';
+      }
+      if (reference.kind === 'graph') {
+        const graphFile = vaultGraphFileName(vaultIndex!, reference.path);
+        if (!graphFile) {
+          cacheable = false;
+          return unavailableReferenceCardPreview(reference);
+        }
+        let target = runtimeRegistry.get(graphFile)?.graph || null;
+        if (!target) {
+          const result = await adapter.readFile(graphFile);
+          if (result.ok && result.value) {
+            try { target = JSON.parse(result.value) as GraphData; } catch { target = null; }
+          }
+        }
+        if (!target) cacheable = false;
+        return target ? graphReferenceCardSummary(target) : unavailableReferenceCardPreview(reference);
+      }
+      return fallback;
+    })().catch(() => {
+      cacheable = false;
+      return unavailableReferenceCardPreview(reference);
+    });
+    resourceReferencePreviewCache.set(key, request);
+    void request.finally(() => {
+      if (!cacheable && resourceReferencePreviewCache.get(key) === request) {
+        resourceReferencePreviewCache.delete(key);
+      }
+    });
+    return request;
+  };
+
+  const hydrateResourceReferenceNodePreview = async (node: any): Promise<boolean> => {
+    if (!isResourceReferenceNode(node)) return false;
+    const preview = node._resourceReferenceStatus === 'broken'
+      ? '引用目标暂时不可用'
+      : await loadResourceReferenceCardPreview(node.resourceRef);
+    if (node._resourceReferencePreview === preview) return false;
+    node._resourceReferencePreview = preview;
+    return true;
+  };
+
+  hydrateGraphResourceReferencePreviews = async (data: GraphData): Promise<boolean> => {
+    if (!vaultIndex || data.settings?.sourceMode === 'vault-readonly') return false;
+    const changes = await Promise.all((data.nodes || []).map(hydrateResourceReferenceNodePreview));
+    return changes.some(Boolean);
   };
 
   const referenceSourceNode = (reference: ResourceReference): any => {
     const resource = reference.kind === 'folder' ? null : vaultResourceForPath(reference.path);
     const label = reference.displayLabel || resource?.title || resource?.name?.replace(/\.[^.]+$/, '')
       || reference.path.split('/').pop() || '引用';
-    const folderCount = reference.kind === 'folder' && vaultIndex
-      ? vaultFolderToGraph(vaultIndex, reference.path, fileSystemMountPath || vaultIndex.rootPath).nodes.length
-      : 0;
     return {
       label,
       headingLevel: reference.kind === 'folder' ? 2 : reference.kind === 'markdown' ? 3 : 4,
       tags: reference.kind === 'folder' ? ['文件夹'] : reference.kind === 'graph' ? ['图空间'] : [reference.kind],
-      note: reference.kind === 'folder'
-        ? `包含 ${folderCount} 项 · 引用自 ${reference.path || '/'}`
-        : `${reference.kind === 'markdown' ? 'Markdown' : reference.kind === 'graph' ? 'NodeSpace 图空间' : reference.kind.toUpperCase()} · ${reference.path}`,
+      note: '',
+      _resourceReferencePreview: vaultIndex && reference.kind === 'folder'
+        ? resourceReferenceCardFallback(reference, vaultIndex)
+        : '',
     };
   };
 
-  const refreshRuntimeForReferenceChange = (runtime: GraphRuntime) => {
+  const refreshRuntimeForReferenceChange = (runtime: GraphRuntime, animate = true) => {
     normalizeStructureRelations(runtime.graph);
     for (const owner of allPaneOwners()) {
       const ownerRuntime = owner.index === PANE_LEFT ? primaryRuntime : owner.runtime;
       if (ownerRuntime !== runtime) continue;
-      if (owner.activeMode === 'auto') activateSemanticLayoutForPane(owner, true);
+      if (owner.activeMode === 'auto') activateSemanticLayoutForPane(owner, animate);
       else scopedPaneSimulationManager(owner)?.initSim?.();
     }
     refreshStructureViews(runtime);
     draw();
+  };
+
+  ensureGraphResourceReferencePreviews = (data: GraphData) => {
+    if (!vaultIndex || data.settings?.sourceMode === 'vault-readonly' || referencePreviewHydrations.has(data)) return;
+    const needsPreview = (data.nodes || []).some((node: any) => isResourceReferenceNode(node)
+      && (!String(node._resourceReferencePreview || '').trim()
+        || isResourceReferenceLoadingPreview(node._resourceReferencePreview)));
+    if (!needsPreview) return;
+    const request = hydrateGraphResourceReferencePreviews(data);
+    referencePreviewHydrations.set(data, request);
+    void request.then(changed => {
+      referencePreviewHydrations.delete(data);
+      if (!changed) return;
+      const runtime = [...runtimeRegistry.values()].find(candidate => candidate.graph === data);
+      if (runtime) refreshRuntimeForReferenceChange(runtime, false);
+      else draw();
+    }).catch(() => {
+      referencePreviewHydrations.delete(data);
+    });
+  };
+
+  const spaceReferenceHydrations = new WeakMap<object, Promise<boolean>>();
+  const sameGraphId = (left: string, right: string) =>
+    normalizeSpaceGraphId(left).toLocaleLowerCase('zh-CN') === normalizeSpaceGraphId(right).toLocaleLowerCase('zh-CN');
+
+  const readSpaceReferenceSourceGraph = async (graphId: string, ownerGraph?: string, ownerData?: GraphData): Promise<GraphData | null> => {
+    const normalized = normalizeSpaceGraphId(graphId);
+    if (ownerData && ownerGraph && sameGraphId(normalized, ownerGraph)) return ownerData;
+    const openRuntime = [...runtimeRegistry.values()].find(runtime => sameGraphId(runtime.fileName, normalized));
+    if (openRuntime) return openRuntime.graph;
+    const result = await adapter.readFile(normalized);
+    if (result.ok && result.value) {
+      try { return repairGraphCreatedOrders(JSON.parse(result.value) as GraphData); } catch { return null; }
+    }
+    const stored = await createStorage(normalized).readData();
+    return stored ? repairGraphCreatedOrders(stored) : null;
+  };
+
+  const resolveSpaceReferenceTarget = async (
+    reference: SpaceReference,
+    ownerGraph = '',
+    ownerData?: GraphData,
+  ): Promise<ResolvedSpaceReference> => {
+    const source = await readSpaceReferenceSourceGraph(reference.graph, ownerGraph, ownerData);
+    return resolveSpaceReference(reference, source);
+  };
+
+  hydrateGraphSpaceReferences = async (data: GraphData, ownerGraph: string): Promise<boolean> => {
+    const changes = await Promise.all((data.nodes || []).map(async node => {
+      if (!isSpaceReferenceNode(node)) return false;
+      const before = JSON.stringify([
+        node.label,
+        node._spaceReferenceStatus,
+        node._spaceReferencePreview,
+        node._spaceReferenceLabel,
+        node._spaceReferenceNodeIds,
+        node._spaceReferenceMiniMap,
+      ]);
+      hydrateSpaceReferenceNode(node, await resolveSpaceReferenceTarget(node.spaceRef, ownerGraph, data));
+      return before !== JSON.stringify([
+        node.label,
+        node._spaceReferenceStatus,
+        node._spaceReferencePreview,
+        node._spaceReferenceLabel,
+        node._spaceReferenceNodeIds,
+        node._spaceReferenceMiniMap,
+      ]);
+    }));
+    return changes.some(Boolean);
+  };
+
+  ensureGraphSpaceReferences = (data: GraphData, ownerGraph: string) => {
+    if (spaceReferenceHydrations.has(data)) return;
+    const needsHydration = (data.nodes || []).some(node => isSpaceReferenceNode(node)
+      && (!node._spaceReferenceStatus || !String(node._spaceReferencePreview || '').trim()));
+    if (!needsHydration) return;
+    const request = hydrateGraphSpaceReferences(data, ownerGraph);
+    spaceReferenceHydrations.set(data, request);
+    void request.then(changed => {
+      spaceReferenceHydrations.delete(data);
+      if (!changed) return;
+      const runtime = [...runtimeRegistry.values()].find(candidate => candidate.graph === data);
+      if (runtime) refreshRuntimeForReferenceChange(runtime, false);
+      else draw();
+    }).catch(() => { spaceReferenceHydrations.delete(data); });
+  };
+
+  refreshOpenSpaceReferences = async (sourceGraph?: string) => {
+    const jobs: Promise<void>[] = [];
+    const seen = new Set<GraphRuntime>();
+    for (const runtime of runtimeRegistry.values()) {
+      if (seen.has(runtime)) continue;
+      seen.add(runtime);
+      const relevant = !sourceGraph || runtime.graph.nodes.some(node => isSpaceReferenceNode(node)
+        && sameGraphId(node.spaceRef.graph, sourceGraph));
+      if (!relevant) continue;
+      jobs.push(hydrateGraphSpaceReferences(runtime.graph, runtime.fileName).then(changed => {
+        if (changed) refreshRuntimeForReferenceChange(runtime, false);
+      }));
+    }
+    await Promise.all(jobs);
+  };
+
+  interface SpacePlacementEntry {
+    reference: SpaceReference;
+    source: any;
+    sourceLocalId?: string;
+  }
+
+  const placeSpaceReferencesInGraph = async (
+    targetTab: string,
+    entries: SpacePlacementEntry[],
+    sourceEdges: any[] = [],
+  ): Promise<boolean> => {
+    if (isVaultLocationTabId(targetTab) || isBuiltin(targetTab)) return false;
+    const runtime = runtimeRegistry.get(targetTab) || [...runtimeRegistry.values()].find(candidate => sameGraphId(candidate.fileName, targetTab)) || null;
+    const owner = runtime
+      ? allPaneOwners().find(candidate => (candidate.index === PANE_LEFT ? primaryRuntime : candidate.runtime) === runtime) || null
+      : null;
+    const center = (owner ? panePixi(owner)?.viewport.center : null) ?? { x: 0, y: 0 };
+    const targetGraph = runtime?.graph ?? await readGraphData(targetTab);
+    if (!targetGraph || targetGraph.settings?.sourceMode === 'vault-readonly') {
+      showToast(`无法写入“${graphTabLabel(targetTab)}”`, 'warning', 3200);
+      return false;
+    }
+    const existingByKey = new Map<string, any>((targetGraph.nodes || [])
+      .filter(isSpaceReferenceNode)
+      .map(node => [spaceReferenceKey(node.spaceRef), node]));
+    const occurrenceBySourceId = new Map<string, string>();
+    const created: any[] = [];
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index];
+      const existing = existingByKey.get(spaceReferenceKey(entry.reference));
+      if (existing) {
+        if (entry.sourceLocalId) occurrenceBySourceId.set(entry.sourceLocalId, existing.id);
+        continue;
+      }
+      const columns = Math.max(1, Math.ceil(Math.sqrt(entries.length)));
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      const node = createSpaceReferenceNode(entry.reference, entry.source, {
+        x: center.x + (column - (columns - 1) / 2) * 190,
+        y: center.y + (row - (Math.ceil(entries.length / columns) - 1) / 2) * 130,
+      });
+      hydrateSpaceReferenceNode(node, await resolveSpaceReferenceTarget(entry.reference));
+      created.push(node);
+      existingByKey.set(spaceReferenceKey(entry.reference), node);
+      if (entry.sourceLocalId) occurrenceBySourceId.set(entry.sourceLocalId, node.id);
+    }
+    if (created.length === 0) {
+      showToast('这些内容已经在目标空间中', 'info', 2400);
+      return true;
+    }
+    runtime?.undoManager.pushSnapshot(targetGraph);
+    assignCreatedOrders(created, targetGraph.nodes);
+    targetGraph.nodes.push(...created);
+    const createdEdges: any[] = [];
+    for (const sourceEdge of sourceEdges) {
+      const sourceId = String(typeof sourceEdge.source === 'object' ? sourceEdge.source.id : sourceEdge.source);
+      const targetId = String(typeof sourceEdge.target === 'object' ? sourceEdge.target.id : sourceEdge.target);
+      const occurrenceSource = occurrenceBySourceId.get(sourceId);
+      const occurrenceTarget = occurrenceBySourceId.get(targetId);
+      if (!occurrenceSource || !occurrenceTarget || targetGraph.edges.some(edge => {
+        const currentSource = String(typeof edge.source === 'object' ? edge.source.id : edge.source);
+        const currentTarget = String(typeof edge.target === 'object' ? edge.target.id : edge.target);
+        return currentSource === occurrenceSource && currentTarget === occurrenceTarget;
+      })) continue;
+      createdEdges.push({
+        ...JSON.parse(JSON.stringify(sourceEdge)),
+        source: occurrenceSource,
+        target: occurrenceTarget,
+        spaceRelationRef: {
+          provider: 'nodespace', version: 1,
+          graph: entries[0]?.reference.graph || '',
+          sourceNodeId: sourceId, targetNodeId: targetId,
+        },
+      });
+    }
+    targetGraph.edges.push(...createdEdges);
+    targetGraph.settings = {
+      ...DEFAULT_SETTINGS,
+      ...(targetGraph.settings || {}),
+      semanticCardForms: {
+        ...(targetGraph.settings?.semanticCardForms || {}),
+        ...Object.fromEntries(created.map(node => [node.id, 'card'])),
+      },
+    };
+    if (runtime) {
+      scheduleSaveForRuntime(runtime);
+      refreshRuntimeForReferenceChange(runtime);
+    } else if (!await writeGraphData(targetTab, targetGraph)) {
+      return false;
+    }
+    showToast(`已在「${graphTabLabel(targetTab)}」放入 ${created.length} 个实时引用${createdEdges.length ? ` · ${createdEdges.length} 条关系` : ''}`, 'success', 3400);
+    return true;
+  };
+
+  const compositionDestinationTabs = (sourcePane: PaneState): string[] => {
+    const source = paneLoadedTab(sourcePane);
+    return referenceDestinationTabs(sourcePane)
+      .filter(tab => /\.json$/i.test(tab))
+      .filter(tab => !sameGraphId(tab, source));
+  };
+
+  const shareNodesToSpace = async (sourcePane: PaneState, nodeIds: string[], targetTab: string) => {
+    const sourceGraphId = paneLoadedTab(sourcePane);
+    const sourceGraph = paneRuntimeGraph(sourcePane);
+    if (sourceGraph.settings?.sourceMode === 'vault-readonly' || isBuiltin(sourceGraphId)) {
+      showToast('只读空间和示例图不能作为共享内容的本体', 'warning', 3200);
+      return;
+    }
+    const selected = new Set(nodeIds.map(String));
+    const entries = sourceGraph.nodes.filter(node => selected.has(String(node.id))).map(node => ({
+      reference: isSpaceReferenceNode(node) ? { ...node.spaceRef } : createNodeSpaceReference(sourceGraphId, node),
+      source: node,
+      sourceLocalId: String(node.id),
+    }));
+    const edges = sourceGraph.edges.filter(edge => {
+      const source = String(typeof edge.source === 'object' ? edge.source.id : edge.source);
+      const target = String(typeof edge.target === 'object' ? edge.target.id : edge.target);
+      return selected.has(source) && selected.has(target);
+    });
+    await placeSpaceReferencesInGraph(targetTab, entries, edges);
+  };
+
+  const placeWholeSpacePortal = async (sourcePane: PaneState, targetTab: string) => {
+    const sourceGraphId = paneLoadedTab(sourcePane);
+    if (sourcePane.graph.settings?.sourceMode === 'vault-readonly' || isBuiltin(sourceGraphId)) return;
+    const reference = createWholeSpaceReference(sourceGraphId, graphTabLabel(sourceGraphId));
+    await placeSpaceReferencesInGraph(targetTab, [{ reference, source: { label: reference.displayLabel, headingLevel: 2 } }]);
+  };
+
+  const placeFragmentPortal = async (sourcePane: PaneState, nodeIds: string[], targetTab: string) => {
+    const runtime = sourcePane.index === PANE_LEFT ? primaryRuntime : sourcePane.runtime;
+    const sourceGraphId = runtime.fileName;
+    if (runtime.graph.settings?.sourceMode === 'vault-readonly' || isBuiltin(sourceGraphId)) return;
+    runtime.undoManager.pushSnapshot(runtime.graph);
+    const fragment = createSpaceFragment(runtime.graph, nodeIds);
+    if (fragment.nodeIds.length === 0) return;
+    scheduleSaveForRuntime(runtime);
+    const reference = createFragmentSpaceReference(sourceGraphId, fragment);
+    await placeSpaceReferencesInGraph(targetTab, [{ reference, source: { label: fragment.label, headingLevel: 2 } }]);
+  };
+
+  const rectLike = (rect: DOMRect): RectLike => ({
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height,
+  });
+
+  const transitionPause = (duration: number) => new Promise<void>(resolve => window.setTimeout(resolve, duration));
+  const transitionPaint = () => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const transitionDuration = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 1 : 315;
+
+  const setSpaceTransitionRect = (surface: HTMLElement, rect: RectLike) => {
+    surface.style.left = `${Math.round(rect.left)}px`;
+    surface.style.top = `${Math.round(rect.top)}px`;
+    surface.style.width = `${Math.round(rect.width)}px`;
+    surface.style.height = `${Math.round(rect.height)}px`;
+  };
+
+  const usableSpaceTransitionRect = (pane: PaneState): RectLike | null => {
+    const px = panePixi(pane);
+    if (!px) return null;
+    const canvas = rectLike(px.app.canvas.getBoundingClientRect());
+    const side = sidebar.sidebar.getBoundingClientRect();
+    const top = floatingTop.getBoundingClientRect();
+    const overlapsSidebar = side.right > canvas.left && side.left < canvas.left + canvas.width;
+    const overlapsTop = top.bottom > canvas.top && top.top < canvas.top + canvas.height;
+    return expandedSpacePortalRect(canvas, {
+      left: overlapsSidebar ? Math.max(16, side.right - canvas.left + 14) : 16,
+      top: overlapsTop ? Math.max(16, top.bottom - canvas.top + 14) : 16,
+      right: 18,
+      bottom: 22,
+    });
+  };
+
+  const captureSpacePortalAnchorForNode = (pane: PaneState, node: any): NormalizedSpacePortalAnchor | null => {
+    const px = panePixi(pane);
+    if (!px) return null;
+    const simNode = scopedPaneSimulationManager(pane)?.getSim()?.nodes()
+      .find((candidate: any) => String(candidate.id) === String(node.id)) || node;
+    if (!Number.isFinite(Number(simNode?.x)) || !Number.isFinite(Number(simNode?.y))) return null;
+    const canvas = rectLike(px.app.canvas.getBoundingClientRect());
+    const screen = px.viewport.toScreen(Number(simNode.x), Number(simNode.y));
+    const card = simNode._semanticCard || node._semanticCard;
+    const zoom = Math.max(0.05, Number(px.viewport.scale.x) || 1);
+    const nodeRadius = Math.max(9, Number(card?.nodeRadius) || Number(simNode.radius) || 12);
+    const width = Math.max(48, Math.min(canvas.width * 0.72, Number(card?.width || nodeRadius * 2 + 28) * zoom));
+    const height = Math.max(48, Math.min(canvas.height * 0.68, Number(card?.height || nodeRadius * 2 + 28) * zoom));
+    const portal = {
+      left: canvas.left + screen.x - width / 2,
+      top: canvas.top + screen.y - height / 2,
+      width,
+      height,
+    };
+    return normalizeSpacePortalAnchor(canvas, portal);
+  };
+
+  const captureSpacePortalTransition = (
+    pane: PaneState,
+    node: any,
+    resolved: ResolvedSpaceReference,
+    capturedAnchor?: NormalizedSpacePortalAnchor | null,
+  ): SpacePortalTransitionSnapshot | null => {
+    const anchor = capturedAnchor || captureSpacePortalAnchorForNode(pane, node);
+    if (!anchor) return null;
+    return {
+      anchor,
+      label: resolved.label,
+      kind: resolved.reference.kind,
+      miniMap: resolved.miniMap,
+    };
+  };
+
+  const captureVaultReferenceTransition = (
+    pane: PaneState,
+    node: any,
+    reference: ResourceReference,
+    capturedAnchor?: NormalizedSpacePortalAnchor | null,
+  ): SpacePortalTransitionSnapshot | null => {
+    const anchor = capturedAnchor || captureSpacePortalAnchorForNode(pane, node);
+    if (!anchor) return null;
+    return {
+      anchor,
+      label: node.label || reference.displayLabel || vaultDisplayName(vaultTabId(reference.path)),
+      kind: reference.kind,
+      miniMap: { points: [], edges: [] },
+    };
+  };
+
+  const createSpaceTransitionMap = (snapshot: SpacePortalTransitionSnapshot): SVGSVGElement => {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.classList.add('fg-space-transition-map');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    const points = new Map(snapshot.miniMap.points.map(point => [point.id, point]));
+    for (const edge of snapshot.miniMap.edges) {
+      const source = points.get(edge.source), target = points.get(edge.target);
+      if (!source || !target) continue;
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', String(8 + source.x * 84));
+      line.setAttribute('y1', String(9 + source.y * 76));
+      line.setAttribute('x2', String(8 + target.x * 84));
+      line.setAttribute('y2', String(9 + target.y * 76));
+      svg.appendChild(line);
+    }
+    const labels = [...snapshot.miniMap.points]
+      .filter(point => String(point.label || '').trim())
+      .sort((left, right) => (Number(left.level) || 6) - (Number(right.level) || 6))
+      .slice(0, 8);
+    for (const point of snapshot.miniMap.points) {
+      const x = 8 + point.x * 84, y = 9 + point.y * 76;
+      const circle = document.createElementNS(ns, 'circle');
+      circle.setAttribute('cx', String(x));
+      circle.setAttribute('cy', String(y));
+      circle.setAttribute('r', String(1.55 + (6 - Math.max(1, Math.min(6, Number(point.level) || 6))) * 0.18));
+      svg.appendChild(circle);
+      if (labels.includes(point)) {
+        const text = document.createElementNS(ns, 'text');
+        const characters = Array.from(String(point.label || '').trim());
+        text.textContent = characters.length > 9 ? `${characters.slice(0, 8).join('')}…` : characters.join('');
+        text.setAttribute('x', String(x));
+        text.setAttribute('y', String(Math.min(95, y + 5.5)));
+        svg.appendChild(text);
+      }
+    }
+    if (snapshot.miniMap.points.length === 0) {
+      const circle = document.createElementNS(ns, 'circle');
+      circle.setAttribute('cx', '50');
+      circle.setAttribute('cy', '48');
+      circle.setAttribute('r', '4');
+      svg.appendChild(circle);
+    }
+    return svg;
+  };
+
+  const createSpaceTransitionOverlay = (snapshot: SpacePortalTransitionSnapshot, initialRect: RectLike) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'fg-space-transition';
+    overlay.setAttribute('aria-hidden', 'true');
+    const surface = document.createElement('div');
+    surface.className = 'fg-space-transition-surface';
+    surface.dataset.kind = snapshot.kind;
+    setSpaceTransitionRect(surface, initialRect);
+    const header = document.createElement('div');
+    header.className = 'fg-space-transition-header';
+    const title = document.createElement('div');
+    title.className = 'fg-space-transition-title';
+    title.textContent = snapshot.label;
+    const kind = document.createElement('div');
+    kind.className = 'fg-space-transition-kind';
+    kind.textContent = snapshot.kind === 'node'
+      ? '共享节点'
+      : snapshot.kind === 'fragment'
+        ? '空间片段'
+        : snapshot.kind === 'space'
+          ? '空间'
+          : snapshot.kind === 'markdown'
+            ? 'Obsidian 笔记'
+            : snapshot.kind === 'folder'
+              ? '资料夹空间'
+              : snapshot.kind === 'graph'
+                ? 'NodeSpace 图空间'
+                : snapshot.kind === 'pdf'
+                  ? 'PDF 文档'
+                  : 'Vault 资源';
+    header.append(title, kind);
+    surface.append(createSpaceTransitionMap(snapshot), header);
+    overlay.appendChild(surface);
+    appShell.appendChild(overlay);
+    return { overlay, surface };
+  };
+
+  const playSpacePortalEntryTransition = async (
+    pane: PaneState,
+    snapshot: SpacePortalTransitionSnapshot | null,
+    enter: () => Promise<void>,
+  ) => {
+    const px = panePixi(pane);
+    const expanded = usableSpaceTransitionRect(pane);
+    if (!snapshot || !px || !expanded) {
+      await enter();
+      return;
+    }
+    const canvas = rectLike(px.app.canvas.getBoundingClientRect());
+    const initial = resolveSpacePortalAnchor(canvas, snapshot.anchor);
+    const { overlay, surface } = createSpaceTransitionOverlay(snapshot, initial);
+    const duration = transitionDuration();
+    try {
+      await transitionPaint();
+      overlay.classList.add('is-active');
+      setSpaceTransitionRect(surface, expanded);
+      await transitionPause(duration);
+      await enter();
+      await transitionPaint();
+      overlay.classList.add('is-complete');
+      await transitionPause(duration === 1 ? 1 : 180);
+    } finally {
+      overlay.remove();
+    }
+  };
+
+  const playSpacePortalReturnTransition = async (
+    pane: PaneState,
+    snapshot: SpacePortalTransitionSnapshot,
+    leave: () => Promise<void>,
+  ) => {
+    const expanded = usableSpaceTransitionRect(pane);
+    const px = panePixi(pane);
+    if (!expanded || !px) {
+      await leave();
+      return;
+    }
+    const { overlay, surface } = createSpaceTransitionOverlay(snapshot, expanded);
+    overlay.classList.add('is-active');
+    const duration = transitionDuration();
+    try {
+      await transitionPaint();
+      await leave();
+      await transitionPaint();
+      const currentPixi = panePixi(pane);
+      const canvas = currentPixi ? rectLike(currentPixi.app.canvas.getBoundingClientRect()) : expanded;
+      overlay.classList.remove('is-active');
+      overlay.classList.add('is-returning');
+      setSpaceTransitionRect(surface, resolveSpacePortalAnchor(canvas, snapshot.anchor));
+      await transitionPause(duration);
+      overlay.classList.add('is-complete');
+      await transitionPause(duration === 1 ? 1 : 150);
+    } finally {
+      overlay.remove();
+    }
+  };
+
+  const showSpaceReferencePreview = async (sourcePane: PaneState, node: any) => {
+    if (!isSpaceReferenceNode(node)) return;
+    const resolved = await resolveSpaceReferenceTarget(node.spaceRef, paneLoadedTab(sourcePane), paneRuntimeGraph(sourcePane));
+    hydrateSpaceReferenceNode(node, resolved);
+    if (resolved.status === 'broken') {
+      showToast('引用的节点、片段或空间已经不存在', 'warning', 3800);
+      draw();
+      return;
+    }
+    const px = panePixi(sourcePane);
+    const simNode = scopedPaneSimulationManager(sourcePane)?.getSim()?.nodes()
+      .find((candidate: any) => candidate.id === node.id) || node;
+    if (!px || !simNode) return;
+    const nodeContent = node.spaceRef.kind === 'node' ? String(resolved.nodes[0]?.note || resolved.preview) : '';
+    const content = node.spaceRef.kind === 'node'
+      ? [`# ${resolved.label}`, '', nodeContent || '空白节点'].join('\n')
+      : [`# ${resolved.label}`, '', `${resolved.nodes.length} 个节点 · ${resolved.edges.length} 条线`, '',
+        ...resolved.nodes.slice(0, 48).map(candidate => `- ${candidate.label || candidate.id}`),
+        ...(resolved.nodes.length > 48 ? ['', `另有 ${resolved.nodes.length - 48} 个节点…`] : [])].join('\n');
+    showMedia(mediaOverlayContainer, node.id, resolved.label, 'md', content, node.color || '#5B8FF9', () => {
+      const screen = px.viewport.toScreen(simNode.x, simNode.y);
+      const rect = px.app.canvas.getBoundingClientRect();
+      return { x: rect.left + screen.x, y: rect.top + screen.y };
+    }, () => { px.viewport.pause = true; }, () => { px.viewport.pause = false; }, true, () => {
+      manuallyOpenedMediaIds.delete(node.id);
+      draw();
+    });
+    manuallyOpenedMediaIds.add(node.id);
+    draw();
+  };
+
+  const focusSpaceReferenceTarget = (pane: PaneState, resolved: ResolvedSpaceReference) => {
+    pane.spaceFocusNodeIds = resolved.reference.kind === 'fragment' ? [...resolved.nodeIds] : null;
+    if (resolved.reference.kind === 'space') return;
+    setTimeout(() => {
+      const targetGraph = paneRuntimeGraph(pane);
+      const wanted = new Set(resolved.nodeIds);
+      const targets = targetGraph.nodes.filter(candidate => wanted.has(String(candidate.id)));
+      if (targets.length === 0) return;
+      sharedState.setSelectedNodeIds?.(targets.map(candidate => candidate.id));
+      pane.selNode = targets.length === 1 ? targets[0].id : null;
+      fitPaneNodes(pane, targets, 420);
+      draw();
+    }, 620);
+  };
+
+  const openSpaceReferenceTarget = async (sourcePane: PaneState, node: any) => {
+    if (!isSpaceReferenceNode(node)) return;
+    // Double-click also produces ordinary tap/focus work. Capture the camera and
+    // entrance synchronously so async source resolution cannot move either.
+    const entryViewport = panePixi(sourcePane)?.viewport;
+    const entryViewportState = entryViewport
+      ? { centerX: entryViewport.center.x, centerY: entryViewport.center.y, scale: entryViewport.scale.x }
+      : null;
+    const entryPortalAnchor = captureSpacePortalAnchorForNode(sourcePane, node);
+    const resolved = await resolveSpaceReferenceTarget(node.spaceRef, paneLoadedTab(sourcePane), paneRuntimeGraph(sourcePane));
+    hydrateSpaceReferenceNode(node, resolved);
+    if (resolved.status === 'broken') {
+      showToast('引用目标已经不存在', 'warning', 3800);
+      draw();
+      return;
+    }
+    if (blockForTextDraft('进入引用')) return;
+    if (focusedPaneIndex !== sourcePane.index) switchFocusedPane(sourcePane.index);
+    const originTab = paneLoadedTab(sourcePane);
+    const targetTab = normalizeSpaceGraphId(node.spaceRef.graph);
+    if (sameGraphId(originTab, targetTab)) {
+      focusSpaceReferenceTarget(sourcePane, resolved);
+      showToast(node.spaceRef.kind === 'space' ? '这个入口指向当前空间' : '已定位到当前空间中的本体', 'info', 2400);
+      return;
+    }
+    const stack = referenceJourneys.get(sourcePane.index) || [];
+    if (navigationWouldCycle([...stack.map(item => item.originTab), originTab], targetTab)) {
+      showToast('这个入口会回到当前进入路径，已阻止循环进入', 'warning', 3500);
+      return;
+    }
+    const spaceTransition = captureSpacePortalTransition(sourcePane, node, resolved, entryPortalAnchor) || undefined;
+    stack.push({
+      originTab,
+      originLabel: graphTabLabel(originTab),
+      targetTab,
+      targetLabel: resolved.label,
+      targetKind: 'graph',
+      viewport: entryViewportState,
+      spaceTransition,
+    });
+    referenceJourneys.set(sourcePane.index, stack);
+    referenceNavigationInFlight.add(sourcePane.index);
+    try {
+      await playSpacePortalEntryTransition(sourcePane, spaceTransition || null, async () => {
+        await openTab(targetTab);
+        syncVaultSpaceBreadcrumb();
+        focusSpaceReferenceTarget(sourcePane, resolved);
+      });
+    } finally {
+      referenceNavigationInFlight.delete(sourcePane.index);
+    }
+    syncVaultSpaceBreadcrumb();
   };
 
   const placeResourceReferenceInGraph = async (
@@ -7710,6 +8826,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       return false;
     }
     const node = createResourceReferenceNode(sourceNode, reference, { x: center.x, y: center.y });
+    await hydrateResourceReferenceNodePreview(node);
     assignCreatedOrder(node, targetGraph.nodes);
     runtime?.undoManager.pushSnapshot(targetGraph);
     targetGraph.nodes.push(node);
@@ -7754,28 +8871,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   refreshOpenResourceReferences = () => {
     if (!vaultIndex) return;
     const seen = new Set<GraphRuntime>();
+    const previewJobs: Promise<void>[] = [];
     for (const runtime of runtimeRegistry.values()) {
       if (seen.has(runtime) || runtime.graph.settings?.sourceMode === 'vault-readonly') continue;
       seen.add(runtime);
       const report = reconcileGraphResourceReferences(runtime.graph, vaultIndex, fileSystemMountPath || vaultIndex.rootPath);
-      if (report.repaired > 0) scheduleSaveForRuntime(runtime);
+      if (report.repaired > 0 || report.cleaned > 0) scheduleSaveForRuntime(runtime);
+      previewJobs.push(hydrateGraphResourceReferencePreviews(runtime.graph).then(changed => {
+        if (changed) refreshRuntimeForReferenceChange(runtime);
+      }));
     }
     draw();
-  };
-
-  const markdownSectionForReference = (markdown: string, reference: ResourceReference): string => {
-    if (!reference.heading && !reference.line) return markdown;
-    const lines = markdown.split(/\r?\n/);
-    const start = Math.max(0, Math.min(lines.length - 1, (reference.line || 1) - 1));
-    const headingMatch = lines[start]?.match(/^\s{0,3}(#{1,6})\s+/);
-    if (!headingMatch) return markdown;
-    const level = headingMatch[1].length;
-    let end = lines.length;
-    for (let index = start + 1; index < lines.length; index++) {
-      const match = lines[index].match(/^\s{0,3}(#{1,6})\s+/);
-      if (match && match[1].length <= level) { end = index; break; }
-    }
-    return lines.slice(start, end).join('\n');
+    void Promise.all(previewJobs);
   };
 
   const showReferencePreview = async (sourcePane: PaneState, node: any) => {
@@ -7807,7 +8914,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         showToast('无法读取 Markdown 原文', 'error', 3500);
         return;
       }
-      content = markdownSectionForReference(raw, reference);
+      content = markdownSectionForResourceReference(raw, reference);
     } else if (reference.kind === 'graph') {
       type = 'md';
       const graphFile = vaultGraphFileName(vaultIndex, reference.path);
@@ -7830,18 +8937,140 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       draw();
     }, 'reader', reference.kind !== 'folder' ? {
       label: '在 Obsidian 中打开',
-      onSelect: () => { void openVaultResourceInObsidian(reference.path, reference.heading); },
+      onSelect: () => { void openVaultResourceInObsidian(reference.path, reference.block ? `^${reference.block}` : reference.heading); },
     } : undefined);
     manuallyOpenedMediaIds.add(node.id);
     draw();
   };
 
+  const referencedNodeAnchor = (targetGraph: GraphData, reference: ResourceReference): string | null => {
+    const target = targetGraph.nodes.find((candidate: any) =>
+      (reference.block && candidate.sourceRef?.block === reference.block)
+      || (reference.headingPath && candidate.sourceRef?.headingPath === reference.headingPath)
+      || (reference.heading?.includes('#') && String(candidate.sourceRef?.headingPath || '').endsWith(reference.heading))
+      || (reference.heading && candidate.sourceRef?.heading === reference.heading)
+      || (reference.line && candidate.sourceRef?.line === reference.line));
+    return target ? String(target.id) : targetGraph.nodes[0] ? String(targetGraph.nodes[0].id) : null;
+  };
+
+  const resolveCrossSpaceTarget = async (sourcePane: PaneState, node: any): Promise<CrossSpaceTarget | null> => {
+    if (isSpaceReferenceNode(node)) {
+      const proxySource = node._localContextProxy;
+      const ownerGraph = proxySource?.sourceGraph || paneLoadedTab(sourcePane);
+      const ownerData = proxySource ? undefined : paneRuntimeGraph(sourcePane);
+      const resolved = await resolveSpaceReferenceTarget(node.spaceRef, ownerGraph, ownerData);
+      hydrateSpaceReferenceNode(node, resolved);
+      if (resolved.status === 'broken' || resolved.nodes.length === 0) return null;
+      const sourceGraph = normalizeSpaceGraphId(node.spaceRef.graph);
+      return {
+        sourceKey: `nodespace:${sourceGraph.toLocaleLowerCase('zh-CN')}`,
+        sourceKind: 'nodespace',
+        sourceLabel: resolved.label,
+        sourceGraph,
+        graph: { nodes: resolved.nodes, edges: resolved.edges, groups: [] },
+        anchorNodeId: node.spaceRef.kind === 'node' ? node.spaceRef.nodeId : resolved.nodeIds[0],
+      };
+    }
+
+    const reference = node?.resourceRef as ResourceReference | undefined;
+    if (!reference || !vaultIndex) return null;
+    reconcileGraphResourceReferences({ nodes: [node], edges: [], groups: [] }, vaultIndex, fileSystemMountPath || vaultIndex.rootPath);
+    if (node._resourceReferenceStatus === 'broken') return null;
+    let targetTab = '';
+    if (reference.kind === 'folder') targetTab = vaultSpaceTabId(reference.path);
+    else if (reference.kind === 'graph') targetTab = vaultGraphFileName(vaultIndex, reference.path) || '';
+    else if (reference.kind === 'markdown') targetTab = vaultTabId(reference.path);
+    else return null;
+    if (!targetTab) return null;
+    const targetGraph = await readGraphData(targetTab);
+    if (!targetGraph || targetGraph.nodes.length === 0) return null;
+    return {
+      sourceKey: `vault:${targetTab.toLocaleLowerCase('zh-CN')}`,
+      sourceKind: 'vault',
+      sourceLabel: reference.displayLabel || graphTabLabel(targetTab),
+      sourceGraph: targetTab,
+      graph: targetGraph,
+      anchorNodeId: referencedNodeAnchor(targetGraph, reference),
+    };
+  };
+
+  expandCrossSpaceLocalContextForPane = async (pane, nodeId) => {
+    if (pane.structureView || pane.activeMode !== 'auto') {
+      showToast('跨空间上下文目前只在自动布局的整图中展开', 'info', 3200);
+      return;
+    }
+    const entryNode = scopedPaneGraph(pane).nodes.find(candidate => String(candidate.id) === String(nodeId));
+    if (!entryNode || (!isSpaceReferenceNode(entryNode) && !isResourceReferenceNode(entryNode))) {
+      showToast('这张卡片没有可展开的空间引用', 'info', 2800);
+      return;
+    }
+    const target = await resolveCrossSpaceTarget(pane, entryNode);
+    if (!target) {
+      showToast('引用目标不可用，或它不是可以展开为卡片的空间', 'warning', 3800);
+      draw();
+      return;
+    }
+    const branch = createCrossSpaceBranch(entryNode, target, LOCAL_CONTEXT_OPTIONS.maxPerStep);
+    if (!branch) {
+      showToast('引用目标中暂时没有可以展开的内容', 'info', 3000);
+      return;
+    }
+    const previous = pane.localContext;
+    let path: string[];
+    if (!previous || !previous.members.some(member => member.id === String(entryNode.id))) {
+      path = [String(entryNode.id)];
+    } else {
+      const entryPathIndex = previous.path.indexOf(String(entryNode.id));
+      path = entryPathIndex >= 0
+        ? previous.path.slice(0, entryPathIndex + 1)
+        : [...previous.path, String(entryNode.id)];
+    }
+    if (path.includes(branch.anchorProxyId)) {
+      showToast(`“${branch.sourceLabel}”已经在这条观察路径中`, 'info', 2600);
+      return;
+    }
+    if (path.length + 1 > LOCAL_CONTEXT_OPTIONS.maxDepth) {
+      showToast(`已经展开到 ${LOCAL_CONTEXT_OPTIONS.maxDepth} 层；可以先退回一层，再进入另一空间`, 'info', 3400);
+      return;
+    }
+    const branches = [
+      ...(pane.localContextProjection?.branches || []).filter(candidate => candidate.id !== branch.id),
+      branch,
+    ];
+    installCrossSpaceProjection(pane, branches);
+    const next = buildLocalContext(
+      scopedPaneGraph(pane),
+      localContextEchoes(pane),
+      [...path, branch.anchorProxyId],
+      LOCAL_CONTEXT_OPTIONS,
+    );
+    if (!next) {
+      installCrossSpaceProjection(pane, branches.filter(candidate => candidate.id !== branch.id));
+      return;
+    }
+    applyLocalContextState(pane, next, true);
+    setTimeout(() => {
+      const currentProjection = pane.localContextProjection;
+      if (!currentProjection?.branches.some(candidate => candidate.id === branch.id)) return;
+      const anchor = currentProjection.graph.nodes.find(candidate => String(candidate.id) === branch.anchorProxyId);
+      if (anchor) revealPaneNodes(pane, [anchor], 300);
+    }, 300);
+    showToast(
+      `已在原地展开“${branch.sourceLabel}” · ${branch.proxyNodes.length} 张卡片${branch.omittedCount ? ` · 另 ${branch.omittedCount} 张已收束` : ''}`,
+      'success',
+      3800,
+    );
+  };
+
   const focusEnteredReference = (pane: PaneState, reference: ResourceReference) => {
-    if (!reference.heading && !reference.line) return;
+    if (!reference.heading && !reference.block && !reference.line) return;
     setTimeout(() => {
       const targetGraph = paneRuntimeGraph(pane);
       const target = targetGraph.nodes.find((candidate: any) =>
-        candidate.sourceRef?.heading === reference.heading
+        (reference.block && candidate.sourceRef?.block === reference.block)
+        || (reference.headingPath && candidate.sourceRef?.headingPath === reference.headingPath)
+        || (reference.heading?.includes('#') && String(candidate.sourceRef?.headingPath || '').endsWith(reference.heading))
+        || candidate.sourceRef?.heading === reference.heading
         || (reference.line && candidate.sourceRef?.line === reference.line));
       const viewport = panePixi(pane)?.viewport;
       if (!target || !viewport) return;
@@ -7857,6 +9086,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       showToast('Vault 尚未连接，暂时无法进入引用', 'warning', 3500);
       return;
     }
+    // Capture before reconciliation/opening can trigger a redraw or auto-layout.
+    // Explicit Obsidian-link cards therefore return to the exact visual doorway.
+    const entryViewport = panePixi(sourcePane)?.viewport;
+    const entryViewportState = entryViewport
+      ? { centerX: entryViewport.center.x, centerY: entryViewport.center.y, scale: entryViewport.scale.x }
+      : null;
+    const entryAnchor = node?._obsidianLinkRole ? captureSpacePortalAnchorForNode(sourcePane, node) : null;
     reconcileGraphResourceReferences({ nodes: [node], edges: [], groups: [] }, vaultIndex, fileSystemMountPath || vaultIndex.rootPath);
     if (node._resourceReferenceStatus === 'broken') {
       showToast(`引用目标不存在：${reference.path}`, 'warning', 4200);
@@ -7883,33 +9119,69 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       return;
     }
     const viewport = panePixi(sourcePane)?.viewport;
-    referenceJourneys.set(sourcePane.index, {
+    const referenceTransition = node?._obsidianLinkRole
+      ? captureVaultReferenceTransition(sourcePane, node, reference, entryAnchor)
+      : null;
+    const stack = referenceJourneys.get(sourcePane.index) || [];
+    const graphPath = [...stack.map(item => item.originTab), originTab];
+    if (navigationWouldCycle(graphPath, targetTab)) {
+      showToast('这个入口会回到当前进入路径，已阻止循环进入', 'warning', 3500);
+      return;
+    }
+    stack.push({
       originTab,
       originLabel: graphTabLabel(originTab),
       targetTab,
       targetLabel: reference.displayLabel || graphTabLabel(targetTab),
       targetKind: isVaultLocationTabId(targetTab) ? 'vault' : 'graph',
-      viewport: viewport ? { centerX: viewport.center.x, centerY: viewport.center.y, scale: viewport.scale.x } : null,
+      viewport: entryViewportState || (viewport ? { centerX: viewport.center.x, centerY: viewport.center.y, scale: viewport.scale.x } : null),
+      ...(referenceTransition ? { spaceTransition: referenceTransition } : {}),
     });
-    await openTab(targetTab);
+    referenceJourneys.set(sourcePane.index, stack);
+    referenceNavigationInFlight.add(sourcePane.index);
+    try {
+      await playSpacePortalEntryTransition(sourcePane, referenceTransition, async () => {
+        await openTab(targetTab);
+        syncVaultSpaceBreadcrumb();
+        focusEnteredReference(sourcePane, reference);
+      });
+    } finally {
+      referenceNavigationInFlight.delete(sourcePane.index);
+    }
     syncVaultSpaceBreadcrumb();
-    focusEnteredReference(sourcePane, reference);
   };
 
   returnFromResourceReference = async () => {
-    const journey = referenceJourneys.get(focusedPaneIndex);
+    const stack = referenceJourneys.get(focusedPaneIndex) || [];
+    const journey = stack.pop();
     if (!journey) return;
     const pane = focusedPaneState();
-    referenceJourneys.delete(focusedPaneIndex);
-    await openTab(journey.originTab);
+    if (stack.length > 0) referenceJourneys.set(focusedPaneIndex, stack);
+    else referenceJourneys.delete(focusedPaneIndex);
+    const restoreViewport = () => {
+      if (!journey.viewport) return;
+      const viewport = panePixi(pane)?.viewport;
+      if (!viewport || paneLoadedTab(pane) !== journey.originTab) return;
+      viewport.setZoom(journey.viewport.scale, false);
+      viewport.moveCenter(journey.viewport.centerX, journey.viewport.centerY);
+      draw();
+    };
+    const leave = async () => {
+      await openTab(journey.originTab);
+      syncVaultSpaceBreadcrumb();
+      restoreViewport();
+    };
+    referenceNavigationInFlight.add(focusedPaneIndex);
+    try {
+      if (journey.spaceTransition) await playSpacePortalReturnTransition(pane, journey.spaceTransition, leave);
+      else await leave();
+    } finally {
+      referenceNavigationInFlight.delete(focusedPaneIndex);
+    }
     syncVaultSpaceBreadcrumb();
     if (journey.viewport) {
       setTimeout(() => {
-        const viewport = panePixi(pane)?.viewport;
-        if (!viewport || paneLoadedTab(pane) !== journey.originTab) return;
-        viewport.setZoom(journey.viewport!.scale, false);
-        viewport.moveCenter(journey.viewport!.centerX, journey.viewport!.centerY);
-        draw();
+        restoreViewport();
       }, 620);
     }
   };
@@ -7937,7 +9209,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       draw();
     }, 'reader', node.sourceRef?.path ? {
       label: '在 Obsidian 中打开',
-      onSelect: () => { void openVaultResourceInObsidian(node.sourceRef.path, node.sourceRef.heading); },
+      onSelect: () => { void openVaultResourceInObsidian(node.sourceRef.path, node.sourceRef.block ? `^${node.sourceRef.block}` : node.sourceRef.heading); },
     } : undefined);
     manuallyOpenedMediaIds.add(node.id);
     draw();
@@ -7974,6 +9246,39 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const _runtimeGraph = _runtime.graph;
     const _px = targetPane?.pixi ?? pixi!;
     const _sm = scopedPaneSimulationManager(focusedPane);
+    const projectedNode = type === 'node' && id ? _g.nodes.find(candidate => String(candidate.id) === String(id)) : null;
+    const projectedEdge = type === 'edge' && id !== null ? _g.edges[Number(id)] : null;
+    if (type === 'blank' && focusedPane.localContext) {
+      items.push({ label: focusedPane.localContextProjection ? '跨空间局部视图 · 不修改原图' : '局部视图 · 不修改观察范围', disabled: true });
+      if (focusedPane.localContext.path.length > 1) {
+        items.push({ label: '退回上一层', action: () => backLocalContextForPane(focusedPane) });
+      }
+      items.push({ label: '收束并返回整图', action: () => closeLocalContextForPane(focusedPane) });
+      showContextMenu(appShell, mx, my, items);
+      return;
+    }
+    if (isCrossSpaceProxyNode(projectedNode) || isCrossSpaceProxyEdge(projectedEdge)) {
+      const source = projectedNode?._localContextProxy;
+      items.push({
+        label: source ? `临时投影 · 来自“${source.sourceLabel}”` : '跨空间临时关系',
+        disabled: true,
+      });
+      if (projectedNode) {
+        if (projectedNode.resourceRef?.kind === 'markdown' || projectedNode.sourceRef?.kind === 'markdown') {
+          items.push({ label: '编辑 Markdown 原文', action: () => { void openMarkdownSourceEditor(focusedPane, projectedNode); } });
+        }
+        items.push({ label: '从这里继续观察', action: () => openLocalContextForPane(focusedPane, String(projectedNode.id)) });
+        if (isSpaceReferenceNode(projectedNode) || isResourceReferenceNode(projectedNode)) {
+          items.push({ label: '在此展开下一空间', action: () => { void expandCrossSpaceLocalContextForPane(focusedPane, String(projectedNode.id)); } });
+        }
+      }
+      if ((focusedPane.localContext?.path.length || 0) > 1) {
+        items.push({ label: '退回上一层', action: () => backLocalContextForPane(focusedPane) });
+      }
+      items.push({ label: '收束局部空间', action: () => closeLocalContextForPane(focusedPane) });
+      showContextMenu(appShell, mx, my, items);
+      return;
+    }
     if ((type === 'node' && isPaneStructureProxyNode(focusedPane.structureView, id))
       || (type === 'edge' && isPaneStructureProxyEdge(focusedPane.structureView, id === null ? null : Number(id)))) {
       items.push({ label: '只读入口（退出内部视图后编辑）', disabled: true });
@@ -7988,6 +9293,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const reference = source ? createVaultResourceReference(source, vaultIndex) : null;
         const referenceNode = reference ? { ...node, resourceRef: reference, _resourceReferenceStatus: 'ok' } : null;
         if (reference && referenceNode) {
+          if (source?.kind === 'markdown') {
+            items.push({ label: '编辑原文', action: () => { void openMarkdownSourceEditor(focusedPane, node); } });
+          }
           const destinations = referenceDestinationTabs(focusedPane);
           if (destinations.length === 1) {
             items.push({
@@ -8013,7 +9321,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           items.push({ label: node.mediaType === 'md' ? '阅读全文/小节' : '打开媒体', action: () => openVaultNodeContent(focusedPane, node) });
         }
         if (source?.kind === 'markdown') {
-          items.push({ label: '在 Obsidian 中打开原文', action: () => { void openVaultResourceInObsidian(source.path, source.heading); } });
+          items.push({ label: '在 Obsidian 中打开原文', action: () => { void openVaultResourceInObsidian(source.path, source.block ? `^${source.block}` : source.heading); } });
         }
         items.push({ separator: true });
         items.push({ label: '由 Vault 原文生成 · 只读', disabled: true });
@@ -8068,6 +9376,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
       // 复制框选节点
       if (sharedState.selectedNodeIds.length >= 1) {
+        const selectedIds = [...sharedState.selectedNodeIds];
+        const destinations = compositionDestinationTabs(focusedPane);
+        if (destinations.length > 0) {
+          items.push({
+            label: `共享所选到其他空间 (${selectedIds.length})`,
+            children: destinations.map(destination => ({
+              label: graphTabLabel(destination),
+              action: () => { void shareNodesToSpace(focusedPane, selectedIds, destination); },
+            })),
+          });
+          items.push({
+            label: `将所选作为整体入口 (${selectedIds.length})`,
+            children: destinations.map(destination => ({
+              label: graphTabLabel(destination),
+              action: () => { void placeFragmentPortal(focusedPane, selectedIds, destination); },
+            })),
+          });
+        }
         items.push({
           label: `复制所选 (${sharedState.selectedNodeIds.length})`,
           action: () => {
@@ -8084,6 +9410,16 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
             };
             showToast(`已复制 ${selNodes.length} 个节点${selEdges.length ? `及 ${selEdges.length} 条内部边` : ''}`, 'success');
           },
+        });
+      }
+      const spaceDestinations = compositionDestinationTabs(focusedPane);
+      if (spaceDestinations.length > 0) {
+        items.push({
+          label: '将当前空间作为入口',
+          children: spaceDestinations.map(destination => ({
+            label: graphTabLabel(destination),
+            action: () => { void placeWholeSpacePortal(focusedPane, destination); },
+          })),
         });
       }
       // 粘贴剪贴板节点
@@ -8158,6 +9494,56 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       });
     } else if (type === 'node' && id) {
       const node = _g.nodes.find(n => n.id === id);
+      if (node && focusedPane.activeMode === 'auto' && !focusedPane.structureView && !isStructureNode(node)) {
+        const inCurrentContext = focusedPane.localContext?.members.some(member => member.id === id) ?? false;
+        items.push({
+          label: focusedPane.localContext
+            ? inCurrentContext ? '从这里继续展开上下文' : '以此为新的局部起点'
+            : '展开局部上下文',
+          action: () => openLocalContextForPane(focusedPane, id),
+        });
+        if (focusedPane.localContext) {
+          items.push({ label: '收束局部空间', action: () => closeLocalContextForPane(focusedPane) });
+          items.push({ separator: true });
+        }
+      }
+      const spaceReference = isSpaceReferenceNode(node) ? node.spaceRef : null;
+      if (spaceReference && node) {
+        if (node._spaceReferenceStatus === 'broken') {
+          items.push({ label: '入口失效 · 来源已不存在', disabled: true });
+        }
+        items.push({ label: spaceReference.kind === 'node' ? '预览共享内容' : '预览空间摘要', action: () => { void showSpaceReferencePreview(focusedPane, node); } });
+        if (focusedPane.activeMode === 'auto' && !focusedPane.structureView) {
+          items.push({ label: '在此展开目标上下文', action: () => { void expandCrossSpaceLocalContextForPane(focusedPane, id); } });
+        }
+        items.push({ label: spaceReference.kind === 'node' ? '进入本体' : spaceReference.kind === 'fragment' ? '进入来源并聚焦片段' : '进入空间', action: () => { void openSpaceReferenceTarget(focusedPane, node); } });
+        const destinations = compositionDestinationTabs(focusedPane);
+        if (destinations.length > 0) {
+          items.push({
+            label: '将这个入口放入其他空间',
+            children: destinations.map(destination => ({
+              label: graphTabLabel(destination),
+              action: () => { void placeSpaceReferencesInGraph(destination, [{ reference: { ...spaceReference }, source: node }]); },
+            })),
+          });
+        }
+        if (focusedPane.activeMode === 'auto' && !focusedPane.structureView) {
+          const visibleAsNode = node._semanticCard?.form === 'node';
+          items.push({
+            label: visibleAsNode ? '展开为入口卡片' : '收束为入口节点',
+            action: () => {
+              const forms = { ...(_runtimeGraph.settings?.semanticCardForms || {}), [id]: visibleAsNode ? 'card' as const : 'node' as const };
+              _runtimeGraph.settings = { ...(_runtimeGraph.settings ?? DEFAULT_SETTINGS), semanticCardForms: forms };
+              scheduleSaveForRuntime(_runtime);
+              activateSemanticLayoutForPane(focusedPane, true);
+            },
+          });
+        }
+        items.push({ separator: true });
+        items.push({ label: '从当前空间移除', action: () => { deleteNodesForPane(focusedPane, [id]); } });
+        showContextMenu(appShell, mx, my, items);
+        return;
+      }
       const resourceReference = isResourceReferenceNode(node) ? node.resourceRef : null;
       const isMedia = !!node?.mediaType && !resourceReference;
       const moreItems: ContextMenuItem[] = [];
@@ -8170,16 +9556,34 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           items.push({ label: `引用失效 · ${resourceReference.path}`, disabled: true });
           items.push({ label: '重新扫描并尝试修复', action: () => { void refreshVaultIndex(); } });
         }
+        if (resourceReference.kind === 'markdown') {
+          items.push({ label: '编辑 Markdown 原文', action: () => { void openMarkdownSourceEditor(focusedPane, node); } });
+        }
         items.push({ label: '快速预览', action: () => { void showReferencePreview(focusedPane, node); } });
+        if (focusedPane.activeMode === 'auto'
+          && !focusedPane.structureView
+          && (resourceReference.kind === 'folder' || resourceReference.kind === 'markdown' || resourceReference.kind === 'graph')) {
+          items.push({ label: '在此展开目标上下文', action: () => { void expandCrossSpaceLocalContextForPane(focusedPane, id); } });
+        }
         if (resourceReference.kind !== 'image' && resourceReference.kind !== 'audio'
           && resourceReference.kind !== 'video' && resourceReference.kind !== 'pdf') {
           items.push({ label: '进入引用', action: () => { void openResourceReferenceTarget(focusedPane, node); } });
         }
         if (resourceReference.kind !== 'folder') {
           items.push({ label: '在 Obsidian 中打开原文', action: () => {
-            void openVaultResourceInObsidian(resourceReference.path, resourceReference.heading);
+            void openVaultResourceInObsidian(resourceReference.path, resourceReference.block ? `^${resourceReference.block}` : resourceReference.heading);
           } });
         }
+      }
+      const nodeShareDestinations = compositionDestinationTabs(focusedPane);
+      if (node && nodeShareDestinations.length > 0) {
+        addItem({
+          label: '共享到其他空间',
+          children: nodeShareDestinations.map(destination => ({
+            label: graphTabLabel(destination),
+            action: () => { void shareNodesToSpace(focusedPane, [id], destination); },
+          })),
+        }, true);
       }
       addItem({ label: '编辑', action: () => { fillNode(id); } }, true);
       const hlNode = _g.nodes.find(n => n.id === id);
@@ -8195,6 +9599,23 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       // 框选多个普通节点时可直接收束为结构
       if (sharedState.selectedNodeIds.length >= 2) {
         const ids = sharedState.selectedNodeIds;
+        const destinations = compositionDestinationTabs(focusedPane);
+        if (destinations.length > 0) {
+          items.unshift({
+            label: `将所选作为整体入口 (${ids.length})`,
+            children: destinations.map(destination => ({
+              label: graphTabLabel(destination),
+              action: () => { void placeFragmentPortal(focusedPane, [...ids], destination); },
+            })),
+          });
+          items.unshift({
+            label: `共享所选到其他空间 (${ids.length})`,
+            children: destinations.map(destination => ({
+              label: graphTabLabel(destination),
+              action: () => { void shareNodesToSpace(focusedPane, [...ids], destination); },
+            })),
+          });
+        }
         const structureEligible = ids.every(nid => {
           const selected = _g.nodes.find(n => n.id === nid);
           return selected && !isStructureNode(selected) && !selected.structureParentId;
@@ -8615,8 +10036,15 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const runtimeGraph = () => paneRuntimeGraph(pi);
     const effectiveGraph = paneGraphFacade(pi, scopedPaneGraph);
     const isVaultProjection = () => runtimeGraph().settings?.sourceMode === 'vault-readonly';
-    const isReadOnlyNode = (id: string | null | undefined) => isVaultProjection() || isPaneStructureProxyNode(pi.structureView, id);
-    const isReadOnlyEdge = (index: number | null | undefined) => isVaultProjection() || isPaneStructureProxyEdge(pi.structureView, index);
+    const isSpaceOccurrence = (id: string | null | undefined) => Boolean(id && isSpaceReferenceNode(runtimeGraph().nodes.find(node => node.id === id)));
+    const effectiveNode = (id: string | null | undefined) => id ? scopedPaneGraph(pi).nodes.find(node => String(node.id) === String(id)) : null;
+    const effectiveEdge = (index: number | null | undefined) => index === null || index === undefined ? null : scopedPaneGraph(pi).edges[index];
+    const isReadOnlyNode = (id: string | null | undefined) => isVaultProjection()
+      || isPaneStructureProxyNode(pi.structureView, id)
+      || isCrossSpaceProxyNode(effectiveNode(id));
+    const isReadOnlyEdge = (index: number | null | undefined) => isVaultProjection()
+      || isPaneStructureProxyEdge(pi.structureView, index)
+      || isCrossSpaceProxyEdge(effectiveEdge(index));
     const getOriginalEdgeIndex = (index: number) => getPaneOriginalEdgeIndex(pi.structureView, index);
     const fillProjectedEdge = (index: number) => {
       const originalIndex = getOriginalEdgeIndex(index);
@@ -8628,8 +10056,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     };
     const showReadOnlyHint = (kind: 'node' | 'edge') => showToast(
       isVaultProjection()
-        ? (kind === 'node' ? '这是 Vault 原文的投影卡片；单击可阅读，编辑请回到 Obsidian' : '这条关系来自 Markdown 标题层级')
-        : (kind === 'node' ? '这是结构外部的只读入口；请退出内部视图后编辑' : '这是只读代理关系；原关系不会在内部视图中修改'),
+        ? (kind === 'node'
+          ? '这是 Vault 原文的投影卡片；单击可阅读，编辑请回到 Obsidian'
+          : runtimeGraph().edges[pi.selEdge ?? -1]?._obsidianLink
+            ? '这是 Obsidian 原文中的显式链接；它比算法观察到的相似关系更权威'
+            : '这条关系来自 Markdown 标题层级')
+        : pi.localContextProjection
+          ? (kind === 'node' ? '这是另一空间的临时投影；原内容没有被复制或修改' : '这是跨空间的临时关系；收束后会自动释放')
+          : (kind === 'node' ? '这是结构外部的只读入口；请退出内部视图后编辑' : '这是只读代理关系；原关系不会在内部视图中修改'),
       'info',
       3500,
     );
@@ -8656,7 +10090,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     deleteEdges: (indexes: number[]) => deleteEdgesForPane(pi, indexes),
     onReadOnlySelection: showReadOnlyHint,
     canDoubleClickReadOnlyNode: (id: string) => Boolean(
-      isVaultProjection() && runtimeGraph().nodes.find(node => node.id === id)?.sourceRef,
+      (isVaultProjection() && runtimeGraph().nodes.find(node => node.id === id)?.sourceRef)
+      || isSpaceReferenceNode(runtimeGraph().nodes.find(node => node.id === id))
+      || isCrossSpaceProxyNode(effectiveNode(id)),
     ),
     onNodeDoubleClick: (id: string) => enterStructureForPane(pi, id),
     fixNode: (id: string) => { if (isReadOnlyNode(id)) { showReadOnlyHint('node'); return; } const n = runtimeGraph().nodes.find(gn => gn.id === id); if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; } const sim = getSM().getSim(); if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); } scheduleSave(); draw(); },
@@ -8738,6 +10174,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           else if (sourceNode?.sourceRef) showToast('双击进入这个文件夹、文档或图空间', 'info', 2600);
           else showReadOnlyHint('node');
         }
+        syncFocusedCommands();
         draw();
         return;
       }
@@ -8746,6 +10183,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         pi.selEdge = null;
         pi.selGroup = null;
         showReadOnlyHint('node');
+        syncFocusedCommands();
+        draw();
+        return;
+      }
+      if (nodeId && isSpaceOccurrence(nodeId)) {
+        saveCurrent();
+        pi.selNode = nodeId;
+        pi.selEdge = null;
+        pi.selGroup = null;
+        clearEd();
+        showToast('实时引用的内容由源节点提供；可拖动、连线或删除，双击进入本体编辑', 'info', 3600);
+        syncFocusedCommands();
         draw();
         return;
       }
@@ -9132,6 +10581,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         finishLinkMode(fp);
         showToast('已退出连线模式', 'info');
       }
+      else if ((fp ?? pane0 as unknown as PaneState).localContext) {
+        e.preventDefault();
+        closeLocalContextForPane(fp ?? pane0 as unknown as PaneState);
+      }
       else if (exitStructureForPane(fp ?? pane0 as unknown as PaneState, true)) {
         e.preventDefault();
       }
@@ -9491,6 +10944,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const electronApi = (window as any).electronAPI;
   electronApi?.onBeforeClose?.(async () => {
+    if (markdownSourceEditor?.hasDraft()) {
+      showToast('Markdown 原文还有未保存修改，请先保存或关闭编辑器。', 'warning', 6000);
+      electronApi.cancelClose();
+      return;
+    }
     if (hasActiveTextDraft()) {
       showToast('文字草稿尚未应用，请先点“应用并返回”再关闭应用。', 'warning', 6000);
       electronApi.cancelClose();
@@ -9514,6 +10972,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     for (const pane of extraPanes) {
       pane.disposeCanvasEvents?.();
       pane.disposeCanvasEvents = null;
+    }
+    if (markdownSourceEditor?.hasDraft()) {
+      event.preventDefault();
+      event.returnValue = '';
+      return;
     }
     if (hasActiveTextDraft()) {
       for (const editor of textEditors.values()) editor.preserveDraft();

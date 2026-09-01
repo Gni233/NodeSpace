@@ -80,7 +80,11 @@ export function createSettingsPanel(
   closeBtn.style.cssText =
     `cursor:pointer;font-size:10px;width:16px;height:16px;line-height:16px;text-align:center;opacity:0.5;color:${V('--fg-text','#d0d0d0')};` +
     `border-radius:${V('--fg-radius-sm', '6px')};transition:all var(--fg-transition-fast,0.15s ease);`;
-  closeBtn.onclick = () => { panel.classList.remove('is-open'); panel.style.display = 'none'; };
+  closeBtn.onclick = () => {
+    panel.classList.remove('is-open');
+    panel.style.display = 'none';
+    parent.classList.remove('is-settings-panel-open');
+  };
   closeBtn.onmouseenter = () => { closeBtn.style.opacity = '1'; closeBtn.style.background = `var(--fg-accent,#5B8FF9)`; closeBtn.style.color = '#fff'; };
   closeBtn.onmouseleave = () => { closeBtn.style.opacity = '0.5'; closeBtn.style.background = 'transparent'; closeBtn.style.color = V('--fg-text','#d0d0d0'); };
   titleBar.appendChild(titleLeft);
@@ -418,12 +422,17 @@ export function createSettingsPanel(
     show: () => {
       panel.style.display = 'block';
       panel.classList.add('is-open');
+      parent.classList.add('is-settings-panel-open');
       renderPresets();
       if (pathLabel) {
         pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
       }
     },
-    hide: () => { panel.classList.remove('is-open'); panel.style.display = 'none'; },
+    hide: () => {
+      panel.classList.remove('is-open');
+      panel.style.display = 'none';
+      parent.classList.remove('is-settings-panel-open');
+    },
     updateInfo: () => { renderPresets(); },
   };
 }

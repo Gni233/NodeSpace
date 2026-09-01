@@ -251,6 +251,16 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       }
       renderOne(groups[g].tabs, groups[g].active, groups[g].dirty, g);
     }
+    requestAnimationFrame(() => {
+      const activeTab = tabsContainer.querySelector<HTMLElement>('.fg-tab.is-active');
+      if (!activeTab) return;
+      const left = activeTab.offsetLeft;
+      const right = left + activeTab.offsetWidth;
+      if (left < tabsContainer.scrollLeft) tabsContainer.scrollLeft = left;
+      else if (right > tabsContainer.scrollLeft + tabsContainer.clientWidth) {
+        tabsContainer.scrollLeft = Math.max(0, right - tabsContainer.clientWidth);
+      }
+    });
   };
 
   return { renderTabs, tabBar };

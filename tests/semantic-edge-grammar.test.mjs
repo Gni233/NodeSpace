@@ -10,7 +10,15 @@ const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function transpiledModule(relativePath) {
-  const source = await readFile(path.join(root, relativePath), 'utf8');
+  let source = await readFile(path.join(root, relativePath), 'utf8');
+  if (source.includes("'./semantic-zoom'")) {
+    const zoomSource = await readFile(path.join(root, 'src', 'semantic-zoom.ts'), 'utf8');
+    const zoomOutput = ts.transpileModule(zoomSource, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const zoomUrl = `data:text/javascript;base64,${Buffer.from(zoomOutput).toString('base64')}`;
+    source = source.replaceAll("'./semantic-zoom'", `'${zoomUrl}'`);
+  }
   const output = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -28,6 +36,9 @@ test('semantic edge grammar distinguishes facts, structure, and declared or text
     role: 'directional', tentative: false, cue: 'arrow',
   });
   assert.equal(inferSemanticEdgeGrammar({ label: '这个观察导致下一步' }).role, 'directional');
+  assert.deepEqual(inferSemanticEdgeGrammar({ relationType: 'cross-space-context', arrow: true }), {
+    role: 'reference', tentative: false, cue: 'cross-space-context',
+  });
 });
 
 test('route families are stable and geometrically distinct', async () => {
@@ -68,7 +79,9 @@ test('semantic disclosure preserves the backbone and reveals labels with focus a
   assert.ok(farStructure.alphaMultiplier > farExplicit.alphaMultiplier);
   assert.ok(farExplicit.widthMultiplier > semanticEdgeDisclosure(explicit, 1, false, false).widthMultiplier);
   assert.equal(farExplicit.showLabel, false);
+  assert.ok(semanticEdgeDisclosure(explicit, 0.44, true, true).labelAlpha > 0);
   assert.equal(semanticEdgeDisclosure(explicit, 0.8, true, true).showLabel, true);
+  assert.equal(semanticEdgeDisclosure(explicit, 0.8, true, true).labelAlpha, 1);
   assert.ok(semanticEdgeDisclosure(explicit, 0.8, false, true).alphaMultiplier < 0.2);
 });
 

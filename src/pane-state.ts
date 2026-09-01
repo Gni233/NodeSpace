@@ -7,6 +7,9 @@ import { GraphRuntime } from './graph-runtime';
 import { PaneStructureView, StructureBreadcrumb, StructureNavigationState } from './structure-view';
 import { containsPoint, hitTestStructureBoundary, type StructureBoundaryShape } from './geometry/structure-boundary';
 import { clearStructureBoundaries, destroyStructureBoundaries } from './pixi-structure-boundaries';
+import type { LocalContextState } from './local-context';
+import type { LocalContextNavigator } from './local-context-navigation';
+import type { CrossSpaceContextProjection } from './cross-space-context';
 
 /**
  * Maximum number of simultaneous split panes (left + right).
@@ -192,9 +195,20 @@ export interface PaneState {
   semanticLensState: {
     band: 'overview' | 'balanced' | 'reading';
     budget: number;
+    edgeLabelBudget: number;
+    regionLabelBudget: number;
+    echoBudget: number;
     focusNodeId: string | null;
     expandedNodeIds: string[];
   } | null;
+  /** A reversible, pane-local walk through a bounded semantic neighborhood. */
+  localContext: LocalContextState | null;
+  /** DOM navigator owned by this pane; never serialized with graph data. */
+  localContextNavigator: LocalContextNavigator | null;
+  /** Disposable composite used while a local path looks into other graphs. */
+  localContextProjection: (CrossSpaceContextProjection & { simManager: any }) | null;
+  /** Transient subset entered through a fragment portal; never persisted. */
+  spaceFocusNodeIds: string[] | null;
 
   // --- Layout ---
   layout: LayoutSlot;
@@ -231,11 +245,11 @@ const P_DEFAULTS = {
 };
 
 export function paneGraph(pane: PaneState): GraphData {
-  return pane.structureView?.graph ?? pane.runtime.graph;
+  return pane.structureView?.graph ?? pane.localContextProjection?.graph ?? pane.runtime.graph;
 }
 
 export function paneSimulationManager(pane: PaneState): any {
-  return pane.structureView?.simManager ?? pane.runtime.simManager;
+  return pane.structureView?.simManager ?? pane.localContextProjection?.simManager ?? pane.runtime.simManager;
 }
 
 export function clearMembershipDragPreview(
@@ -375,6 +389,8 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     get saveTimeout() { return this.runtime.saveTimeout; },
     set saveTimeout(value: ReturnType<typeof setTimeout> | null) { this.runtime.saveTimeout = value; },
     searchDebounceTimer: null, currentAnimationCancel: null, semanticLensState: null,
+    localContext: null, localContextNavigator: null, localContextProjection: null,
+    spaceFocusNodeIds: null,
     layout: new LayoutSlot(),
     treeMode: false, categoryMode: false, fullCatMode: false, activeMode: 'auto',
     savedFixedNodes: [], savedGroupModes: [], layouts: [],

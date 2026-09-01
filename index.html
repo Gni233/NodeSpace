@@ -25,15 +25,18 @@
 
     :root {
       --fg-font-family: system-ui, -apple-system, sans-serif;
+      --fg-color-scheme: dark;
     }
+    html { color-scheme: var(--fg-color-scheme); }
     html, body {
       width: 100%; height: 100%; overflow: hidden;
       font-family: var(--fg-font-family);
+      color: var(--fg-text);
       transition: background var(--fg-transition, 0.25s ease);
     }
 
     #app {
-      width: 100vw; height: 100vh;
+      width: 100vw; height: 100vh; height: 100dvh;
       transition: background var(--fg-transition, 0.25s ease);
       overscroll-behavior: none;
       -webkit-overscroll-behavior: none;
@@ -172,6 +175,17 @@
       color: var(--fg-input-text);
       transition: background var(--fg-transition-fast), color var(--fg-transition-fast),
                   border-color var(--fg-transition-fast);
+    }
+    select, option, optgroup {
+      color: var(--fg-input-text);
+      background-color: var(--fg-input-bg);
+    }
+    select:disabled, option:disabled, optgroup:disabled {
+      color: var(--fg-text-dim);
+    }
+    input::placeholder, textarea::placeholder {
+      color: var(--fg-text-muted);
+      opacity: 0.78;
     }
     input:focus, select:focus, textarea:focus {
       outline: none;

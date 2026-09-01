@@ -12,7 +12,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataModule = source => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 
 async function loadVaultModules() {
-  const vaultSource = await readFile(path.join(root, 'src', 'vault.ts'), 'utf8');
+  const linksSource = await readFile(path.join(root, 'src', 'obsidian-links.ts'), 'utf8');
+  const linksOutput = ts.transpileModule(linksSource, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const linksUrl = dataModule(linksOutput);
+  let vaultSource = await readFile(path.join(root, 'src', 'vault.ts'), 'utf8');
+  vaultSource = vaultSource.replace(/(['"])\.\/obsidian-links\1/g, JSON.stringify(linksUrl));
   const vaultOutput = ts.transpileModule(vaultSource, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;

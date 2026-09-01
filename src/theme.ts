@@ -527,6 +527,9 @@ export function deriveThemeVars(t: ThemeConfig): ThemeVars {
   const { success, warning } = deriveSemanticColors(dark);
 
   return {
+    // Native form controls and their popup surfaces follow the active theme.
+    "--fg-color-scheme": dark ? "dark" : "light",
+
     // Canvas
     "--fg-canvas-bg": t.canvasBackground,
 

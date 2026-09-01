@@ -62,6 +62,10 @@ test('auto layout uses a static runtime and Pixi renders on demand', async () =>
   assert.match(main, /const renderPixiFrames/);
   assert.match(main, /pixi\?\.app\.render\(\)/);
   assert.doesNotMatch(main, /pixi\?\.app\?\.ticker\?\.update\(\)/);
+  const gridOnlySection = main.slice(main.indexOf('const drawGridOnly'), main.indexOf('let _skipDraw'));
+  assert.match(gridOnlySection, /updateSemanticBodiesForViewport\(nodeSprites\.values\(\), t\.k\)/);
+  assert.match(gridOnlySection, /updateSemanticBodiesForViewport\(extraSprites\[i\]\?\.values\(\) \|\| \[\], t\.k\)/);
+  assert.doesNotMatch(gridOnlySection, /pane0Draw\(\)|drawExtraPanes\(\)/);
 });
 
 test('external graph refresh rebuilds auto static nodes instead of appending duplicates', async () => {

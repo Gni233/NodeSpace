@@ -471,7 +471,7 @@ test('mobile toolbar routes focused-pane commands and keeps touch state synchron
   assert.match(toolbar, /const linkBtn = makeBtn\('↔'/);
   assert.match(toolbar, /const fitBtn = makeBtn\('◎'/);
   assert.match(toolbar, /const moreBtn = makeBtn\('⋯'/);
-  assert.match(toolbar, /menu\.append\(redoBtn, boxBtn\)/);
+  assert.match(toolbar, /menu\.append\(openBtn, redoBtn, boxBtn\)/);
   assert.match(toolbar, /min-width:44px; height:44px/);
   assert.match(toolbar, /setAttribute\('aria-label'/);
   assert.match(toolbar, /setAttribute\('aria-pressed'/);
