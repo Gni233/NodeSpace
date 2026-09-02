@@ -70,12 +70,41 @@ test('auto layout uses a static runtime and Pixi renders on demand', async () =>
 
 test('external graph refresh rebuilds auto static nodes instead of appending duplicates', async () => {
   const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
-  const guardStart = main.indexOf("const externalMode = normalizeLayoutMode");
+  const handlerStart = main.indexOf('async function handleExternalGraphChange');
+  const guardStart = main.indexOf("if (activeMode === 'auto')", handlerStart);
   const incrementalStart = main.indexOf('// 8) 增量更新', guardStart);
-  assert.ok(guardStart > 0 && incrementalStart > guardStart);
+  assert.ok(handlerStart > 0 && guardStart > handlerStart && incrementalStart > guardStart);
   const guard = main.slice(guardStart, incrementalStart);
   assert.match(guard, /simManager\.setStaticMode\(true\)/);
   assert.match(guard, /simManager\.initStatic\(\)/);
   assert.match(guard, /activateSemanticLayoutForPane/);
   assert.match(guard, /return;/);
+  assert.doesNotMatch(main.slice(handlerStart, guardStart), /clearRuntimeLayouts\(targetRuntime\)/);
+  assert.doesNotMatch(guard, /activeMode\s*=\s*'auto'/);
+});
+
+test('live layout choice survives graph and Vault refreshes and every mode switch is persisted', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
+  const externalStart = main.indexOf('async function handleExternalGraphChange');
+  const externalEnd = main.indexOf('function clearPaneLayout', externalStart);
+  const externalSection = main.slice(externalStart, externalEnd);
+  assert.match(externalSection, /primaryModeBeforeReload/);
+  assert.match(externalSection, /activeMode = primaryModeBeforeReload/);
+  assert.match(externalSection, /owner\.activeMode = retainedMode/);
+
+  const vaultStart = main.indexOf('reloadVaultResourceViews = async');
+  const vaultEnd = main.indexOf('const semanticLensTimers', vaultStart);
+  const vaultSection = main.slice(vaultStart, vaultEnd);
+  assert.match(vaultSection, /retainedPrimaryMode/);
+  assert.match(vaultSection, /retainedPaneModes/);
+  assert.doesNotMatch(vaultSection, /activeMode\s*=\s*'auto'/);
+  assert.doesNotMatch(vaultSection, /owner\.activeMode\s*=\s*'auto'/);
+
+  const applyStart = main.indexOf('const applyLayoutMode =');
+  const applyEnd = main.indexOf('const renderModeBar =', applyStart);
+  const applySection = main.slice(applyStart, applyEnd);
+  const selectedAt = applySection.indexOf('activeMode = mode');
+  const persistedAt = applySection.indexOf('scheduleSaveForRuntime(targetRuntime)', selectedAt);
+  const branchAt = applySection.indexOf("if (mode === 'auto')", selectedAt);
+  assert.ok(selectedAt >= 0 && persistedAt > selectedAt && persistedAt < branchAt);
 });

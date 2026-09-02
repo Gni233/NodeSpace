@@ -17,6 +17,7 @@ import { sharedState } from './shared-state';
 import { NodeSprite } from './pixi-nodes';
 import { GraphData } from './data/storage';
 import { nodeContainsPoint } from './geometry/hit';
+import { isNodeInGroup } from './group-membership';
 
 // ---- PaneExternals — 窗格需要的外部回调（由 main.ts 注入） ----
 
@@ -447,7 +448,7 @@ function createEventsContextForPane(
       }
       for (const g of pi.graph.groups) {
         if (g.displayMode === 'none') continue;
-        const members = nodes.filter((nd: any) => (nd.tags || []).includes(g.label));
+        const members = nodes.filter((nd: any) => isNodeInGroup(nd, g));
         if (members.length === 0) continue;
         if (g.displayMode === 'fluid') {
           for (const m of members) {

@@ -2,6 +2,7 @@ import * as d3 from 'd3';
 import { GraphData } from "./data/storage";
 import { getGroupRegion } from "./geometry/hit";
 import { getStructureProjection } from './structure-nodes';
+import { isNodeInGroup } from './group-membership';
 
 export function initSimulation(
   graph: GraphData,
@@ -149,9 +150,9 @@ export function initSimulation(
   });
 
   simulation.nodes().forEach((n: any) => {
-    const gs = graph.groups.filter(g => g.displayMode !== 'none' && (n.tags || []).includes(g.label));
+    const gs = graph.groups.filter(g => g.displayMode !== 'none' && isNodeInGroup(n, g));
     for (const g of gs) {
-      const members = simulation.nodes().filter((sn: any) => (sn.tags || []).includes(g.label));
+      const members = simulation.nodes().filter((sn: any) => isNodeInGroup(sn, g));
       if (members.length > 1) {
         const region = getGroupRegion(members, g.displayMode);
         if (region) {

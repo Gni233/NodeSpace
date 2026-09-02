@@ -11,6 +11,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function transpiledModule(relativePath) {
   let source = await readFile(path.join(root, relativePath), 'utf8');
+  if (source.includes("'../group-membership'")) {
+    const groupSource = await readFile(path.join(root, 'src', 'group-membership.ts'), 'utf8');
+    const groupOutput = ts.transpileModule(groupSource, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const groupUrl = `data:text/javascript;base64,${Buffer.from(groupOutput).toString('base64')}`;
+    source = source.replaceAll("'../group-membership'", `'${groupUrl}'`);
+  }
   if (source.includes("'./semantic-zoom'")) {
     const zoomSource = await readFile(path.join(root, 'src', 'semantic-zoom.ts'), 'utf8');
     const zoomOutput = ts.transpileModule(zoomSource, {

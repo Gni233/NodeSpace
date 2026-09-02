@@ -33,6 +33,7 @@ import { checkUpdate, UpdateInfo } from './update-checker';
 import { showUpdateDialog } from './update-dialog';
 import { BUILTIN_GRAPHS, BUILTIN_NAMES, BUILTIN_NAMES_SET, isBuiltin } from './demo-data';
 import { computeRadialLayout } from './layouts/radial';
+import { computeTreeLayout } from './layouts/tree';
 import { computeSemanticLayout, semanticGraphSignature, SemanticLayoutController, stabilizeSemanticLayout, type SemanticLayoutSource } from './layouts/semantic';
 import { LocalSemanticEmbeddingProvider, type LocalSemanticState } from './semantic-embeddings';
 import { computeSemanticLens, resolveSemanticLensBand } from './semantic-lens';
@@ -45,6 +46,8 @@ import { createMarkdownSourceEditor, type MarkdownSourceEditor } from './markdow
 import { createSettingsPanel } from './settings-panel';
 import { createMobileToolbar } from './ui-mobile-toolbar';
 import { createMobileViewportCoordinator } from './mobile-viewport';
+import { isNodeInGroup, isStructureCollection } from './group-membership';
+import { searchGraph, type SearchField, type SearchMatchMode } from './search';
 import { UndoManager } from './undo-redo';
 import { showToast, confirmAction } from './toast';
 import { startNodeAnimation } from './utils/animate-nodes';
@@ -52,6 +55,8 @@ import { EASING, DURATION } from './utils/easing';
 import { clearMembershipDragPreview, clearPaneStructureBoundaries, createPaneState, hitPaneStructureBoundary, isOutsideMembershipSourceSnapshot, paneAtGlobalIndex, paneGraphFacade, paneIndexForExtra, paneStructureBoundaryEndpoints, pickMembershipBoundaryTarget, PANE_LEFT, PANE_RIGHT, PaneState, reindexExtraPanes, type MembershipDragSourceSnapshot } from './pane-state';
 import { LayoutSlot } from './layout-controller';
 import { GraphRuntime, GraphRuntimeRegistry } from './graph-runtime';
+import { InternalGraphWriteGuard } from './external-change-guard';
+import { filterUserFacingGraphEntries } from './file-tree-visibility';
 import { serializeGraphSnapshot } from './graph-snapshot';
 import { PaneManager, PaneExternals } from './pane-manager';
 import { createMultiPaneLayout, MultiPaneDOM } from './dual-pane-layout';
@@ -59,7 +64,7 @@ import { SIDEBAR_LEFT, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH
 const ANIM_DURATION = 500;
 (window as any).__triggerSave = () => {};
 import { clearBlobLayer, createPixiApp, PixiLayers } from './pixi-app';
-import { canDissolveStructure, createStructureNode, detachNodeFromStructure, dissolveStructureNode, getDirectStructureEdges, getExpandedStructureBoundaryModels, getStructureProjection, isStructureNode, normalizeStructureNodeSizing, normalizeStructureRelations, previewStructureMembershipTransaction, sanitizeCopiedNode, setStructureCollapsed, transactStructureMembership, type StructureMembershipRequest, type StructureMembershipTransactionResult } from './structure-nodes';
+import { canDissolveStructure, createStructureNode, detachNodeFromStructure, dissolveStructureNode, getDirectStructureEdges, getExpandedStructureBoundaryModels, getStructureProjection, isStructureNode, normalizeStructureNodeSizing, normalizeStructureRelations, previewStructureMembershipTransaction, sanitizeCopiedNode, setStructureCollapsed, syncStructureCollections, transactStructureMembership, type StructureMembershipRequest, type StructureMembershipTransactionResult } from './structure-nodes';
 import { createPaneStructureView, createStructureBreadcrumb, getPaneOriginalEdgeIndex, isPaneStructureProxyEdge, isPaneStructureProxyNode, PaneStructureView, StructureNavigationState } from './structure-view';
 import { assignCreatedOrder, assignCreatedOrders, repairCreatedOrders } from './node-order';
 import { createTextViewEditor, TextViewEditor } from './text-view/editor';
@@ -446,14 +451,14 @@ async function main() {
   // --- 搜索栏 ---
   const searchRow = document.createElement('div');
   searchRow.className = 'fg-search-row';
-  searchRow.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex-shrink:0;';
+  searchRow.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex-shrink:0;position:relative;';
   const searchLabel = document.createElement('span');
   searchLabel.textContent = '搜索:';
   searchLabel.style.cssText = `font-size:${V('--fg-font-sm', '0.84em')};color:${V('--fg-text-muted', '#999')};flex-shrink:0;`;
   searchRow.appendChild(searchLabel);
   const fieldSelect = document.createElement('select');
   fieldSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
-  ['名称', '标签', '内容'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['name', 'tags', 'note'][i]; o.textContent = t; fieldSelect.appendChild(o); });
+  ['全部', '名称', '标签', '内容'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['all', 'name', 'tags', 'note'][i]; o.textContent = t; fieldSelect.appendChild(o); });
   searchRow.appendChild(fieldSelect);
   const matchModeSelect = document.createElement('select');
   matchModeSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
@@ -465,11 +470,25 @@ async function main() {
   searchRow.appendChild(modeSelect);
   const searchInput = document.createElement('input');
   searchInput.type = 'text'; searchInput.placeholder = '搜索...';
+  searchInput.setAttribute('aria-label', '搜索当前空间');
   searchInput.style.cssText = `flex:1;min-width:80px;font-size:${V('--fg-font-sm', '0.8em')};padding:2px 6px;`;
   searchRow.appendChild(searchInput);
+  const searchPrevBtn = document.createElement('button');
+  searchPrevBtn.type = 'button'; searchPrevBtn.className = 'fg-search-nav'; searchPrevBtn.textContent = '↑'; searchPrevBtn.title = '上一个结果（Shift+Enter）';
+  const searchNextBtn = document.createElement('button');
+  searchNextBtn.type = 'button'; searchNextBtn.className = 'fg-search-nav'; searchNextBtn.textContent = '↓'; searchNextBtn.title = '下一个结果（Enter）';
+  const searchClearBtn = document.createElement('button');
+  searchClearBtn.type = 'button'; searchClearBtn.className = 'fg-search-nav'; searchClearBtn.textContent = '×'; searchClearBtn.title = '清除搜索（Esc）';
+  searchRow.append(searchPrevBtn, searchNextBtn, searchClearBtn);
   const searchStatus = document.createElement('span');
+  searchStatus.className = 'fg-search-status';
   searchStatus.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};color:${V('--fg-danger','#e03030')};display:none;white-space:nowrap;`;
   searchRow.appendChild(searchStatus);
+  const searchResults = document.createElement('div');
+  searchResults.className = 'fg-search-results';
+  searchResults.setAttribute('role', 'listbox');
+  searchResults.hidden = true;
+  searchRow.appendChild(searchResults);
 
   // --- 主要操作按钮行（始终可见）---
   const primaryRow = document.createElement('div');
@@ -1062,6 +1081,7 @@ async function main() {
   };
 
   let lastSaveErrorAt = 0;
+  const internalGraphWriteGuard = new InternalGraphWriteGuard();
   const reportSaveFailure = (fileName: string, detail: string) => {
     const now = Date.now();
     if (now - lastSaveErrorAt < 3000) return;
@@ -1079,6 +1099,7 @@ async function main() {
       reportSaveFailure(fileName, `${result.ok ? '存储设备拒绝了写入' : result.error}${recoveryStatus}`);
       return false;
     }
+    internalGraphWriteGuard.mark(fileName);
     recovery.writeSnapshot(snapshot);
     recovery.clearUnsynced();
     return true;
@@ -1366,9 +1387,10 @@ async function main() {
     reinitAdapter();
     const r = await adapter.listFiles();
     if (r.ok && r.value.length > 0) {
-      _flatTreePaths = flatFilePaths(r.value as any);
+      const visibleEntries = filterUserFacingGraphEntries(r.value);
+      _flatTreePaths = flatFilePaths(visibleEntries as any);
       // 确保路径统一（activeTab 本身带 .json）
-      sidebar.updateFileTree(buildFileTree(r.value), activeTab);
+      sidebar.updateFileTree(buildFileTree(visibleEntries), activeTab);
       return;
     }
     // localStorage fallback
@@ -1380,8 +1402,9 @@ async function main() {
         if (name !== 'demo') lsFiles.push({ name, kind: 'file', children: [] });
       }
     }
-    _flatTreePaths = lsFiles.map(f => f.name);
-    sidebar.updateFileTree(buildFileTree(lsFiles), activeTab);
+    const visibleEntries = filterUserFacingGraphEntries(lsFiles);
+    _flatTreePaths = visibleEntries.map(f => f.name);
+    sidebar.updateFileTree(buildFileTree(visibleEntries), activeTab);
   };
 
   // 共享的文件导入逻辑（FAB 按钮 + 设置面板"打开目录"共用）
@@ -1470,6 +1493,9 @@ async function main() {
     graphName = normalizeVaultPath(graphName);
     const graphPrefix = normalizeVaultPath(vaultIndex?.graphRootRelative || '');
     if (graphPrefix && graphName.startsWith(`${graphPrefix}/`)) graphName = graphName.slice(graphPrefix.length + 1);
+    // fs.watch/HMR delivers writes with a delay. Do not feed our own save back
+    // through the external-merge path, which would rebuild the active layout.
+    if (internalGraphWriteGuard.shouldIgnore(graphName)) return;
     if (blockExternalForTextDraft(graphName)) return;
     // 防抖：500ms 内同一图不重复处理（与 electron main.cjs 的 fs.watch 防抖一致）
     const now = Date.now();
@@ -1491,6 +1517,13 @@ async function main() {
     const isPane1 = clean(pane1.activeTab) === gnClean;
     const extraIdx = extraPanes.slice(1).findIndex(ep => clean(ep.activeTab) === gnClean);
     const targetRuntime = runtimeRegistry.values().find(runtime => clean(runtime.fileName) === gnClean) ?? null;
+    const primaryModeBeforeReload = isMain ? activeMode : null;
+    const paneModesBeforeReload = new Map<PaneState, string>();
+    if (targetRuntime) {
+      for (const owner of extraPanes) {
+        if (owner.runtime === targetRuntime) paneModesBeforeReload.set(owner, owner.activeMode);
+      }
+    }
 
     if (!isMain && !isPane1 && extraIdx < 0 && !targetRuntime) {
       await refreshOpenSpaceReferences(graphName);
@@ -1512,7 +1545,6 @@ async function main() {
     }
 
     if (targetRuntime) {
-      clearRuntimeLayouts(targetRuntime);
       targetRuntime.undoManager?.pushSnapshot?.(targetRuntime.graph);
     }
 
@@ -1592,7 +1624,9 @@ async function main() {
         gridSp = s.gridSp ?? gridSp; gridWidth = s.gridWidth ?? gridWidth;
         gridMode = (s.gridMode as 'line' | 'dot') || gridMode;
         ar = s.ar ?? ar; graphTheme = s.graphTheme || graphTheme;
-        layoutMode = (s as any).layoutMode || layoutMode;
+        // A content refresh must not steal the live pane's layout choice. The
+        // disk setting is used when opening a graph, not while that graph is in use.
+        layoutMode = primaryModeBeforeReload ?? ((s as any).layoutMode || layoutMode);
         gridSnapEnabled = (s as any).gridSnap || gridSnapEnabled;
         partialGridSnap = (s as any).partialGridSnap || partialGridSnap;
         nodeColorStyle = (s as any).nodeColorStyle || nodeColorStyle;
@@ -1607,20 +1641,56 @@ async function main() {
         document.documentElement.style.setProperty('--fg-font-family', fontFamily);
         setNodeFontFamily(fontFamily);
         for (const owner of extraPanes) {
-          if (owner.runtime === primaryRuntime) applyPaneSettings(owner, s);
+          if (owner.runtime !== primaryRuntime) continue;
+          const retainedMode = paneModesBeforeReload.get(owner) ?? owner.activeMode;
+          applyPaneSettings(owner, s);
+          owner.activeMode = retainedMode;
         }
+      }
+
+      if (primaryModeBeforeReload) {
+        activeMode = primaryModeBeforeReload;
+        layoutMode = primaryModeBeforeReload;
+        primaryRuntime.graph.settings = {
+          ...DEFAULT_SETTINGS,
+          ...(primaryRuntime.graph.settings || {}),
+          layoutMode: primaryModeBeforeReload,
+        };
       }
 
       // Automatic layout owns a static simulation whose node array may be the
       // graph array itself. Incrementally pushing into it would append every
       // externally-added node twice. Rebuild the cheap static source instead.
-      const externalMode = normalizeLayoutMode(newData.settings?.layoutMode ?? activeMode);
-      if (externalMode === 'auto') {
-        activeMode = 'auto';
-        layoutMode = 'auto';
+      if (activeMode === 'auto') {
         simManager.setStaticMode(true);
         simManager.initStatic();
         activateSemanticLayoutForPane(pane0 as unknown as PaneState, false);
+        primaryRuntime.markSaved();
+        primaryRuntime.clearExternalConflict();
+        clearRuntimeDirty(primaryRuntime);
+        draw();
+        await refreshOpenSpaceReferences(graphName);
+        return;
+      }
+
+      // Presentation layouts are derived views, just like semantic auto. A
+      // content refresh should recompute that view without turning it into a
+      // force simulation or changing the selected mode.
+      if (activeMode !== 'force') {
+        if (activeMode === 'tree') {
+          applyTreeLayoutV3();
+        } else if (activeMode === 'radial') {
+          const projection = getStructureProjection(graph);
+          computeRadialLayout(projection.nodes, projection.edges);
+          simManager.setStaticMode(true);
+          simManager.initStatic();
+          startStarLoop();
+        } else if (coordinateLayoutModes.has(activeMode)) {
+          pane0.layout.onGraphChanged();
+        } else {
+          simManager.setStaticMode(true);
+          simManager.initStatic();
+        }
         primaryRuntime.markSaved();
         primaryRuntime.clearExternalConflict();
         clearRuntimeDirty(primaryRuntime);
@@ -1729,15 +1799,46 @@ async function main() {
       refreshStructureViews(targetRuntime);
       const initializedSims = new Set<any>();
       if (primaryRuntime === targetRuntime) {
-        simManager.initSim();
+        if (activeMode === 'auto') {
+          simManager.setStaticMode(true);
+          simManager.initStatic();
+          activateSemanticLayoutForPane(pane0, false);
+        } else if (activeMode === 'force') {
+          simManager.setStaticMode(false);
+          simManager.initSim();
+        } else {
+          simManager.setStaticMode(true);
+          simManager.initStatic();
+          pane0.layout.onGraphChanged();
+        }
         initializedSims.add(simManager);
       }
       for (const owner of extraPanes) {
         if (owner.runtime !== targetRuntime) continue;
+        const retainedMode = paneModesBeforeReload.get(owner) ?? owner.activeMode;
         if (saved.settings) applyPaneSettings(owner, saved.settings);
-        if (!initializedSims.has(owner.simManager)) {
-          owner.simManager?.initSim();
-          initializedSims.add(owner.simManager);
+        owner.activeMode = retainedMode;
+        const ownerSim = owner.simManager;
+        if (retainedMode === 'auto') {
+          if (!initializedSims.has(ownerSim)) {
+            ownerSim?.setStaticMode(true);
+            ownerSim?.initStatic();
+            initializedSims.add(ownerSim);
+          }
+          activateSemanticLayoutForPane(owner, false);
+        } else if (retainedMode === 'force') {
+          if (!initializedSims.has(ownerSim)) {
+            ownerSim?.setStaticMode(false);
+            ownerSim?.initSim();
+            initializedSims.add(ownerSim);
+          }
+        } else {
+          if (!initializedSims.has(ownerSim)) {
+            ownerSim?.setStaticMode(true);
+            ownerSim?.initStatic();
+            initializedSims.add(ownerSim);
+          }
+          owner.layout.onGraphChanged();
         }
       }
       targetRuntime.markSaved();
@@ -1760,12 +1861,6 @@ async function main() {
   }
 
   const coordinateLayoutModes = new Set(['cardgrid', 'category', 'fullcat']);
-  const clearRuntimeLayouts = (runtime: GraphRuntime) => {
-    if (primaryRuntime === runtime) clearPaneLayout(pane0);
-    for (const owner of extraPanes) {
-      if (owner.runtime === runtime) clearPaneLayout(owner);
-    }
-  };
   const prepareRuntimeForSharing = (runtime: GraphRuntime) => {
     if (primaryRuntime === runtime && coordinateLayoutModes.has(activeMode)) clearPaneLayout(pane0);
     for (const owner of extraPanes) {
@@ -2354,7 +2449,7 @@ async function main() {
   const updateGwGh = () => {
     if (pixi) { gw = pixi.viewport.worldWidth; gh = pixi.viewport.worldHeight; }
   };
-  let search = '', sField: "name"|"tags"|"note" = "name",
+  let search = '', sField: SearchField = "all",
       sDisplayMode: "highlight"|"show" = "highlight",
       sMatchMode: "contains"|"startsWith"|"endsWith"|"fuzzy" = "contains";
   let selNode: string | null = null, selEdge: number | null = null, selGroup: string | null = null;
@@ -2470,6 +2565,8 @@ async function main() {
 
   let _starRaf: number | null = null;
   let _starLastNodeCount = 0;
+  let _starLastEdgeCount = 0;
+  let _starFrameIndex = 0;
   let _starLastFrameTime = 0;
   /** 最外层线速度 px/s，保持人眼可跟随 */
   const ROTATE_LINEAR_SPEED = 200;
@@ -2478,7 +2575,10 @@ async function main() {
     if (_starRaf !== null) return;
     const sim = simManager.getSim();
     if (sim) sim.stop();
-    _starLastNodeCount = graph.nodes.length;
+    const projection = getStructureProjection(graph);
+    _starLastNodeCount = projection.nodes.length;
+    _starLastEdgeCount = projection.edges.length;
+    _starFrameIndex = 0;
     _starLastFrameTime = performance.now();
     _starRaf = requestAnimationFrame(starFrame);
   }
@@ -2498,7 +2598,8 @@ async function main() {
     if ((sim as any)._animating) { _starRaf = requestAnimationFrame(starFrame); return; }
     sim.stop();
     const all = sim.nodes() as any[];
-    const gn = graph.nodes;
+    const projection = getStructureProjection(graph);
+    const gn = projection.nodes;
 
     // 保存根当前位置
     const rootPos = new Map<string, {x:number,y:number,angle:number}>();
@@ -2516,12 +2617,13 @@ async function main() {
         rootPos.set(n.id, { x: n.fx ?? n.x, y: n.fy ?? n.y, angle });
       }
     }
-    // 每帧以 graph 为源头重算，消除 sim/graph 不同步
-    // 旋转模式下结构不变，跳过重算（除非节点数变了）
-    const nodeCountChanged = gn.length !== _starLastNodeCount;
-    if (!starRotateMode || nodeCountChanged) {
-      computeRadialLayout(gn, graph.edges);
+    // 星型几何只在拓扑改变时重算；平移、旋转和拖拽直接复用局部坐标。
+    // 旧实现静止时仍逐帧 BFS，移动端会把本应便宜的展示布局变成持续高负载。
+    const topologyChanged = gn.length !== _starLastNodeCount || projection.edges.length !== _starLastEdgeCount;
+    if (topologyChanged) {
+      computeRadialLayout(gn, projection.edges);
       _starLastNodeCount = gn.length;
+      _starLastEdgeCount = projection.edges.length;
     }
     // 恢复根位置（computeRadialLayout 会覆写为网格初始位置）
     for (const n of gn) {
@@ -2583,7 +2685,7 @@ async function main() {
       sd.cosA = Math.cos(a); sd.sinA = Math.sin(a);
     }
 
-    // 星星间凸包碰撞（迭代求解，杜绝穿透）
+    // 星星间凸包碰撞（低频求解；渲染仍保持 60fps）
     const convexHull = (pts: {x:number,y:number}[]): {x:number,y:number}[] => {
       if (pts.length <= 2) return pts;
       const sorted = pts.slice().sort((a,b) => a.x-b.x || a.y-b.y);
@@ -2593,38 +2695,41 @@ async function main() {
       for (const p of sorted.reverse()) { while (hi.length>=2&&cross(hi[hi.length-2],hi[hi.length-1],p)<=0) hi.pop(); hi.push(p); }
       lo.pop(); hi.pop(); return lo.concat(hi);
     };
-    const allHulls = new Map<string, {x:number,y:number}[]>();
-    for (const r of roots) {
-      const sd = starData.get(r.id)!;
-      allHulls.set(r.id, convexHull([r, ...sd.children].filter(n => !(n as any)._deleted).map(n => ({x:n.x,y:n.y}))));
-    }
     // 同步非拖拽根 fx→x，保证凸包计算基于一致位置
     for (const r of roots) {
       if ((r as any)._deleted) continue;
       if ((r as any)._slfx !== r.fx) continue; // 拖拽中，不碰
       if (r.fx != null) { r.x = r.fx; r.y = r.fy; }
     }
-    for (let i = 0; i < roots.length; i++) {
-      for (let j = i + 1; j < roots.length; j++) {
-        const ra = roots[i], rb = roots[j];
-        if ((ra as any)._slfx !== ra.fx || (rb as any)._slfx !== rb.fx) continue; // 至少一方在拖拽
-        const ha = allHulls.get(ra.id)!, hb = allHulls.get(rb.id)!;
-        const sdA = starData.get(ra.id)!, sdB = starData.get(rb.id)!;
-        const refDist = (sdA.maxR + sdB.maxR) * 0.15 + 12;
-        let minD2 = Infinity, ax = 0, ay = 0, bx = 0, by = 0;
-        for (const pa of ha) for (const pb of hb) {
-          const d2 = (pb.x-pa.x)**2 + (pb.y-pa.y)**2;
-          if (d2 < minD2) { minD2 = d2; ax = pa.x; ay = pa.y; bx = pb.x; by = pb.y; }
-        }
-        if (minD2 < refDist * refDist && minD2 > 0.001) {
-          let d = Math.sqrt(minD2); if (d < 0.5) d = 0.5;
-          const step = Math.min(refDist - d, 6);
-          const s = step / d * 0.5;
-          const px = (bx - ax) * s, py = (by - ay) * s;
-          if (ra.fx == null) { ra.x -= px; ra.y -= py; }
-          else { ra.fx -= px; ra.fy -= py; }
-          if (rb.fx == null) { rb.x += px; rb.y += py; }
-          else { rb.fx += px; rb.fy += py; }
+    const resolveHullCollisions = topologyChanged || (_starFrameIndex++ % (starRotateMode ? 3 : 6) === 0);
+    if (resolveHullCollisions) {
+      const allHulls = new Map<string, {x:number,y:number}[]>();
+      for (const r of roots) {
+        const sd = starData.get(r.id)!;
+        allHulls.set(r.id, convexHull([r, ...sd.children].filter(n => !(n as any)._deleted).map(n => ({x:n.x,y:n.y}))));
+      }
+      for (let i = 0; i < roots.length; i++) {
+        for (let j = i + 1; j < roots.length; j++) {
+          const ra = roots[i], rb = roots[j];
+          if ((ra as any)._slfx !== ra.fx || (rb as any)._slfx !== rb.fx) continue; // 至少一方在拖拽
+          const ha = allHulls.get(ra.id)!, hb = allHulls.get(rb.id)!;
+          const sdA = starData.get(ra.id)!, sdB = starData.get(rb.id)!;
+          const refDist = (sdA.maxR + sdB.maxR) * 0.15 + 12;
+          let minD2 = Infinity, ax = 0, ay = 0, bx = 0, by = 0;
+          for (const pa of ha) for (const pb of hb) {
+            const d2 = (pb.x-pa.x)**2 + (pb.y-pa.y)**2;
+            if (d2 < minD2) { minD2 = d2; ax = pa.x; ay = pa.y; bx = pb.x; by = pb.y; }
+          }
+          if (minD2 < refDist * refDist && minD2 > 0.001) {
+            let d = Math.sqrt(minD2); if (d < 0.5) d = 0.5;
+            const step = Math.min(refDist - d, 6);
+            const s = step / d * 0.5;
+            const px = (bx - ax) * s, py = (by - ay) * s;
+            if (ra.fx == null) { ra.x -= px; ra.y -= py; }
+            else { ra.fx -= px; ra.fy -= py; }
+            if (rb.fx == null) { rb.x += px; rb.y += py; }
+            else { rb.fx += px; rb.fy += py; }
+          }
         }
       }
     }
@@ -3254,6 +3359,7 @@ async function main() {
   // pane0 配置备份（切到 pane1 时暂存 singletons）
   const pane0Config: Record<string, any> = {};
 
+  let syncSearchControlsFromFocusedPane: () => void = () => {};
   function switchFocusedPane(toIndex: number) {
     if (focusedPaneIndex === toIndex || toIndex >= extraPanes.length + 1) return;
     focusedPaneIndex = toIndex;
@@ -3271,6 +3377,7 @@ async function main() {
     settingsUI.updateInfo();
     renderAllTabs();
     syncFocusedCommands();
+    syncSearchControlsFromFocusedPane();
     draw();
   }
   // pane 点击自动聚焦
@@ -3326,7 +3433,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const structureProjection = st.structureView
       ? { nodes: graph.nodes || [], edges: graph.edges || [], hiddenNodeIds: new Set<string>() }
       : getStructureProjection(graph);
-    const nodes = isCardMode ? (graph.nodes || []) : (sim.nodes() || []);
+    const nodes = isCardMode ? structureProjection.nodes : (sim.nodes() || []);
     // The simulation is authoritative only for coordinates. In auto-layout
     // transitions it may deliberately contain id-only views, so every visible
     // title must come from the graph data whenever that node still exists.
@@ -3444,35 +3551,20 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
     };
 
-    // 搜索匹配集
-    const matchText = (haystack: string, needle: string): boolean => {
-      switch (st.sMatchMode) {
-        case 'startsWith': return haystack.toLowerCase().startsWith(needle.toLowerCase());
-        case 'endsWith': return haystack.toLowerCase().endsWith(needle.toLowerCase());
-        case 'fuzzy': {
-          let ni = 0;
-          const hl = haystack.toLowerCase(), nl = needle.toLowerCase();
-          for (let i = 0; i < hl.length && ni < nl.length; i++) {
-            if (hl[i] === nl[ni]) ni++;
-          }
-          return ni === nl.length;
-        }
-        case 'contains':
-        default: return haystack.toLowerCase().includes(needle.toLowerCase());
-      }
-    };
-    const searchMatchIds = new Set<string>();
-    const showOnlyMode = st.sDisplayMode === 'show' && st.search;
-    if (st.search) {
-      for (const n of nodes) {
-        const sourceNode = graphNodeById.get(n.id) ?? n;
-        let m = false;
-        if (st.sField === 'name') m = matchText(resolveNodeDisplayLabel(n, graphNodeById), st.search);
-        else if (st.sField === 'tags') m = (sourceNode.tags || []).some((t: string) => matchText(t, st.search));
-        else if (st.sField === 'note') m = matchText(sourceNode.note || '', st.search);
-        if (m) searchMatchIds.add(n.id);
+    // 搜索、结果跳转和高亮共用一套规则；结构成员关系作为计算标签参与搜索。
+    const graphSearchResults = st.search
+      ? searchGraph(graph, st.search, st.sField as SearchField, st.sMatchMode as SearchMatchMode)
+      : [];
+    const searchMatchIds = new Set(graphSearchResults.map(result => result.nodeId));
+    // A hit inside a collapsed structure should illuminate its visible shell as
+    // well; otherwise “only show” can correctly find a note yet display nothing.
+    for (const result of graphSearchResults) {
+      const sourceNode = graph.nodes.find((node: any) => node.id === result.nodeId);
+      if (sourceNode?.structureParentId && structureProjection.hiddenNodeIds.has(result.nodeId)) {
+        searchMatchIds.add(sourceNode.structureParentId);
       }
     }
+    const showOnlyMode = st.sDisplayMode === 'show' && st.search;
 
     // 框选集
     const boxSelIds = new Set(sharedState.selectedNodeIds);
@@ -3718,8 +3810,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       sprite.label.alpha = labelAlpha;
 
       // 组颜色
-      const tags: string[] = n.tags || [];
-      const matchingGroups = (graph.groups || []).filter((g: any) => g.displayMode !== 'none' && g.nodeColorMode && g.nodeColorMode !== 'off' && tags.includes(g.label));
+      const matchingGroups = (graph.groups || []).filter((g: any) => g.displayMode !== 'none' && g.nodeColorMode && g.nodeColorMode !== 'off' && isNodeInGroup(n, g));
       let gColor: number | undefined;
       let gEdgeOnly = false;
       if (matchingGroups.length === 1) {
@@ -3846,9 +3937,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       });
     }
     const cardModeActiveForEdges = st.activeMode === 'cardgrid' || st.activeMode === 'category' || st.activeMode === 'fullcat';
-    if (cardModeActiveForEdges) {
-      for (const index of st.layout.hiddenEdgeIndices(graph.edges)) collapsedEdgeIndices.add(index);
-    }
+    const cardHiddenEdgeIndices = cardModeActiveForEdges
+      ? new Set(st.layout.hiddenEdgeIndices(structureProjection.edges))
+      : null;
 
     // 折叠/展开中连线透明度渐变（值 = alpha 乘数，1=正常，0=全透明）
     const collapseEdgeFade = new Map<number, number>();
@@ -3866,7 +3957,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
 
     const renderEdgesWithIndexes = structureProjection.edges.flatMap((edge: any, projectionIndex: number) =>
-      edge._structureMembership ? [] : [{ edge, projectionIndex }],
+      edge._structureMembership && !cardModeActiveForEdges ? [] : [{ edge, projectionIndex }],
     );
     const renderEdges = renderEdgesWithIndexes.map(item => item.edge);
     const edgeGraph = { ...graph, edges: renderEdges };
@@ -3883,7 +3974,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       hiddenNodes,
       focusNeighborIds: focusActive ? focusNeighborIds : undefined,
       focusEdgeIndices: renderFocusEdgeIndices,
-      collapsedEdgeIndices: !hasProjectedEdges && collapsedEdgeIndices.size > 0 ? collapsedEdgeIndices : undefined,
+      collapsedEdgeIndices: cardHiddenEdgeIndices && cardHiddenEdgeIndices.size > 0
+        ? cardHiddenEdgeIndices
+        : !hasProjectedEdges && collapsedEdgeIndices.size > 0 ? collapsedEdgeIndices : undefined,
       collapseEdgeFade: !hasProjectedEdges && collapseEdgeFade.size > 0 ? collapseEdgeFade : undefined,
       selectedEdgeIndex: hasProjectedEdges ? null : st.selEdge,
       boxSelectedEdgeIndices: hasProjectedEdges ? undefined : sharedState.boxSelectedEdgeIndices ?? undefined,
@@ -3891,6 +3984,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       edgeColorGradient,
       edgeWidthByLevel,
       semanticMode: st.activeMode === 'auto',
+      treeMode: st.activeMode === 'tree',
       semanticZoom: pixi.viewport.scale.x,
       semanticFocusNodeId: st.localContext?.currentId || st.selNode || sharedState.focusHoverNodeId || null,
       semanticLabelBudget: semanticLens?.edgeLabelBudget,
@@ -4046,9 +4140,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     } else if (!sharedState.hoverNodeId) {
       selTooltip.style.display = 'none';
     }
-    searchStatus.style.display = (st.search && searchMatchIds.size === 0) ? '' : 'none';
-    if (st.search && searchMatchIds.size === 0) searchStatus.textContent = '无结果';
-
     // 折叠/展开动画自保持：保持 sim 微动以驱动持续渲染
     let hasActiveAnim = false;
     for (const n of nodes) {
@@ -4080,7 +4171,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     layout: pane0Layout,
     pixi: null as any, canvasContainer: null as any,
     nodeSprites: null as any, readyToDraw: false, textViewActive: false, get simManager() { return simManager; },
-    _lastDragNodeId: null, searchMatchIndex: 0, lastSearchTerm: "",
+    _lastDragNodeId: null, searchMatchIndex: -1, lastSearchTerm: "",
     searchDebounceTimer: null, currentAnimationCancel: null,
     savedFixedNodes: [] as any[], savedGroupModes: [] as any[], layouts: [] as any[],
     updateInfoRef: { current: () => {} }, updateSelectsRef: { current: () => {} },
@@ -4919,45 +5010,131 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   // --- 搜索事件 ---
   let lastSearchTerm = '';
-  let searchMatchIndex = 0;
-  fieldSelect.addEventListener('change', () => { sField = fieldSelect.value as any; draw(); });
-  matchModeSelect.addEventListener('change', () => { sMatchMode = matchModeSelect.value as any; draw(); });
-  modeSelect.addEventListener('change', () => { sDisplayMode = modeSelect.value as any; draw(); });
+  let searchMatchIndex = -1;
+  const focusedSearchState = () => {
+    const pane = focusedPaneState();
+    return pane.index === PANE_LEFT
+      ? { pane, query: search, field: sField, mode: sMatchMode, display: sDisplayMode, index: searchMatchIndex, last: lastSearchTerm }
+      : { pane, query: pane.search, field: pane.sField, mode: pane.sMatchMode, display: pane.sDisplayMode, index: pane.searchMatchIndex, last: pane.lastSearchTerm };
+  };
+  const mutateFocusedSearch = (values: Partial<{ query: string; field: SearchField; mode: SearchMatchMode; display: 'highlight' | 'show'; index: number; last: string }>) => {
+    const pane = focusedPaneState();
+    if (pane.index === PANE_LEFT) {
+      if (values.query !== undefined) search = values.query;
+      if (values.field !== undefined) sField = values.field;
+      if (values.mode !== undefined) sMatchMode = values.mode;
+      if (values.display !== undefined) sDisplayMode = values.display;
+      if (values.index !== undefined) searchMatchIndex = values.index;
+      if (values.last !== undefined) lastSearchTerm = values.last;
+    } else {
+      if (values.query !== undefined) pane.search = values.query;
+      if (values.field !== undefined) pane.sField = values.field;
+      if (values.mode !== undefined) pane.sMatchMode = values.mode;
+      if (values.display !== undefined) pane.sDisplayMode = values.display;
+      if (values.index !== undefined) pane.searchMatchIndex = values.index;
+      if (values.last !== undefined) pane.lastSearchTerm = values.last;
+    }
+  };
+  const currentSearchResults = () => {
+    const state = focusedSearchState();
+    return searchGraph(scopedPaneGraph(state.pane), state.query, state.field, state.mode);
+  };
+  const renderSearchResults = () => {
+    const state = focusedSearchState();
+    const results = currentSearchResults();
+    searchResults.innerHTML = '';
+    const hasQuery = !!state.query.trim();
+    searchStatus.style.display = hasQuery ? '' : 'none';
+    searchStatus.style.color = results.length > 0 ? V('--fg-text-muted', '#999') : V('--fg-danger', '#e03030');
+    searchStatus.textContent = hasQuery ? (results.length > 0 ? `${Math.min(state.index + 1, results.length)}/${results.length}` : '无结果') : '';
+    searchPrevBtn.disabled = searchNextBtn.disabled = results.length === 0;
+    searchClearBtn.disabled = !hasQuery;
+    for (const [index, result] of results.slice(0, 8).entries()) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'fg-search-result' + (index === state.index ? ' is-current' : '');
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', String(index === state.index));
+      const title = document.createElement('strong');
+      title.textContent = result.label;
+      const context = document.createElement('span');
+      context.textContent = result.context;
+      item.append(title, context);
+      item.onpointerdown = event => event.preventDefault();
+      item.onclick = () => focusSearchResult(index, false);
+      searchResults.appendChild(item);
+    }
+    searchResults.hidden = !hasQuery || results.length === 0 || document.activeElement !== searchInput;
+  };
+  const focusSearchResult = (requestedIndex: number, wrap = true) => {
+    const state = focusedSearchState();
+    const results = currentSearchResults();
+    if (results.length === 0) { renderSearchResults(); draw(); return; }
+    const index = wrap
+      ? (requestedIndex % results.length + results.length) % results.length
+      : Math.max(0, Math.min(results.length - 1, requestedIndex));
+    mutateFocusedSearch({ index, last: state.query });
+    const result = results[index];
+    const sourceGraph = scopedPaneGraph(state.pane);
+    const sourceNode = sourceGraph.nodes.find((node: any) => node.id === result.nodeId);
+    const sim = scopedPaneSimulationManager(state.pane)?.getSim();
+    const nodes = sim?.nodes() || [];
+    const visibleId = nodes.some((node: any) => node.id === result.nodeId)
+      ? result.nodeId
+      : typeof sourceNode?.structureParentId === 'string' ? sourceNode.structureParentId : result.nodeId;
+    const node = nodes.find((candidate: any) => candidate.id === visibleId);
+    const px = state.pane.index === PANE_LEFT ? pixi : state.pane.pixi;
+    if (node && px) {
+      const cw = px.app.canvas.clientWidth;
+      const ch = px.app.canvas.clientHeight;
+      px.viewport.animate({ position: { x: cw / 2 - node.x * px.viewport.scale.x, y: ch / 2 - node.y * px.viewport.scale.y }, time: SEARCH_MOVE_DURATION, ease: EASING.easeInOut });
+      withFocusedPane(() => fillNode(visibleId));
+    }
+    renderSearchResults();
+    draw();
+  };
+  syncSearchControlsFromFocusedPane = () => {
+    const state = focusedSearchState();
+    searchInput.value = state.query;
+    fieldSelect.value = state.field;
+    matchModeSelect.value = state.mode;
+    modeSelect.value = state.display;
+    renderSearchResults();
+  };
+  fieldSelect.addEventListener('change', () => { mutateFocusedSearch({ field: fieldSelect.value as SearchField, index: -1 }); renderSearchResults(); draw(); });
+  matchModeSelect.addEventListener('change', () => { mutateFocusedSearch({ mode: matchModeSelect.value as SearchMatchMode, index: -1 }); renderSearchResults(); draw(); });
+  modeSelect.addEventListener('change', () => { mutateFocusedSearch({ display: modeSelect.value as 'highlight' | 'show' }); draw(); });
   searchInput.addEventListener('input', () => {
-    search = searchInput.value;
-    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(() => {
-      searchMatchIndex = 0; lastSearchTerm = search;
-      draw();
-    }, 150);
+    mutateFocusedSearch({ query: searchInput.value, index: -1, last: searchInput.value });
+    const pane = focusedPaneState();
+    if (pane.searchDebounceTimer) clearTimeout(pane.searchDebounceTimer);
+    pane.searchDebounceTimer = setTimeout(() => { pane.searchDebounceTimer = null; renderSearchResults(); draw(); }, 80);
   });
+  searchInput.addEventListener('focus', renderSearchResults);
+  searchInput.addEventListener('blur', () => setTimeout(() => { searchResults.hidden = true; }, 120));
   searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      const focusedPane = focusedPaneState();
-      const sim = scopedPaneSimulationManager(focusedPane)?.getSim();
-      const px = focusedPane.index === PANE_LEFT ? pixi : focusedPane.pixi;
-      const nodes = sim?.nodes() || [];
-      const matching = nodes.filter((n: any) => {
-        if (!search) return false;
-        switch (sField) {
-          case 'name': return (n.label || '').toLowerCase().includes(search.toLowerCase());
-          case 'tags': return (n.tags || []).some((t: string) => t.toLowerCase().includes(search.toLowerCase()));
-          case 'note': return (n.note || '').toLowerCase().includes(search.toLowerCase());
-          default: return false;
-        }
-      });
-      if (search !== lastSearchTerm) { searchMatchIndex = 0; lastSearchTerm = search; }
-      else { searchMatchIndex = (searchMatchIndex + 1) % (matching.length || 1); }
-      if (matching.length > 0 && px) {
-        const node = matching[searchMatchIndex];
-        const cw = px.app.canvas.clientWidth;
-        const ch = px.app.canvas.clientHeight;
-        px.viewport.animate({ position: { x: cw / 2 - node.x * px.viewport.scale.x, y: ch / 2 - node.y * px.viewport.scale.y }, time: DURATION.entrance, ease: EASING.easeInOut });
-        fillNode(node.id);
-      }
+    if (e.key === 'Enter') { e.preventDefault(); focusSearchResult(focusedSearchState().index + (e.shiftKey ? -1 : 1)); }
+    else if (e.key === 'Escape') {
+      e.preventDefault();
+      mutateFocusedSearch({ query: '', index: -1, last: '' });
+      searchInput.value = '';
+      renderSearchResults(); draw();
     }
   });
-
+  searchPrevBtn.onclick = () => focusSearchResult(focusedSearchState().index - 1);
+  searchNextBtn.onclick = () => focusSearchResult(focusedSearchState().index + 1);
+  searchClearBtn.onclick = () => {
+    mutateFocusedSearch({ query: '', index: -1, last: '' });
+    searchInput.value = '';
+    renderSearchResults(); draw(); searchInput.focus();
+  };
+  window.addEventListener('keydown', event => {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return;
+    if ((event.target as HTMLElement)?.closest('.ns-md-editor')) return;
+    event.preventDefault();
+    controlsDetails.open = true;
+    requestAnimationFrame(() => { syncSearchControlsFromFocusedPane(); searchInput.focus(); searchInput.select(); });
+  });
   // --- 聚焦窗格状态切换（用于布局/操作等需要访问 singleton 的函数）---
   const withFocusedPane = <T>(fn: () => T): T => {
     if (focusedPaneIndex === PANE_LEFT) return fn();
@@ -5394,7 +5571,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     if (targetPane) {
       const center = targetPane.pixi?.viewport?.center ?? { x: targetPane.gw / 2, y: targetPane.gh / 2 };
-      const newNode = { id: 'n_' + Date.now(), label: '新节点', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
+      const newNode = { id: 'n_' + Date.now(), label: '新记录', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
       assignCreatedOrder(newNode, targetPane.graph.nodes);
       targetPane.undoManager.pushSnapshot(targetPane.graph);
       targetPane.graph.nodes.push(newNode);
@@ -5407,7 +5584,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
 
     const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
-    const newNode = { id: 'n_' + Date.now(), label: '新节点', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
+    const newNode = { id: 'n_' + Date.now(), label: '新记录', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
     assignCreatedOrder(newNode, graph.nodes);
     saveUndo();
     graph.nodes.push(newNode);
@@ -5417,7 +5594,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     draw();
   };
   addBtn.onclick = createNodeInFocusedPane;
-  addBtn.textContent = '+ 节点';
+  addBtn.textContent = '+ 记录';
+  addBtn.title = '记下一段内容';
   addBtn.dataset.mobileDuplicate = 'true';
   primaryRow.appendChild(addBtn);
   // 多分屏扩展数组（初始包含 pane1）
@@ -5434,6 +5612,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const scopedPaneSimulationManager = (pane: PaneState): any => pane.structureView?.simManager
     ?? pane.localContextProjection?.simManager
     ?? (pane.index === PANE_LEFT ? simManager : pane.simManager);
+  // Search depends on pane-scope helpers; initialize its view only after those
+  // helpers exist (startup executes this path synchronously).
+  syncSearchControlsFromFocusedPane();
 
   const canStartMembershipDrag = (pane: PaneState, runtime: GraphRuntime, nodeId: string): boolean => {
     if (pane.structureView || pane.textViewActive || runtime.textEditActive || coordinateLayoutModes.has(pane.activeMode)) return false;
@@ -6435,7 +6616,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const linkBtn = document.createElement('button');
   linkBtn.className = 'fg-action fg-action-toggle';
   linkBtn.setAttribute('aria-pressed', 'false');
-  linkBtn.textContent = '连线';
+  linkBtn.textContent = '关系';
+  linkBtn.title = '在两条内容之间建立关系';
   linkBtn.dataset.mobileDuplicate = 'true';
   linkBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   linkBtn.onclick = toggleFocusedLinkMode;
@@ -6500,7 +6682,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       reinitializeRuntimeViews(focusedExtra.runtime); draw();
       return;
     }
-    if (activeMode === 'tree') { applyTreeLayout(); return; }
+    if (activeMode === 'tree') { applyTreeLayoutV3(); return; }
     if (activeMode === 'radial') { applyLayoutMode('radial'); return; }
     if (activeMode === 'category') { applyLayoutMode('category'); return; }
     if (activeMode === 'fullcat') { applyLayoutMode('fullcat'); return; }
@@ -6589,7 +6771,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           }
         }
       } else {
-        applyTreeLayout();
+        applyTreeLayoutV3();
       }
     }
     else {
@@ -6602,7 +6784,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // (treeBtn removed — now in mode bar)
 
   // 树形布局逻辑
-  const applyTreeLayout = () => {
+  const applyTreeLayoutLegacy = () => {
     const nodes = graph.nodes;
     const edges = graph.edges;
     if (nodes.length === 0) return;
@@ -6713,6 +6895,65 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       },
       onFrame: () => sharedState.directDraw?.(),
       onComplete: () => simManager.initSim(),
+      fixOnComplete: true,
+    });
+  };
+
+  const applyTreeLayoutV3 = () => {
+    const projection = getStructureProjection(graph);
+    if (projection.nodes.length === 0) return;
+    const result = computeTreeLayout(projection.nodes, projection.edges);
+    const originalIndexByEdge = new Map(graph.edges.map((edge, index) => [edge, index]));
+    for (const edge of graph.edges) {
+      delete (edge as any)._conflict;
+      delete (edge as any)._treeRoute;
+    }
+    for (const projectionIndex of result.treeEdgeIndices) {
+      const edge = projection.edges[projectionIndex];
+      if (!edge || edge._structureMembership) continue;
+      const originalIndex = Number.isInteger(edge._originalIndex)
+        ? edge._originalIndex
+        : originalIndexByEdge.get(edge);
+      if (originalIndex != null && graph.edges[originalIndex]) (graph.edges[originalIndex] as any)._treeRoute = true;
+    }
+    for (const projectionIndex of result.crossEdgeIndices) {
+      const edge = projection.edges[projectionIndex];
+      if (!edge || edge._structureMembership) continue;
+      const originalIndex = Number.isInteger(edge._originalIndex)
+        ? edge._originalIndex
+        : originalIndexByEdge.get(edge);
+      if (originalIndex != null && graph.edges[originalIndex]) (graph.edges[originalIndex] as any)._conflict = true;
+    }
+    for (const node of projection.nodes) {
+      const target = result.positions.get(node.id);
+      if (!target) continue;
+      (node as any)._treeX = target.x;
+      (node as any)._treeY = target.y;
+      (node as any)._treeDepth = target.depth;
+      (node as any)._treeParentId = result.parentByNode.get(node.id) ?? null;
+      node.fixed = false;
+      node.fx = null;
+      node.fy = null;
+    }
+    const simNodes = simManager.getSim()?.nodes() || [];
+    simManager.getSim()?.stop();
+    currentAnimationCancel?.();
+    currentAnimationCancel = startNodeAnimation({
+      nodes: projection.nodes,
+      simNodes,
+      getTarget: node => {
+        const point = result.positions.get(node.id);
+        return point ? { x: point.x, y: point.y } : null;
+      },
+      duration: 520,
+      easing: EASING.smoothStep,
+      onFrame: () => sharedState.directDraw?.(),
+      onComplete: () => {
+        simManager.setStaticMode(true);
+        simManager.initStatic();
+        draw();
+        scheduleSave();
+      },
       fixOnComplete: true,
     });
   };
@@ -6906,8 +7147,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const noGroupNodes: any[] = [];
     for (const n of nodes) {
       n.fixed = false; n.fx = null; n.fy = null;
-      const tags: string[] = n.tags || [];
-      const matchGroups = groups.filter(g => tags.includes(g.label));
+      const matchGroups = groups.filter(g => isNodeInGroup(n, g));
       if (matchGroups.length === 0) noGroupNodes.push(n);
       else if (matchGroups.length === 1) {
         const gid = matchGroups[0].id;
@@ -6987,8 +7227,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
     // 冲突节点饼状设色
     for (const n of conflictNodes) {
-      const tags: string[] = n.tags || [];
-      const matchGroups = groups.filter(g => tags.includes(g.label));
+      const matchGroups = groups.filter(g => isNodeInGroup(n, g));
       (n as any)._pieColors = matchGroups.map(g => g.color || '#5B8FF9');
     }
 
@@ -7027,22 +7266,55 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   layoutDetails.className = 'fg-toolbar-panel fg-layout-panel';
   const layoutSum = document.createElement('summary');
   layoutSum.className = 'fg-toolbar-summary fg-action';
-  layoutSum.textContent = '布局';
+  layoutSum.textContent = '视图';
   layoutDetails.appendChild(layoutSum);
   const layoutPopover = document.createElement('div');
   layoutPopover.className = 'fg-toolbar-popover fg-layout-popover';
   layoutDetails.appendChild(layoutPopover);
+  const viewIntro = document.createElement('div');
+  viewIntro.className = 'fg-view-intro';
+  const viewIntroCopy = document.createElement('div');
+  viewIntroCopy.className = 'fg-view-intro-copy';
+  const viewIntroLabel = document.createElement('span');
+  viewIntroLabel.className = 'fg-view-section-label';
+  viewIntroLabel.textContent = '当前视图';
+  const viewIntroHint = document.createElement('span');
+  viewIntroHint.className = 'fg-view-intro-hint';
+  viewIntroHint.textContent = '内容保持不变，只改变观察方式';
+  viewIntroCopy.append(viewIntroLabel, viewIntroHint);
+  const viewIntroStatus = document.createElement('span');
+  viewIntroStatus.className = 'fg-view-status';
+  viewIntro.append(viewIntroCopy, viewIntroStatus);
+  layoutPopover.appendChild(viewIntro);
   const modeRow = document.createElement('div');
   modeRow.className = 'fg-mode-switcher';
   layoutPopover.appendChild(modeRow);
+  const viewAlternatives = document.createElement('details');
+  viewAlternatives.className = 'fg-view-alternatives';
+  const viewAlternativesSummary = document.createElement('summary');
+  viewAlternativesSummary.textContent = '其他观察方式';
+  viewAlternatives.appendChild(viewAlternativesSummary);
+  const alternateModeRow = document.createElement('div');
+  alternateModeRow.className = 'fg-view-alternate-modes';
+  viewAlternatives.appendChild(alternateModeRow);
+  layoutPopover.appendChild(viewAlternatives);
   const formRow = document.createElement('div');
   formRow.className = 'fg-semantic-form-switcher';
-  formRow.style.cssText = `display:flex;align-items:center;gap:5px;padding:7px 1px 1px;margin-top:6px;border-top:1px solid ${V('--fg-border-light','rgba(255,255,255,0.12)')};`;
+  formRow.style.cssText = `display:flex;align-items:center;gap:5px;padding:8px 1px 1px;border-top:1px solid ${V('--fg-border-light','rgba(255,255,255,0.12)')};`;
   layoutPopover.appendChild(formRow);
+  const viewToolsRow = document.createElement('div');
+  viewToolsRow.className = 'fg-view-tools';
+  layoutPopover.appendChild(viewToolsRow);
+  const semanticLegendDetails = document.createElement('details');
+  semanticLegendDetails.className = 'fg-semantic-legend-details';
+  const semanticLegendSummary = document.createElement('summary');
+  semanticLegendSummary.textContent = '关系与内容标记';
+  semanticLegendDetails.appendChild(semanticLegendSummary);
   const semanticLegend = document.createElement('div');
   semanticLegend.className = 'fg-semantic-legend';
-  semanticLegend.style.cssText = `display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 2px 1px;font-size:${V('--fg-font-xs','0.72em')};opacity:.62;`;
-  layoutPopover.appendChild(semanticLegend);
+  semanticLegend.style.cssText = `display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 2px 1px;font-size:${V('--fg-font-xs','0.72em')};opacity:.72;`;
+  semanticLegendDetails.appendChild(semanticLegend);
+  layoutPopover.appendChild(semanticLegendDetails);
   const localSemanticEmbeddings = new LocalSemanticEmbeddingProvider();
   let localSemanticState: LocalSemanticState = localSemanticEmbeddings.getState();
   const semanticVectorsByGraph = new WeakMap<GraphData, { signature: string; vectors: ReadonlyMap<string, readonly number[]> }>();
@@ -7054,14 +7326,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const usingLocalModel = ready && (graph as any)._semanticScene?.source === 'qwen-local';
     const lens = (graph as any)._semanticScene?.lens;
     const adaptive = (graph.settings?.semanticCardDensity ?? 'mixed') === 'mixed' && lens;
-    pill.textContent = `${usingLocalModel ? '自动 · Qwen' : '自动'}${adaptive ? ` · ${lens.expandedNodeIds.length}卡` : ''}`;
+    pill.textContent = `自动整理${adaptive ? ` · ${lens.expandedNodeIds.length} 张展开` : ''}`;
     const baseTitle = usingLocalModel
-      ? `自动语义排版 · 本地 ${localSemanticState.model || 'Qwen3 Embedding'} · ${localSemanticState.vectorCount} 个节点`
+      ? `自动整理 · 已启用本地语义辅助 · ${localSemanticState.vectorCount} 个条目`
       : ready
-        ? '自动语义排版 · 本地 Qwen 已就绪，等待足够的非敏感节点'
+        ? '自动整理 · 本地语义辅助已就绪，等待足够的非敏感内容'
         : localSemanticState.status === 'probing'
-        ? '自动语义排版 · 正在寻找本地 Qwen3 Embedding'
-        : '自动语义排版 · 轻量文本算法（本地模型可选）';
+        ? '自动整理 · 正在寻找可用的本地语义辅助'
+        : '自动整理 · 使用轻量文本算法';
     pill.title = adaptive
       ? `${baseTitle} · 自适应展开 ${lens.expandedNodeIds.length}/${graph.nodes.length}`
       : baseTitle;
@@ -7363,6 +7635,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   reloadVaultResourceViews = async (tabId: string) => {
     const runtime = runtimeRegistry.get(tabId);
     if (!runtime) return;
+    const retainedPrimaryMode = runtime === primaryRuntime ? activeMode : null;
+    const retainedPaneModes = new Map<PaneState, string>();
+    for (const owner of extraPanes) {
+      if (owner.runtime === runtime) retainedPaneModes.set(owner, owner.activeMode);
+    }
     const updated = await readVaultGraphData(tabId);
     if (!updated) {
       showToast(`原文已移动或删除：${vaultDisplayName(tabId)}`, 'warning', 4500);
@@ -7375,19 +7652,51 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     runtime.graph.settings = { ...DEFAULT_SETTINGS, ...(updated.settings || {}) };
     if (runtime === primaryRuntime) {
       applyPrimaryPaneSettings(runtime.graph.settings);
-      pane0.layout.clear();
-      activeMode = 'auto';
-      layoutMode = 'auto';
-      simManager.setStaticMode(true);
-      activateSemanticLayoutForPane(pane0, false);
+      activeMode = retainedPrimaryMode ?? activeMode;
+      layoutMode = activeMode;
+      if (activeMode === 'auto') {
+        simManager.setStaticMode(true);
+        activateSemanticLayoutForPane(pane0, false);
+      } else if (activeMode === 'force') {
+        simManager.setStaticMode(false);
+        simManager.initSim();
+      } else if (activeMode === 'tree') {
+        applyTreeLayoutV3();
+      } else if (activeMode === 'radial') {
+        const projection = getStructureProjection(graph);
+        computeRadialLayout(projection.nodes, projection.edges);
+        simManager.setStaticMode(true);
+        simManager.initStatic();
+        startStarLoop();
+      } else if (coordinateLayoutModes.has(activeMode)) {
+        pane0.layout.onGraphChanged();
+      } else {
+        simManager.setStaticMode(true);
+        simManager.initStatic();
+      }
     }
     for (const owner of extraPanes) {
       if (owner.runtime !== runtime) continue;
+      const retainedMode = retainedPaneModes.get(owner) ?? owner.activeMode;
       applyPaneSettings(owner, runtime.graph.settings);
-      owner.layout.clear();
-      owner.activeMode = 'auto';
-      owner.simManager?.setStaticMode(true);
-      activateSemanticLayoutForPane(owner, false);
+      owner.activeMode = retainedMode;
+      if (retainedMode === 'auto') {
+        owner.simManager?.setStaticMode(true);
+        activateSemanticLayoutForPane(owner, false);
+      } else if (retainedMode === 'force') {
+        owner.simManager?.setStaticMode(false);
+        owner.simManager?.initSim();
+      } else if (retainedMode === 'radial') {
+        const projection = getStructureProjection(owner.graph);
+        computeRadialLayout(projection.nodes, projection.edges);
+        owner.simManager?.setStaticMode(true);
+        owner.simManager?.initStatic();
+      } else if (coordinateLayoutModes.has(retainedMode)) {
+        owner.layout.onGraphChanged();
+      } else {
+        owner.simManager?.setStaticMode(true);
+        owner.simManager?.initStatic();
+      }
     }
     clearAllMedia();
     draw();
@@ -7426,7 +7735,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (toMode !== 'auto' && focused?.localContext) closeLocalContextForPane(focused);
     if (activeMode === 'tree') {
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
-      for (const e of graph.edges) { delete (e as any)._conflict; }
+      for (const e of graph.edges) { delete (e as any)._conflict; delete (e as any)._treeRoute; }
     } else if (activeMode === 'category' || activeMode === 'fullcat') {
       const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
       if (targetPane) clearPaneLayout(targetPane);
@@ -7538,17 +7847,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       showToast('同一文件正在多个窗格中打开，当前布局需要独占文档', 'warning', 4000);
       return;
     }
-    if (coordinateLayoutModes.has(mode) && graph.nodes.some((node: any) => isStructureNode(node) && node.structure.collapsed)) {
-      showToast('请先展开结构节点，再进入卡片或分类布局', 'warning', 4000);
-      return;
-    }
     currentAnimationCancel?.(); // 取消正在进行的动画
     if (mode !== 'auto' && layoutPane?.localContext) closeLocalContextForPane(layoutPane as PaneState);
     // 自动和力导向都尊重用户固定状态；进入展示布局前暂存。
     if ((activeMode === 'auto' || activeMode === 'force') && activeMode !== mode) saveFixedState();
     // 清理当前模式
     if (activeMode === 'auto') layoutPane?.layout.clear();
-    if (activeMode === 'tree') { for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } for (const e of graph.edges) { delete (e as any)._conflict; } }
+    if (activeMode === 'tree') { for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } for (const e of graph.edges) { delete (e as any)._conflict; delete (e as any)._treeRoute; } }
     if (activeMode === 'category' || activeMode === 'fullcat') { (graph as any)._categoryBoxes = null;
       for (const n of graph.nodes) { delete (n as any)._pieColors; }
       if (activeMode === 'fullcat') { for (const g of graph.groups) { const saved = (window as any)._savedGroupModes?.find((s: any) => s.id === g.id); if (saved) g.displayMode = saved.mode; } }
@@ -7566,6 +7871,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (['cardgrid', 'category', 'fullcat'].includes(mode)) boxSelectMode = false;
     syncFocusedCommands();
     renderModeBar();
+    // Persist the selection itself for every mode. Derived coordinates may be
+    // saved again when their animation settles, but the mode must survive an
+    // immediate file refresh or app restart.
+    scheduleSaveForRuntime(targetRuntime);
     const getCardLayoutBounds = (targetPixi: any) => () => {
       const canvasRect = targetPixi.app.canvas.getBoundingClientRect();
       const topRect = floatingTop.getBoundingClientRect();
@@ -7626,7 +7935,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (mode === 'auto') {
       restoreFixedState();
       if (layoutPane) activateSemanticLayoutForPane(layoutPane, true);
-      scheduleSaveForRuntime(targetRuntime);
     } else if (mode === 'force') {
       // 保存当前位置作为动画起点
       for (const n of graph.nodes) { (n as any)._sx = n.x; (n as any)._sy = n.y; }
@@ -7635,7 +7943,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       for (const e of graph.edges) { delete (e as any)._conflict; }
       (graph as any)._categoryBoxes = null;
       // 持久化并启动模拟（抑制首帧绘制，防止闪烁）
-      saveNow();
       _skipDraw = true;
       simManager.initSim();
       currentAnimationCancel = startNodeAnimation({
@@ -7682,11 +7989,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     } else if (mode === 'tree') {
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
-      applyTreeLayout();
+      applyTreeLayoutV3();
     } else if (mode === 'radial') {
       for (const n of graph.nodes) { (n as any)._sx = n.x; (n as any)._sy = n.y; }
-      computeRadialLayout(graph.nodes, graph.edges);
-      for (const n of graph.nodes) { (n as any)._tx = n.x; (n as any)._ty = n.y; }
+      const radialProjection = getStructureProjection(graph);
+      computeRadialLayout(radialProjection.nodes, radialProjection.edges);
+      for (const n of radialProjection.nodes) { (n as any)._tx = n.x; (n as any)._ty = n.y; }
       for (const n of graph.nodes) { n.x = (n as any)._sx; n.y = (n as any)._sy; }
       simManager.initSim();
       const aSim = simManager.getSim();
@@ -7703,11 +8011,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         onFrame: () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); },
         onComplete: () => {
           for (const n of graph.nodes) { delete (n as any)._sx; delete (n as any)._sy; delete (n as any)._tx; delete (n as any)._ty; n.fx = null; n.fy = null; }
-          // 动画期间节点可能已变化 → 用当前 graph 重算，保证数据一致
-          computeRadialLayout(graph.nodes, graph.edges);
+          // 动画期间节点或结构可能已变化 → 用当前投影重算，保证数据一致
+          const currentProjection = getStructureProjection(graph);
+          computeRadialLayout(currentProjection.nodes, currentProjection.edges);
           simManager.initSim();
           const s2 = simManager.getSim();
           if (s2) (s2 as any)._animating = false;
+          simManager.setStaticMode(true);
+          simManager.initStatic();
           startStarLoop();
         },
       });
@@ -7731,8 +8042,25 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const renderModeBar = () => {
     modeRow.innerHTML = '';
+    alternateModeRow.innerHTML = '';
     formRow.innerHTML = '';
+    viewToolsRow.innerHTML = '';
     semanticLegend.innerHTML = '';
+    const modeNames: Record<string, string> = {
+      auto: '自动整理',
+      force: '自由布局',
+      tree: '树形观察',
+      radial: starRotateMode ? '星型观察 · 旋转' : '星型观察',
+      category: '分组观察',
+      fullcat: '完整分组观察',
+      cardgrid: '卡片平铺',
+    };
+    const activeViewName = modeNames[activeMode] || activeMode || '自动整理';
+    viewIntroStatus.textContent = activeViewName;
+    viewAlternativesSummary.textContent = activeMode === 'auto'
+      ? '其他观察方式'
+      : `其他观察方式 · ${activeViewName}`;
+    if (activeMode !== 'auto') viewAlternatives.open = true;
     const mkPill = (label: string, mode: string, isActive: boolean) => {
       const pill = document.createElement('span');
       pill.className = 'fg-mode-pill' + (isActive ? ' is-active' : '');
@@ -7743,12 +8071,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       pill.onclick = () => { if (!isActive) applyLayoutMode(mode); };
       return pill;
     };
-    const automaticPill = mkPill('自动', 'auto', activeMode === 'auto');
+    const automaticPill = mkPill('自动整理', 'auto', activeMode === 'auto');
     automaticPill.classList.add('fg-semantic-auto-pill');
     modeRow.appendChild(automaticPill);
     updateSemanticModeLabel();
-    modeRow.appendChild(mkPill('力导向', 'force', activeMode === 'force'));
-    modeRow.appendChild(mkPill('树形', 'tree', activeMode === 'tree'));
+    alternateModeRow.appendChild(mkPill('自由（力导向）', 'force', activeMode === 'force'));
+    alternateModeRow.appendChild(mkPill('树形', 'tree', activeMode === 'tree'));
     // 星型：点一次 → 静态径向，再点一次 → 恒星星系自转（黄色高亮）
     (() => {
       const isRadial = activeMode === 'radial';
@@ -7769,11 +8097,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         _starLastFrameTime = performance.now();
         renderModeBar();
       };
-      modeRow.appendChild(pill);
+      alternateModeRow.appendChild(pill);
     })();
     // 分类按钮：三态循环  关闭 → 分类 → 全分类
     const catMode = activeMode === 'category' || activeMode === 'fullcat';
-    const catLabel = activeMode === 'fullcat' ? '全分类' : activeMode === 'category' ? '分类' : '分类';
+    const catLabel = activeMode === 'fullcat' ? '完整分组' : '分组';
     const catPill = document.createElement('span');
     catPill.className = 'fg-mode-pill' + (catMode ? ' is-active' : '');
     catPill.textContent = catLabel;
@@ -7785,11 +8113,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       else if (activeMode === 'fullcat') applyLayoutMode('auto');
       else applyLayoutMode('category');
     };
-    modeRow.appendChild(catPill);
-    modeRow.appendChild(mkPill('卡片', 'cardgrid', activeMode === 'cardgrid'));
+    alternateModeRow.appendChild(catPill);
+    alternateModeRow.appendChild(mkPill('卡片平铺', 'cardgrid', activeMode === 'cardgrid'));
     const textViewPill = document.createElement('span');
     textViewPill.className = 'fg-mode-pill fg-text-view-entry';
-    textViewPill.textContent = '文字视图';
+    textViewPill.textContent = '文字编辑';
     textViewPill.title = '在当前窗格中以文字编辑整张图';
     textViewPill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
     textViewPill.onclick = () => {
@@ -7798,7 +8126,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       mountTextEditor(pane);
       textEditors.get(pane)?.enter();
     };
-    modeRow.appendChild(textViewPill);
+    viewToolsRow.appendChild(textViewPill);
     // 格点吸附独立 toggle（三态：关闭→部分→全部→关闭），可与任何布局并存
     const snapToggle = document.createElement('span');
     snapToggle.className = 'fg-mode-pill fg-view-toggle';
@@ -7832,7 +8160,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       scheduleSave();
       updateSnapLabel();
     };
-    modeRow.appendChild(snapToggle);
+    viewToolsRow.appendChild(snapToggle);
     // 固定视图 toggle：镂空 / 实心
     const fixedViewToggle = document.createElement('span');
     fixedViewToggle.className = 'fg-mode-pill fg-view-toggle';
@@ -7845,7 +8173,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       fixedViewToggle.title = fixedHollow ? '固定节点镂空显示' : '固定节点实心显示';
       scheduleSave(); draw();
     };
-    modeRow.appendChild(fixedViewToggle);
+    viewToolsRow.appendChild(fixedViewToggle);
     for (const l of layouts) {
       const active = activeMode === l.name;
       const pill = mkPill(l.name, l.name, active);
@@ -7868,11 +8196,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const close = () => { menu.remove(); document.removeEventListener('click', close); };
         setTimeout(() => document.addEventListener('click', close), 0);
       };
-      modeRow.appendChild(pill);
+      alternateModeRow.appendChild(pill);
     }
     // + 保存按钮
     const addBtn = document.createElement('span');
-    addBtn.textContent = '+'; addBtn.title = '保存为布局';
+    addBtn.textContent = '+ 保存当前排布'; addBtn.title = '把当前节点位置保存为一种观察方式';
     addBtn.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
     addBtn.onclick = async () => {
       // 如果在自定义布局模式，直接更新当前布局
@@ -7894,14 +8222,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       });
       saveLayouts(); renderModeBar();
     };
-    modeRow.appendChild(addBtn);
+    alternateModeRow.appendChild(addBtn);
 
     const formPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
     const formGraph = formPane?.graph ?? graph;
     const density = formGraph.settings?.semanticCardDensity ?? 'mixed';
     const formLabel = document.createElement('span');
-    formLabel.textContent = '形态';
-    formLabel.title = '自动布局中卡片占用空间的方式';
+    formLabel.textContent = '信息粒度';
+    formLabel.title = '自动整理中，内容以卡片或节点呈现的密度';
     formLabel.style.cssText = `font-size:${V('--fg-font-xs','0.72em')};opacity:.58;margin-right:2px;white-space:nowrap;`;
     formRow.appendChild(formLabel);
     const densityChoices: Array<{ value: 'full' | 'mixed' | 'nodes'; label: string; title: string }> = [
@@ -7951,7 +8279,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       { text: '◎ 问题', title: '文字看起来像一个问题' },
       { text: '● 敏感', title: '可能包含密码、密钥等敏感信息；不参与语义分析' },
     ];
-    semanticLegend.style.display = activeMode === 'auto' ? 'flex' : 'none';
+    formRow.style.display = activeMode === 'auto' ? 'flex' : 'none';
+    semanticLegendDetails.style.display = activeMode === 'auto' ? 'block' : 'none';
     for (const entry of legendEntries) {
       const item = document.createElement('span');
       item.textContent = entry.text;
@@ -7983,9 +8312,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   groupInput.parentElement!.appendChild(groupDropdown);
   groupInput.addEventListener('input', () => {
     const q = groupInput.value.trim().toLowerCase();
+    const targetPane = focusedPaneState();
+    const targetGraph = paneRuntimeGraph(targetPane);
+    syncStructureCollections(targetGraph);
     groupDropdown.innerHTML = '';
     if (!q) { groupDropdown.style.display = 'none'; return; }
-    const matched = graph.groups.filter(g => g.label.toLowerCase().includes(q));
+    const matched = targetGraph.groups.filter(g => g.label.toLowerCase().includes(q));
     if (matched.length > 0) {
       matched.forEach(g => {
         const item = document.createElement('div');
@@ -7994,7 +8326,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const dot = document.createElement('span');
         dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${g.color};flex-shrink:0;`;
         item.appendChild(dot); item.appendChild(document.createTextNode(g.label));
-        item.onmousedown = (ev) => { ev.preventDefault(); fillGroup(g.id); groupDropdown.style.display = 'none'; };
+        item.onmousedown = (ev) => { ev.preventDefault(); withFocusedPane(() => fillGroup(g.id)); groupDropdown.style.display = 'none'; };
         item.onmouseenter = () => item.style.background = V('--fg-button-hover','#e8e8e8');
         item.onmouseleave = () => item.style.background = '';
         groupDropdown.appendChild(item);
@@ -8006,9 +8338,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     createItem.textContent = `+ 创建集合 "${q}"`;
     createItem.onmousedown = (ev) => {
       ev.preventDefault();
-      saveUndo();
+      targetPane.undoManager.pushSnapshot(targetGraph);
       const newGroup = { id: 'g_' + Date.now(), label: q, color: '#5B8FF9', borderColor: '#3A6FD8', opacity: 0.15, displayMode: 'rect' as any, nodeColorMode: 'off' as any };
-      graph.groups.push(newGroup); scheduleSave(); draw(); fillGroup(newGroup.id);
+      targetGraph.groups.push(newGroup);
+      scheduleSaveForRuntime(targetPane.runtime);
+      draw();
+      withFocusedPane(() => fillGroup(newGroup.id));
       groupDropdown.style.display = 'none';
     };
     groupDropdown.appendChild(createItem);
@@ -10079,7 +10414,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getCanvas: () => px.app.canvas as any,
     captureMagnifierRegion: (region: Parameters<PixiLayers['captureMagnifierRegion']>[0]) => px.captureMagnifierRegion(region),
     getNodeExpand: () => pi.nodeExpand, getLineExpand: () => pi.lineExpand,
-    getSemanticEdgeRouting: () => pi.activeMode === 'auto',
+    getSemanticEdgeRouting: () => pi.activeMode === 'auto' || pi.activeMode === 'tree',
     getDraggingNode: () => pi.draggingNode, setDraggingNode: (v: any) => { pi.draggingNode = v; },
     getWasDragged: () => pi.wasDragged, setWasDragged: (v: boolean) => { pi.wasDragged = v; },
     draw, onContextMenu: (type: 'blank'|'node'|'edge'|'group', id: string | null, x: number, y: number) => onContextMenu(pi, type, id, x, y),
@@ -10234,7 +10569,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
       for (const g of runtimeGraph().groups) {
         if (g.displayMode === 'none') continue;
-        const members = nodes.filter((nd: any) => (nd.tags || []).includes(g.label));
+        const members = nodes.filter((nd: any) => isNodeInGroup(nd, g));
         if (members.length === 0) continue;
         if (g.displayMode === 'fluid') { for (const m of members) { if ((m.x - x) ** 2 + (m.y - y) ** 2 <= ((m.radius || 9) * (g.fluidRadius || 3)) ** 2) { pi.selGroup = g.id; if (pi.index === PANE_LEFT) fillGroup(g.id); draw(); return; } } continue; }
       }

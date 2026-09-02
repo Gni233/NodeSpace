@@ -154,11 +154,11 @@ test('wide toolbar popovers clamp to both viewport edges', async () => {
   );
 });
 
-test('toolbar DOM construction keeps tools, layout, and appearance in primaryRow', async () => {
+test('toolbar DOM construction keeps tools, view, and appearance in primaryRow', async () => {
   const source = await readFile(mainPath, 'utf8');
 
   assert.match(source, /controlsSum\.textContent = '工具';/);
-  assert.match(source, /layoutSum\.textContent = '布局';/);
+  assert.match(source, /layoutSum\.textContent = '视图';/);
   assert.match(source, /settingsSum\.textContent = '外观';/);
   assert.doesNotMatch(source, /(?:controlsSum|layoutSum|settingsSum)\.textContent\s*=\s*['"`][^'"`]*[⌄⌃‹›←→]/);
 
@@ -167,6 +167,13 @@ test('toolbar DOM construction keeps tools, layout, and appearance in primaryRow
   assert.match(source, /popover: layoutPopover, align: 'end'/);
   assert.match(source, /popover: setDiv, align: 'end'/);
   assert.match(source, /layoutPopover\.appendChild\(modeRow\);/);
+  assert.match(source, /viewIntroHint\.textContent = '内容保持不变，只改变观察方式';/);
+  assert.match(source, /viewAlternativesSummary\.textContent = '其他观察方式';/);
+  assert.match(source, /alternateModeRow\.appendChild\(mkPill\('自由（力导向）'/);
+  assert.match(source, /viewToolsRow\.appendChild\(textViewPill\);/);
+  assert.match(source, /semanticLegendDetails\.appendChild\(semanticLegend\);/);
+  assert.match(source, /addBtn\.textContent = '\+ 记录';/);
+  assert.match(source, /linkBtn\.textContent = '关系';/);
   assert.match(source, /setDiv\.appendChild\(colorStyleRow\);/);
   assert.match(source, /setDiv\.appendChild\(fontStyleRow\);/);
   assert.doesNotMatch(source, /rightRail|appearanceBtn|modeCollapsed|updateModeToggle/);

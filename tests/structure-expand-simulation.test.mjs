@@ -29,7 +29,11 @@ async function importSimulation() {
     path.join(sourceRoot, 'structure-nodes.ts'),
     new Map([[ './node-order', nodeOrderUrl ]]),
   );
-  const hitUrl = await transpiledDataUrl(path.join(sourceRoot, 'geometry', 'hit.ts'));
+  const groupUrl = await transpiledDataUrl(path.join(sourceRoot, 'group-membership.ts'));
+  const hitUrl = await transpiledDataUrl(
+    path.join(sourceRoot, 'geometry', 'hit.ts'),
+    new Map([[ '../group-membership', groupUrl ]]),
+  );
   const d3Url = pathToFileURL(require.resolve('d3')).href;
   const simulationUrl = await transpiledDataUrl(
     path.join(sourceRoot, 'simulation.ts'),
@@ -37,6 +41,7 @@ async function importSimulation() {
       [ 'd3', d3Url ],
       [ './geometry/hit', hitUrl ],
       [ './structure-nodes', structureUrl ],
+      [ './group-membership', groupUrl ],
     ]),
   );
   return import(simulationUrl);

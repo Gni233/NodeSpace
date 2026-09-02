@@ -11,6 +11,7 @@ import { setupCardInteractions, InteractionContext } from './interactions';
 import { LayoutController } from '../layout-controller';
 import { sharedState } from '../shared-state';
 import { isCardForceLink } from './force-links';
+import { getStructureProjection } from '../structure-nodes';
 
 export type { Card, CardGridState } from './types';
 
@@ -32,7 +33,6 @@ interface CardSimData {
 }
 
 const ACTIVE_FRAME_MS = 15;
-const IDLE_FRAME_MS = 32;
 const ACTIVE_FPS_HOLD_MS = 300;
 
 /** Scale a card node's label without changing its circle or interactive area. */
@@ -63,6 +63,8 @@ export class CardGridController implements LayoutController {
   private _cardSims = new Map<string, d3.Simulation<any, any>>();
   private _cardByNode = new Map<string, Card>();
   private _graphNodeById = new Map<string, any>();
+  private _layoutNodes: any[] = [];
+  private _layoutEdges: any[] = [];
   private _globalSimNodeById = new Map<string, any>();
   private _cleanupInteraction: (() => void) | null = null;
   private _rafId: number | null = null;
@@ -307,21 +309,36 @@ export class CardGridController implements LayoutController {
     this.directSaveFn?.();
   }
 
-  /** 交互和布局过渡按显示器帧率绘制，稳定后降至约 30fps。 */
+  /** 卡片交互始终跟随显示器帧率；静止场景由按需渲染负责省电。 */
   wake(alpha = 0.35): void {
     if (!this._active) return;
     this._activeFpsUntil = performance.now() + ACTIVE_FPS_HOLD_MS;
     for (const [, sim] of this._cardSims) {
-      sim.alpha(Math.max(sim.alpha(), alpha)).alphaTarget(0.018).stop();
+      sim.alpha(Math.max(sim.alpha(), alpha)).alphaTarget(0).stop();
     }
     if (this._rafId != null) return;
     const loop = (now: number) => {
       if (!this._active) { this._rafId = null; return; }
-      this._rafId = requestAnimationFrame(loop);
-      const frameInterval = now < this._activeFpsUntil ? ACTIVE_FRAME_MS : IDLE_FRAME_MS;
-      if (now - this._lastRenderAt < frameInterval) return;
+      if (now - this._lastRenderAt < ACTIVE_FRAME_MS) {
+        this._rafId = requestAnimationFrame(loop);
+        return;
+      }
       this._lastRenderAt = now;
       this.drawFn();
+      const cardsMoving = this._state.cards.some(card =>
+        card.targetX != null && (
+          Math.abs(card.targetX - card.x) > 0.15
+          || Math.abs((card.targetY ?? card.y) - card.y) > 0.15
+          || Math.abs((card.targetW ?? card.w) - card.w) > 0.15
+          || Math.abs((card.targetH ?? card.h) - card.h) > 0.15
+        ),
+      );
+      const simulationsMoving = [...this._cardSims.values()].some(sim => sim.alpha() > 0.012);
+      if (now >= this._activeFpsUntil && !cardsMoving && !simulationsMoving) {
+        this._rafId = null;
+        return;
+      }
+      this._rafId = requestAnimationFrame(loop);
     };
     this._rafId = requestAnimationFrame(loop);
   }
@@ -436,27 +453,38 @@ export class CardGridController implements LayoutController {
   private _doLayout(): void {
     if (!this._graph) return;
 
+    const projection = getStructureProjection(this._graph);
+    this._layoutNodes = projection.nodes;
+    this._layoutEdges = projection.edges;
+
     const sk = this._state.source !== 'components' ? 'groupCardOrders' : 'cardOrders';
     const savedOrders = (this._graph.settings as any)?.[sk] ?? null;
 
     if (this._state.source !== 'components') {
-      const newCards = buildGroupCards(this._graph, this._allGroups);
+      const newCards = buildGroupCards(this._graph, this._allGroups, this._layoutNodes);
       this._state.cards = syncGroupCards(this._state.cards, newCards, savedOrders);
     } else {
-      const ns = this._graph?.nodes || [];
+      const ns = this._layoutNodes;
       for (const n of ns) {
         if (!this._creationOrder.has(n.id)) this._creationOrder.set(n.id, this._creationSeq++);
       }
-      const comps = findComponents(ns, this._graph?.edges || []);
+      const comps = findComponents(ns, this._layoutEdges);
       this._state.cards = syncComponentCards(this._state.cards, comps, this._creationOrder, savedOrders);
     }
 
     this._lastCompHash = this._computeCompHash();
     this._cardByNode.clear();
     this._graphNodeById.clear();
-    for (const node of this._graph.nodes) this._graphNodeById.set(node.id, node);
+    for (const node of this._layoutNodes) this._graphNodeById.set(node.id, node);
     for (const card of this._state.cards) {
       for (const nodeId of card.nodeIds) this._cardByNode.set(nodeId, card);
+      card.areaWeight = card.nodeIds.reduce((sum, nodeId) => {
+        const node = this._graphNodeById.get(nodeId);
+        const textLength = String(node?.label || '').length + String(node?.note || '').length;
+        const readingWeight = Math.min(2.4, Math.sqrt(textLength) / 12);
+        const resourceWeight = node?.resourceRef || node?.spaceRef || node?.mediaType ? 0.8 : 0;
+        return sum + 1 + readingWeight + resourceWeight;
+      }, 0);
     }
     const bounds = this._getLayoutBounds?.() ?? { x: 0, y: 0, w: this._screenW, h: this._screenH };
     layoutCards(this._state.cards, Math.max(1, bounds.w), Math.max(1, bounds.h), this._state.gap, bounds.x, bounds.y);
@@ -475,7 +503,7 @@ export class CardGridController implements LayoutController {
     this._globalSimNodeById.clear();
     for (const node of gsim?.nodes?.() ?? []) this._globalSimNodeById.set(node.id, node);
 
-    const allEdges = this._graph.edges || [];
+    const allEdges = this._layoutEdges;
 
     for (const card of this._state.cards) {
       if (card.nodeIds.length === 0) continue;
@@ -553,8 +581,8 @@ export class CardGridController implements LayoutController {
           .distance(linkDistance)
           .strength(this._simParams.getLinkStr?.() ?? 0.3));
 
-      // 手动推进；小幅 alphaTarget 保留持续的力学响应。
-      sim.alpha(1).alphaTarget(0.018).stop();
+      // 手动推进并自然冷却；交互会通过 wake() 重新加热。
+      sim.alpha(1).alphaTarget(0).stop();
       (sim as any)._cardData = data;
 
       this._cardSims.set(card.id, sim);
@@ -565,7 +593,7 @@ export class CardGridController implements LayoutController {
     const vp = this._pixi?.viewport;
     if (!vp) return false;
     const w = vp.toWorld(sx, sy);
-    for (const n of this._graph?.nodes ?? []) {
+    for (const n of this._layoutNodes) {
       const r = (n.radius ?? 14) + 6;
       if ((w.x - n.x) ** 2 + (w.y - n.y) ** 2 <= r * r) return true;
     }
@@ -661,14 +689,15 @@ export class CardGridController implements LayoutController {
   }
 
   private _computeCompHash(): string {
+    const projection = getStructureProjection(this._graph);
     if (this._state.source !== 'components') {
-      return buildGroupCards(this._graph, this._allGroups)
+      return buildGroupCards(this._graph, this._allGroups, projection.nodes)
         .map(c => `${c.id}:${[...c.nodeIds].sort().join(',')}`)
         .sort()
         .join('|');
     }
-    const ns = this._graph?.nodes || [];
-    const es = this._graph?.edges || [];
+    const ns = projection.nodes;
+    const es = projection.edges;
     return findComponents(ns, es).map(c => c.sort().join(',')).sort().join('|');
   }
 }

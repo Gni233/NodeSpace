@@ -113,12 +113,13 @@ export function updateEdges(
     edgeColorGradient?: boolean;
     edgeWidthByLevel?: boolean;
     semanticMode?: boolean;
+    treeMode?: boolean;
     semanticZoom?: number;
     semanticFocusNodeId?: string | null;
     semanticLabelBudget?: number;
   }
 ) {
-  const { hiddenNodes, focusNeighborIds, focusEdgeIndices, collapsedEdgeIndices, alpha = 0.6, selectedEdgeIndex, boxSelectedEdgeIndices, collapseEdgeFade, nodeColorMap, edgeColorGradient, edgeWidthByLevel, semanticMode = false, semanticZoom = 1, semanticFocusNodeId = null, semanticLabelBudget } = opts;
+  const { hiddenNodes, focusNeighborIds, focusEdgeIndices, collapsedEdgeIndices, alpha = 0.6, selectedEdgeIndex, boxSelectedEdgeIndices, collapseEdgeFade, nodeColorMap, edgeColorGradient, edgeWidthByLevel, semanticMode = false, treeMode = false, semanticZoom = 1, semanticFocusNodeId = null, semanticLabelBudget } = opts;
   const isFocusActive = focusNeighborIds && focusNeighborIds.size > 0;
   const semanticFocusId = semanticMode && semanticFocusNodeId ? String(semanticFocusNodeId) : null;
   const useGradient = edgeColorGradient && nodeColorMap;
@@ -156,7 +157,7 @@ export function updateEdges(
 
     const isSelected = selectedEdgeIndex === idx;
     const isBoxSelected = boxSelectedEdgeIndices?.has(idx) ?? false;
-    const grammar = semanticMode
+    const grammar = semanticMode || (treeMode && e._treeRoute)
       ? inferSemanticEdgeGrammar(e)
       : { role: 'explicit' as const, tentative: false, cue: 'explicit' };
     const semanticIncident = !!semanticFocusId && (String(s.id) === semanticFocusId || String(t.id) === semanticFocusId);
@@ -211,7 +212,7 @@ export function updateEdges(
     const sy2 = s.y + uy2 * (sr + 1);
     const tx2 = t.x - ux2 * (e.arrow ? tr + 7 : tr + 1);
     const ty2 = t.y - uy2 * (e.arrow ? tr + 7 : tr + 1);
-    const route = semanticMode
+    const route = semanticMode || (treeMode && e._treeRoute)
       ? buildSemanticEdgeRoute(
         { x: sx2, y: sy2 },
         { x: tx2, y: ty2 },

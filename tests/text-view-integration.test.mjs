@@ -112,7 +112,7 @@ test('main wiring exposes text view per pane and protects drafts and render work
   const editor = await readFile(path.join(root, 'src', 'text-view', 'editor.ts'), 'utf8');
   const paneState = await readFile(path.join(root, 'src', 'pane-state.ts'), 'utf8');
 
-  assert.match(main, /textViewPill\.textContent = '文字视图'/);
+  assert.match(main, /textViewPill\.textContent = '文字编辑'/);
   assert.match(main, /mountTextEditor\(pane0\)/);
   assert.match(main, /mountTextEditor\(pane1\)/);
   assert.match(main, /mountTextEditor\(np\)/);

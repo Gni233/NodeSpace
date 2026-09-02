@@ -1,4 +1,5 @@
 import { Card, CardGridState, CardSource } from './types';
+import { isNodeInGroup, isStructureCollection } from '../group-membership';
 
 // ---- 连通分量查找 ----
 
@@ -41,18 +42,17 @@ export function findComponents(nodes: any[], edges: any[]): string[][] {
  * @param graph 图数据
  * @param allGroups true=全分类模式，false=仅 displayMode !== 'none' 的组
  */
-export function buildGroupCards(graph: any, allGroups: boolean): Card[] {
-  const nodes: any[] = graph.nodes || [];
+export function buildGroupCards(graph: any, allGroups: boolean, visibleNodes?: any[]): Card[] {
+  const nodes: any[] = visibleNodes ?? graph.nodes ?? [];
   const groups: any[] = allGroups
     ? (graph.groups || [])
-    : (graph.groups || []).filter((g: any) => g.displayMode !== 'none');
+    : (graph.groups || []).filter((g: any) => g.displayMode !== 'none' || isStructureCollection(g));
   const groupNodes = new Map<string, any[]>();
   const conflictNodes: any[] = [];
   const noGroupNodes: any[] = [];
 
   for (const n of nodes) {
-    const tags: string[] = n.tags || [];
-    const matchGroups = groups.filter((g: any) => tags.includes(g.label));
+    const matchGroups = groups.filter((g: any) => isNodeInGroup(n, g));
     if (matchGroups.length === 0) {
       noGroupNodes.push(n);
     } else if (matchGroups.length === 1) {

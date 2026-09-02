@@ -1,6 +1,51 @@
 import type { GraphData } from './data/storage';
 import { assignCreatedOrder } from './node-order';
 
+const isStructureCollectionRecord = (group: any): boolean =>
+  group?.collectionKind === 'structure' && typeof group?.structureId === 'string';
+
+/** Keep the collection projection beside structure mutations so the structure
+ * model remains dependency-free and can still be used by lightweight clients. */
+export function syncStructureCollections(graph: GraphData): boolean {
+  graph.groups ||= [];
+  const structures = (graph.nodes || []).filter(node =>
+    typeof node?.id === 'string' && Array.isArray(node?.structure?.memberIds),
+  );
+  const structureIds = new Set(structures.map(node => node.id));
+  let changed = false;
+  for (let index = graph.groups.length - 1; index >= 0; index--) {
+    const group = graph.groups[index];
+    if (isStructureCollectionRecord(group) && !structureIds.has(group.structureId)) {
+      graph.groups.splice(index, 1);
+      changed = true;
+    }
+  }
+  for (const structure of structures) {
+    let group = graph.groups.find(candidate =>
+      isStructureCollectionRecord(candidate) && candidate.structureId === structure.id,
+    );
+    if (!group) {
+      group = {
+        id: `g_structure_${structure.id}`,
+        label: String(structure.label || structure.id),
+        collectionKind: 'structure',
+        structureId: structure.id,
+        displayMode: 'none',
+        color: structure.color || '#7C8AA5',
+        borderColor: structure.color || '#60708C',
+        opacity: 0.12,
+        nodeColorMode: 'off',
+      };
+      graph.groups.push(group);
+      changed = true;
+    }
+    const label = String(structure.label || structure.id);
+    if (group.label !== label) { group.label = label; changed = true; }
+    if (structure.color && group.color !== structure.color) { group.color = structure.color; changed = true; }
+  }
+  return changed;
+}
+
 export interface StructureNodeData {
   memberIds: string[];
   collapsed: boolean;
@@ -187,6 +232,7 @@ export function normalizeStructureRelations(graph: GraphData): StructureNormaliz
       if (member) member.structureParentId = structureNode.id;
     }
   }
+  syncStructureCollections(graph);
   return { dissolvedStructureIds, protectedStructureIds };
 }
 
@@ -396,7 +442,9 @@ export function transactStructureMembership(
   request: StructureMembershipRequest,
   beforeChange?: StructureMembershipBeforeChange,
 ): StructureMembershipTransactionResult {
-  return runStructureMembershipTransaction(graph, request, true, beforeChange);
+  const result = runStructureMembershipTransaction(graph, request, true, beforeChange);
+  if (result.status === 'changed') syncStructureCollections(graph);
+  return result;
 }
 
 /** Lightweight compatibility entry point for add-only callers. */
@@ -623,6 +671,7 @@ export function createStructureNode(graph: GraphData, memberIds: string[], label
 
   for (const member of members) member.structureParentId = id;
   graph.nodes.push(structureNode);
+  syncStructureCollections(graph);
   return structureNode;
 }
 
@@ -630,6 +679,7 @@ export function setStructureCollapsed(graph: GraphData, structureId: string, col
   const structureNode = graph.nodes.find(node => node.id === structureId);
   if (!isStructureNode(structureNode)) return false;
   structureNode.structure.collapsed = collapsed;
+  syncStructureCollections(graph);
   return true;
 }
 
@@ -646,6 +696,7 @@ export function dissolveStructureNode(graph: GraphData, structureId: string): bo
     if (members.has(node.id) && node.structureParentId === structureId) delete node.structureParentId;
   }
   graph.nodes.splice(index, 1);
+  syncStructureCollections(graph);
   return true;
 }
 
@@ -664,6 +715,7 @@ export function detachNodeFromStructure(graph: GraphData, nodeId: string): void 
       const member = graph.nodes.find(candidate => candidate.id === memberId);
       if (member?.structureParentId === nodeId) delete member.structureParentId;
     }
+    syncStructureCollections(graph);
     return;
   }
   const parentId = node?.structureParentId;
@@ -672,5 +724,6 @@ export function detachNodeFromStructure(graph: GraphData, nodeId: string): void 
   if (isStructureNode(parent)) {
     parent.structure.memberIds = parent.structure.memberIds.filter((id: string) => id !== nodeId);
     if (parent.structure.memberIds.length < 2) dissolveStructureNode(graph, parentId);
+    else syncStructureCollections(graph);
   }
 }

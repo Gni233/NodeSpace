@@ -57,7 +57,7 @@ export function inferSemanticEdgeGrammar(edge: any): SemanticEdgeGrammar {
   if (edge?._obsidianLink || REFERENCE_KIND.test(declared)) {
     return { role: 'reference', tentative: false, cue: declared || 'obsidian-link' };
   }
-  if (edge?._structureMembership || STRUCTURE_KIND.test(declared)) {
+  if (edge?._structureMembership || edge?._treeRoute || STRUCTURE_KIND.test(declared)) {
     return { role: 'structure', tentative: false, cue: declared || 'structure' };
   }
   if (DIRECTION_KIND.test(declared) || edge?.arrow === true) {

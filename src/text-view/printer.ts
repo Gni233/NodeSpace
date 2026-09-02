@@ -58,7 +58,9 @@ export function printTextGraph(graph: GraphDataLike, options: PrintOptions | str
   const nodeById = new Map(nodes.map(node => [String(node.id), node]));
   const lines = [encodeField(graphName ?? String(graph.graphName ?? '未命名图'))];
 
-  const representedGroupLabels = new Set((graph.groups ?? []).map(group => String(group.label ?? '')));
+  const representedGroupLabels = new Set((graph.groups ?? [])
+    .filter(group => group.collectionKind !== 'structure')
+    .map(group => String(group.label ?? '')));
   for (const node of nodes) {
     const id = String(node.id);
     const fields = [reference(node, aliases.get(id)!)];
@@ -76,7 +78,9 @@ export function printTextGraph(graph: GraphDataLike, options: PrintOptions | str
   const groupAliases = stableAliases(graph.groups ?? [], 'g');
   for (const group of graph.groups ?? []) {
     const id = String(group.id);
-    const memberNodes = nodes.filter(node => Array.isArray(node.tags) && node.tags.includes(group.label));
+    const memberNodes = group.collectionKind === 'structure' && typeof group.structureId === 'string'
+      ? nodes.filter(node => node.structureParentId === group.structureId)
+      : nodes.filter(node => Array.isArray(node.tags) && node.tags.includes(group.label));
     const members = memberNodes.map(node => reference(node, aliases.get(String(node.id))!));
     const fields = [encodeField(`${String(group.label ?? '')}@${groupAliases.get(id)!}`), ...properties(group, GROUP_SKIP, NO_DEFAULTS)];
     lines.push(`${fields.join('  ')} {${members.join('  ')}}`);

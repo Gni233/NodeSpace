@@ -361,9 +361,10 @@ test('card grid uses bounded continuous motion and independent card gestures', a
   const treemap = await readFile(path.join(root, 'src', 'cardgrid', 'treemap.ts'), 'utf8');
   assert.doesNotMatch(source, /n\.x\s*\+=\s*0\.2/);
   assert.doesNotMatch(source, /sim\.alphaTarget\(0\.3\)/);
-  assert.match(source, /sim\.alpha\(1\)\.alphaTarget\(0\.018\)\.stop\(\)/);
+  assert.match(source, /sim\.alpha\(1\)\.alphaTarget\(0\)\.stop\(\)/);
   assert.match(source, /const ACTIVE_FRAME_MS = 15/);
-  assert.match(source, /now < this\._activeFpsUntil \? ACTIVE_FRAME_MS : IDLE_FRAME_MS/);
+  assert.doesNotMatch(source, /IDLE_FRAME_MS|32\s*\/\*.*fps/i);
+  assert.match(source, /now >= this\._activeFpsUntil && !cardsMoving && !simulationsMoving/);
   assert.doesNotMatch(source, /const nodeMap = new Map<string, any>\(this\._graph\.nodes/);
   assert.match(source, /Math\.max\(0\.45, Math\.min\(2\.5,/);
   assert.match(source, /_viewSaveTimer/);

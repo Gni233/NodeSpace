@@ -3,7 +3,8 @@ import { GraphData } from "./data/storage";
 import { safePrompt } from './dialog';
 import { confirmAction } from './toast';
 import {Z_EDIT_PANEL, V } from "./layout-constants";
-import { detachNodeFromStructure, isStructureNode } from './structure-nodes';
+import { detachNodeFromStructure, isStructureNode, syncStructureCollections } from './structure-nodes';
+import { effectiveNodeTags, groupMembers, isStructureCollection } from './group-membership';
 
 export type StructureReflectionField = 'purpose' | 'summary';
 
@@ -364,13 +365,14 @@ export function createEditPanel(
     if (selNode) {
       const n = ctx.graph.nodes.find(n => n.id === selNode);
       if (n) {
+        const structureNode = isStructureNode(n);
         n.label = nName.value.trim() || n.id;
+        if (structureNode) syncStructureCollections(ctx.graph);
         n.note = nNote.value.trim();
         // tags 由 pills 直接管理，不需要从 textarea 读取
         n.color = nCol.value;
         n.mediaType = nMediaType.value || null;
         n.mediaUrl = nMediaUrl.value || null;
-        const structureNode = isStructureNode(n);
         n.radiusMode = structureNode ? 'level' : radModeSelect.value as 'level' | 'custom';
         if (structureNode || radModeSelect.value === 'level') {
           n.headingLevel = parseInt(radLevelSlider.value);
@@ -451,6 +453,7 @@ export function createEditPanel(
       currentNameEdit.undoSaved = true;
     }
     node.label = label;
+    if (isStructureNode(node)) syncStructureCollections(ctx.graph);
     const simNode = getSimulation()?.nodes().find((candidate: any) => candidate.id === selectedNodeId);
     if (simNode) simNode.label = label;
     ctx.triggerSave();
@@ -552,12 +555,14 @@ export function createEditPanel(
     // 从已保存的 node 中读取
     const selNode = getSelNode();
     const n = selNode ? ctx.graph.nodes.find(n => n.id === selNode) : null;
-    const tags: string[] = n ? (n.tags || []) : [];
+    const storedTags: string[] = n ? (n.tags || []) : [];
+    const tags: string[] = n ? effectiveNodeTags(ctx.graph, n) : [];
     for (const t of tags) {
       const pill = el("span", { text: t, style: `font-size:${V('--fg-font-xs', '0.72em')};padding:1px 6px;border-radius:${V('--fg-radius-sm','6px')};border:1px solid rgba(255,255,255,0.2);white-space:nowrap;display:inline-flex;align-items:center;gap:3px;cursor:pointer;` });
       pill.title = '点击编辑集合';
       pill.onclick = () => {
-        let g = ctx.graph.groups.find(g => g.label === t);
+        let g = ctx.graph.groups.find(g => g.structureId === n?.structureParentId && g.label === t)
+          || ctx.graph.groups.find(g => g.label === t);
         if (!g) {
           g = { id: 'g_' + Date.now(), label: t, displayMode: 'rect', color: '#5B8FF9', borderColor: '#3A6FD8', opacity: 0.15, nodeColorMode: 'off' as const, nodeColor: '#5B8FF9' };
           ctx.graph.groups.push(g);
@@ -566,17 +571,24 @@ export function createEditPanel(
         fillGroup(g.id);
       };
       const x = el("span", { text: '\u2715', style: `margin-left:1px;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;border-radius:${V('--fg-radius-sm','6px')};font-size:${V('--fg-font-xxs', '0.65em')};color:rgba(255,255,255,0.45);cursor:pointer;transition:all 0.15s ease;` });
+      const derivedStructureTag = !storedTags.includes(t) && !!n?.structureParentId;
+      if (derivedStructureTag) {
+        x.textContent = '⌁';
+        x.title = '该标签来自结构成员关系';
+        x.style.cursor = 'default';
+      }
       x.onmouseenter = () => { x.style.background = `var(--fg-accent,#5B8FF9)`; x.style.color = '#fff'; };
       x.onmouseleave = () => { x.style.background = 'transparent'; x.style.color = 'rgba(255,255,255,0.45)'; };
       x.onclick = (e: Event) => {
         e.stopPropagation();
+        if (derivedStructureTag) return;
         const idx = tags.indexOf(t);
         if (idx >= 0) tags.splice(idx, 1);
-        (n as any).tags = tags;
+        (n as any).tags = tags.filter(tag => storedTags.includes(tag));
         // 若无其他节点使用此标签，删除对应集合
         if (!ctx.graph.nodes.some(nd => (nd.tags || []).includes(t))) {
           const gIdx = ctx.graph.groups.findIndex(g => g.label === t);
-          if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1);
+          if (gIdx >= 0 && !isStructureCollection(ctx.graph.groups[gIdx])) ctx.graph.groups.splice(gIdx, 1);
         }
         triggerSave(); draw();
         refreshTagPills();
@@ -757,7 +769,15 @@ export function createEditPanel(
   const groupDelBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;` });
   groupDelBtn.className = 'fg-inspector-danger';
   groupDelBtn.onclick = async () => {
-    if (getSelGroup()) { const gIdx = ctx.graph.groups.findIndex(g => g.id === getSelGroup()); if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1); getInitSim()(); }
+    if (getSelGroup()) {
+      const gIdx = ctx.graph.groups.findIndex(g => g.id === getSelGroup());
+      if (gIdx >= 0 && isStructureCollection(ctx.graph.groups[gIdx])) {
+        ctx.onToast?.('结构集合由对应结构管理，请从结构卡片调整成员', 'info');
+        return;
+      }
+      if (gIdx >= 0) ctx.graph.groups.splice(gIdx, 1);
+      getInitSim()();
+    }
     await getSaveData()(); clearEd(); getUpdateInfo()(); getUpdateSelects()(); draw();
   };
   groupTitleRow.appendChild(groupDelBtn);
@@ -987,7 +1007,10 @@ export function createEditPanel(
     fluidOpacityRow.style.display = g.displayMode === 'fluid' ? 'block' : 'none';
 
     gMems.innerHTML = '';
-    const members = ctx.graph.nodes.filter(n => (n.tags || []).includes(g.label));
+    groupSectionTitle.textContent = isStructureCollection(g) ? '结构集合' : '集合';
+    (groupDelBtn as HTMLButtonElement).disabled = isStructureCollection(g);
+    groupDelBtn.title = isStructureCollection(g) ? '结构集合随对应结构管理' : '删除集合';
+    const members = groupMembers(ctx.graph, g);
     members.forEach(n => {
       const it = el("div"); it.textContent = n.label || n.id; it.style.cursor = 'pointer';
       it.onclick = () => { fillNode(n.id); showPanel(); };

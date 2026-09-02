@@ -165,7 +165,9 @@ export function compileAst(ast: TextGraphAst, original?: GraphDataLike): Compile
 
   // Group membership is semantic, not overlay-only metadata. Remove memberships
   // belonging to the old group set before applying the complete text body.
-  const oldGroupLabels = new Set(base.groups.map(group => String(group.label ?? '')));
+  const oldGroupLabels = new Set(base.groups
+    .filter(group => group.collectionKind !== 'structure')
+    .map(group => String(group.label ?? '')));
   for (const node of nodes) {
     if (Array.isArray(node.tags)) node.tags = node.tags.filter((tag: unknown) => !oldGroupLabels.has(String(tag)));
   }
@@ -188,6 +190,9 @@ export function compileAst(ast: TextGraphAst, original?: GraphDataLike): Compile
     applyProperties(group, statement.properties);
     groups.push(group);
     if (statement.alias) groupAliases.set(statement.alias, group);
+    // Structure collections project an existing relation. Their members are
+    // shown in text view, but must never be copied back into user-authored tags.
+    if (group.collectionKind === 'structure' && typeof group.structureId === 'string') continue;
     const members = new Set(memberNodes.map(node => String(node.id)));
     for (const node of nodes) {
       const tags = Array.isArray(node.tags) ? node.tags.filter((tag: unknown) => tag !== statement.label) : [];

@@ -399,13 +399,14 @@ test('application defaults to auto, opportunistically uses local Qwen, and keeps
   const embeddings = await readFile(path.join(root, 'src', 'semantic-embeddings.ts'), 'utf8');
   assert.match(main, /layoutMode: 'auto'/);
   assert.match(paneState, /layoutMode: 'auto'/);
-  assert.match(main, /mkPill\('自动', 'auto'/);
-  assert.match(main, /mkPill\('力导向', 'force'/);
+  assert.match(main, /mkPill\('自动整理', 'auto'/);
+  assert.match(main, /mkPill\('自由（力导向）', 'force'/);
   assert.match(main, /computeSemanticLayout\(targetGraph, \{ semanticVectors, collapsedNodeIds \}\)/);
   assert.match(main, /stabilizeSemanticLayout/);
   assert.match(main, /semanticLayoutMemory/);
   assert.match(main, /LocalSemanticEmbeddingProvider/);
-  assert.match(main, /自动 · Qwen/);
+  assert.match(main, /自动整理.*张展开/);
+  assert.doesNotMatch(main, /pill\.textContent = .*Qwen/);
   assert.match(main, /semanticCardDensity/);
   assert.match(main, /label: '自适应'/);
   assert.match(main, /computeSemanticLens/);

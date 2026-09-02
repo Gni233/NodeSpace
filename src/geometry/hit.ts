@@ -1,3 +1,5 @@
+import { isNodeInGroup } from '../group-membership';
+
 export interface Transform {
   x: number;
   y: number;
@@ -85,7 +87,7 @@ export function hitTestEdge(
 export function hitTestGroup(x: number, y: number, groups: any[], nodes: any[]): any | null {
   for (const g of groups) {
     if (g.displayMode === 'none') continue;
-    const members = nodes.filter(n => (n.tags || []).includes(g.label));
+    const members = nodes.filter(n => isNodeInGroup(n, g));
     if (members.length === 0) continue;
     if (g.displayMode === 'fluid') {
       const fluidRadiusFactor = g.fluidRadius || 3;

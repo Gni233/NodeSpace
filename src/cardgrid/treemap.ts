@@ -20,7 +20,7 @@ export function layoutCards(
   // D3 treemap 需要 hierarchy 结构，用 card 作为叶子数据
   const children: TreemapDatum[] = cards.map(c => ({
     card: c,
-    area: Math.max(1, c.nodeIds.length),
+    area: Math.max(1, c.areaWeight ?? c.nodeIds.length),
   }));
 
   const root = d3
@@ -34,7 +34,7 @@ export function layoutCards(
     .size([screenW, screenH])
     .paddingInner(gap / 2)
     .paddingOuter(gap / 2)
-    .tile(d3.treemapSquarify)
+    .tile(d3.treemapResquarify)
     (root);
 
   // 将 treemap 结果写回 Card 对象（d3.treemap 在节点上动态添加 x0/y0/x1/y1）

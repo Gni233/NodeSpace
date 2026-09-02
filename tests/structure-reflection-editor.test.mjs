@@ -22,7 +22,13 @@ async function importEditor() {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const structureUrl = `data:text/javascript;base64,${Buffer.from(structureOutput).toString('base64')}`;
+  const groupSource = await readFile(path.join(root, 'src', 'group-membership.ts'), 'utf8');
+  const groupOutput = ts.transpileModule(groupSource, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const groupUrl = `data:text/javascript;base64,${Buffer.from(groupOutput).toString('base64')}`;
   source = source.replace("from './structure-nodes'", `from '${structureUrl}'`);
+  source = source.replace("from './group-membership'", `from '${groupUrl}'`);
   source = source.replace(/import .*? from "\.\/utils\/color";\r?\n/, '');
   source = source.replace(/import .*? from "\.\/data\/storage";\r?\n/, '');
   source = source.replace(/import .*? from '\.\/dialog';\r?\n/, '');

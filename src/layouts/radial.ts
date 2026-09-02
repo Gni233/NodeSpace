@@ -68,12 +68,21 @@ export function computeRadialLayout(
 
   // ---- 1. 邻接表 ----
   const adj = new Map<string, string[]>();
+  const sourceIndex = new Map(nodes.map((node, index) => [node.id, index]));
   for (const n of nodes) adj.set(n.id, []);
   for (const e of edges) {
     const [s, t] = edgeIds(e);
     if (adj.has(s)) adj.get(s)!.push(t);
     if (adj.has(t)) adj.get(t)!.push(s);
   }
+  const compareIds = (a: string, b: string): number => {
+    const an = nodeMap.get(a), bn = nodeMap.get(b);
+    const ah = Number(an?.headingLevel) || 6, bh = Number(bn?.headingLevel) || 6;
+    const ao = Number.isFinite(an?.createdOrder) ? Number(an.createdOrder) : sourceIndex.get(a) || 0;
+    const bo = Number.isFinite(bn?.createdOrder) ? Number(bn.createdOrder) : sourceIndex.get(b) || 0;
+    return ah - bh || ao - bo || a.localeCompare(b);
+  };
+  for (const neighbours of adj.values()) neighbours.sort(compareIds);
 
   // ---- 2. 联通分量 ----
   const visited = new Set<string>();
@@ -84,8 +93,8 @@ export function computeRadialLayout(
     const comp: string[] = [];
     const queue = [n.id];
     visited.add(n.id);
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
+    for (let head = 0; head < queue.length; head++) {
+      const cur = queue[head];
       comp.push(cur);
       for (const nb of adj.get(cur) || []) {
         if (!visited.has(nb)) { visited.add(nb); queue.push(nb); }
@@ -100,16 +109,16 @@ export function computeRadialLayout(
     const compSet = new Set(comp);
 
     // 3a. 根节点选择
-    let rootId = comp[0];
-    const h1 = comp.find(id => (nodeMap.get(id)?.headingLevel || 1) === 1);
-    if (h1) rootId = h1;
-    else {
-      let maxDeg = -1;
-      for (const id of comp) {
-        const deg = (adj.get(id) || []).filter(nb => compSet.has(nb)).length;
-        if (deg > maxDeg) { maxDeg = deg; rootId = id; }
-      }
-    }
+    // A structure is an explicit semantic centre. Otherwise prefer the
+    // strongest heading and then the graph hub, keeping ties deterministic.
+    const rootId = [...comp].sort((a, b) => {
+      const an = nodeMap.get(a), bn = nodeMap.get(b);
+      const aStructure = Array.isArray(an?.structure?.memberIds) ? 0 : 1;
+      const bStructure = Array.isArray(bn?.structure?.memberIds) ? 0 : 1;
+      const ah = Number(an?.headingLevel) || 6, bh = Number(bn?.headingLevel) || 6;
+      const ad = (adj.get(a) || []).length, bd = (adj.get(b) || []).length;
+      return aStructure - bStructure || ah - bh || bd - ad || compareIds(a, b);
+    })[0];
 
     for (const id of comp) {
       const n = nodeMap.get(id);
@@ -125,8 +134,8 @@ export function computeRadialLayout(
     const bfsVisited = new Set<string>([rootId]);
     const queue = [rootId];
 
-    while (queue.length > 0) {
-      const pid = queue.shift()!;
+    for (let head = 0; head < queue.length; head++) {
+      const pid = queue[head];
       if (!children.has(pid)) children.set(pid, []);
       for (const nb of (adj.get(pid) || [])) {
         if (!compSet.has(nb) || bfsVisited.has(nb)) continue;
@@ -271,17 +280,17 @@ export function computeRadialLayout(
     if (starInfos.length === 0) return;
 
     // 按半径降序排列：大的靠近中心，小的螺旋散开（模拟星系结构）
-    starInfos.sort((a, b) => b.r - a.r);
+    starInfos.sort((a, b) => b.r - a.r || compareIds(a.rootId, b.rootId));
 
     const goldenAngle = Math.PI * (3 - Math.sqrt(5)); // ≈137.5°，费马螺旋黄金角
     const avgR = starInfos.reduce((s, si) => s + si.r, 0) / starInfos.length;
-    const baseR = avgR * 1.5; // 最内圈半径
+    const baseR = Math.max(avgR * 1.5, starSpacing * 0.45); // 最内圈半径
 
     for (let i = 0; i < starInfos.length; i++) {
       const si = starInfos[i];
       const angle = i * goldenAngle;
       // 半径随 √i 增长（费马螺旋），间距按星星大小自适应
-      const r = baseR + Math.sqrt(i) * (si.r + avgR) * 0.5;
+      const r = baseR + Math.sqrt(i) * (si.r + avgR + starSpacing * 0.35) * 0.5;
       si.root.x = r * Math.cos(angle);
       si.root.y = r * Math.sin(angle);
     }

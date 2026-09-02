@@ -80,13 +80,19 @@ test('renderPane gates root boundaries, hides expanded circles, filters membersh
 
   assert.match(text, /hiddenNodes\.has\(n\.id\) \|\| expandedBoundaryIds\.has\(n\.id\)/);
   assert.match(text, /expandedBoundaryIds\.has\(id\)/);
-  assert.match(text, /edge\._structureMembership \? \[\] : \[\{ edge, projectionIndex \}\]/);
+  assert.match(text, /edge\._structureMembership && !cardModeActiveForEdges \? \[\] : \[\{ edge, projectionIndex \}\]/);
   assert.match(text, /paneStructureBoundaryEndpoints\(st\)/);
   assert.match(text, /updateEdges\(pixi\.edgeLayer, edgeGraph, edgeRenderNodes/);
 });
 
 test('ordinary edge hit testing ignores structure membership edges', async () => {
-  const source = await readFile(path.join(root, 'src', 'geometry', 'hit.ts'), 'utf8');
+  const groupSource = await readFile(path.join(root, 'src', 'group-membership.ts'), 'utf8');
+  const groupOutput = ts.transpileModule(groupSource, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const groupUrl = `data:text/javascript;base64,${Buffer.from(groupOutput).toString('base64')}`;
+  const source = (await readFile(path.join(root, 'src', 'geometry', 'hit.ts'), 'utf8'))
+    .replace("from '../group-membership'", `from '${groupUrl}'`);
   const output = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;

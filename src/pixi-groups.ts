@@ -1,8 +1,12 @@
 import { Container, Graphics, Text } from 'pixi.js';
 import { GraphData } from './data/storage';
 import { getGroupRegion } from './geometry/hit';
+import { isNodeInGroup } from './group-membership';
 
-const TEXT_RESOLUTION = Math.max(3, (window.devicePixelRatio || 1) * 2);
+// Beyond 3x the visual gain is negligible while every group-label texture grows
+// quadratically. Keep high-DPI text crisp without spending mobile GPU memory on
+// 6–8x textures.
+const TEXT_RESOLUTION = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
 
 /** Catmull-Rom 样条插值 → 平滑曲线点序列（用于磁流体 blob） */
 function catmullRomPoints(verts: number[][], segments: number = 8): number[][] {
@@ -58,7 +62,7 @@ export function updateGroups(
     let groupAlphaMult = 1;
     const now2 = performance.now();
     const members = nodes.filter((n: any) => {
-      if (!(n.tags || []).includes(g.label)) return false;
+      if (!isNodeInGroup(n, g)) return false;
       const colAnim = (n as any)._collapseAnim;
       const expAnim = (n as any)._expandAnim;
       if (colAnim) {

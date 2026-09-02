@@ -2,7 +2,9 @@ import { Container, Graphics, Text } from 'pixi.js';
 import { Card, CardGridState } from './types';
 
 const LABEL_FONT = 'system-ui, -apple-system, sans-serif';
-const DPR = Math.max(3, (window.devicePixelRatio || 1) * 2);
+// Text at 2–3× remains crisp on phone DPRs; the old 3–8× textures consumed
+// disproportionate mobile GPU memory and made a stable 60fps dock impossible.
+const DPR = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
 
 /** 存储于 Container 上的符号键，用于 clearCards 兼容性 */
 const GFX_KEY = Symbol.for('cardGridGfx');

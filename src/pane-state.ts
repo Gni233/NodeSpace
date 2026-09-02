@@ -170,7 +170,7 @@ export interface PaneState {
 
   // --- Search ---
   search: string;
-  sField: 'name' | 'tags' | 'note';
+  sField: 'all' | 'name' | 'tags' | 'note';
   sDisplayMode: 'highlight' | 'show';
   sMatchMode: 'contains' | 'startsWith' | 'endsWith' | 'fuzzy';
   searchMatchIndex: number;
@@ -381,8 +381,8 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     fixedHollow: P_DEFAULTS.fixedHollow, fontFamily: P_DEFAULTS.fontFamily,
     cardBorderStyle: P_DEFAULTS.cardBorderStyle,
     gw: 800, gh: 600,
-    search: '', sField: 'name', sDisplayMode: 'highlight', sMatchMode: 'contains',
-    searchMatchIndex: 0, lastSearchTerm: '',
+    search: '', sField: 'all', sDisplayMode: 'highlight', sMatchMode: 'contains',
+    searchMatchIndex: -1, lastSearchTerm: '',
     linkMode: false, linkSrc: null, linkCursorX: 0, linkCursorY: 0,
     defArrow: false,
     themeAccentColor: 0x5B8FF9, themeAccentAltColor: 0xF59E0B,

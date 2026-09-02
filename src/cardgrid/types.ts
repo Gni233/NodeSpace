@@ -13,6 +13,8 @@ export interface Card {
   padding: number;
   /** treemap 排序位置（越小越靠前） */
   order: number;
+  /** 阅读面积权重：节点数之外也考虑标题和正文体量。 */
+  areaWeight?: number;
   /** 卡片标签（分类模式显示组名） */
   label?: string;
   /** 卡片颜色（分类模式使用组颜色） */
