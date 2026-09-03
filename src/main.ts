@@ -86,6 +86,7 @@ import { expandedSpacePortalRect, normalizeSpacePortalAnchor, resolveSpacePortal
 import { backLocalContext, buildLocalContext, extendLocalContext, localContextInternalEdgeIndexes, localContextMemberIds, startLocalContext, type LocalContextState } from './local-context';
 import { createLocalContextNavigator } from './local-context-navigation';
 import { composeCrossSpaceProjection, createCrossSpaceBranch, isCrossSpaceProxyEdge, isCrossSpaceProxyNode, retainCrossSpaceBranches, type CrossSpaceBranch, type CrossSpaceTarget } from './cross-space-context';
+import { applyVaultProjectionDefaults } from './vault-defaults';
 
 const DEFAULT_SETTINGS: GraphSettings = {
   linkDist: 120, labelSize: 18, charge: -100, linkStr: 0.3,
@@ -98,6 +99,10 @@ const DEFAULT_SETTINGS: GraphSettings = {
   ar: 0.75, graphTheme: 'nord-dark', focusMode: false, centerMode: false, glowAppearance: true, selectedTooltip: false, gridWidth: 0.5, categoryLayout: false,
   edgeColorGradient: false, edgeWidthByLevel: false,
 };
+
+const PRESET_DEFAULT_KEY = 'fg-preset-default';
+let presetDefaults: Partial<GraphSettings> = {};
+try { presetDefaults = JSON.parse(localStorage.getItem(PRESET_DEFAULT_KEY) || '{}'); } catch {}
 
 /** `default` was the pre-semantic force mode. Existing files migrate to auto. */
 export function normalizeLayoutMode(mode?: string | null): string {
@@ -962,6 +967,7 @@ async function main() {
   let activeTab = '开始';
   let fileSystemMountPath: string | null = null; // Electron 模式下的文件夹路径
   let graphStorageMountPath: string | null = null;
+  let configuredGraphFolderRelative: string | null = null;
   let vaultIndex: VaultIndex | null = null;
   let refreshOpenResourceReferences: () => void = () => {};
   let hydrateGraphResourceReferencePreviews: (data: GraphData) => Promise<boolean> = async () => false;
@@ -1010,10 +1016,13 @@ async function main() {
   };
 
   const readVaultGraphData = async (fileName: string): Promise<GraphData | null> => {
+    const finishProjection = (data: GraphData) => repairGraphCreatedOrders(
+      applyVaultProjectionDefaults(data, DEFAULT_SETTINGS, presetDefaults),
+    );
     if (isVaultSpaceTabId(fileName)) {
       const spacePath = vaultSpacePathFromTabId(fileName);
       if (spacePath === null || !vaultIndex) return null;
-      return repairGraphCreatedOrders(vaultFolderToGraph(vaultIndex, spacePath, fileSystemMountPath || vaultIndex.rootPath));
+      return finishProjection(vaultFolderToGraph(vaultIndex, spacePath, fileSystemMountPath || vaultIndex.rootPath));
     }
     const relativePath = vaultPathFromTabId(fileName);
     const ea = (window as any).electronAPI;
@@ -1024,7 +1033,7 @@ async function main() {
     if (kind === 'markdown') {
       const raw = await ea.readFile(absolutePath);
       if (typeof raw !== 'string') return null;
-      return repairGraphCreatedOrders(markdownToGraph(
+      return finishProjection(markdownToGraph(
         relativePath,
         raw,
         resource || undefined,
@@ -1033,7 +1042,7 @@ async function main() {
       ));
     }
     if (kind === 'image' || kind === 'audio' || kind === 'video' || kind === 'pdf') {
-      return repairGraphCreatedOrders(attachmentToGraph(relativePath, absolutePath, kind));
+      return finishProjection(attachmentToGraph(relativePath, absolutePath, kind));
     }
     return null;
   };
@@ -1367,7 +1376,7 @@ async function main() {
       syncVaultSpaceBreadcrumb();
       return null;
     }
-    const scanned = await ea.scanVault(fileSystemMountPath);
+    const scanned = await ea.scanVault(fileSystemMountPath, configuredGraphFolderRelative || undefined);
     if (!scanned || scanned.error) {
       vaultIndex = null;
       graphStorageMountPath = fileSystemMountPath;
@@ -1376,7 +1385,14 @@ async function main() {
       return null;
     }
     vaultIndex = scanned as VaultIndex;
+    configuredGraphFolderRelative = vaultIndex.graphRootRelative || null;
     graphStorageMountPath = vaultIndex.graphRootPath || fileSystemMountPath;
+    if (vaultIndex.isObsidianVault && graphStorageMountPath && !(await ea.exists(graphStorageMountPath))) {
+      const created = await ea.mkdir(graphStorageMountPath);
+      if (created?.error) {
+        showToast(`无法创建图文件夹：${created.error}`, 'error', 6000);
+      }
+    }
     sidebar.updateVaultIndex(vaultIndex);
     refreshOpenResourceReferences();
     syncVaultSpaceBreadcrumb();
@@ -4235,9 +4251,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         ? scopedPaneSimulationManager(pane0 as unknown as PaneState)
         : scopedPaneSimulationManager(extraPanes[focusedPaneIndex - 1]);
       const isShared = (focusedPaneIndex !== i + 1) && (effectiveSM === focusedEffectiveSM);
-      if (!isShared && focusedPaneIndex !== i + 1 && frameCount % 4 !== 0) continue;
+      // Card layouts animate through their pane-owned controller, while the
+      // compatibility graph simulation deliberately stays static. Do not use
+      // that facade's alpha to suppress the frames requested by the controller.
+      const hasPaneOwnedMotion = coordinateLayoutModes.has(pi.activeMode);
+      if (!hasPaneOwnedMotion && !isShared && focusedPaneIndex !== i + 1 && frameCount % 4 !== 0) continue;
       const s = effectiveSM.getSim();
-      if (!isShared && focusedPaneIndex !== i + 1 && s && s.alpha() < 0.01) continue;
+      if (!hasPaneOwnedMotion && !isShared && focusedPaneIndex !== i + 1 && s && s.alpha() < 0.01) continue;
       renderPane(px!, scopedPaneGraph(pi), scopedPaneSimulationManager(pi), extraSprites[i], pi);
     }
   };
@@ -4556,12 +4576,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
   };
 
-  // 默认预设（新建图和"恢复默认"时采用）
-  const PRESET_DEFAULT_KEY = 'fg-preset-default';
-  let presetDefaults: Partial<GraphSettings> = {};
-  try { presetDefaults = JSON.parse(localStorage.getItem(PRESET_DEFAULT_KEY) || '{}'); } catch {}
-
-
   // 预设编辑面板（独立于图区自定义，读写 presetDefaults）
   const presetSetDiv = document.createElement('div');
   presetSetDiv.style.cssText = 'padding:4px 0;';
@@ -4806,9 +4820,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       if (ea?.openFolder) {
         const folderPath = await ea.openFolder();
         if (folderPath) {
-          await ea.configWrite({ folderPath });
           fileSystemMountPath = folderPath;
-          await refreshVaultIndex();
+          configuredGraphFolderRelative = null;
+          const index = await refreshVaultIndex();
+          await ea.configWrite({
+            folderPath,
+            graphFolderRelative: index?.isObsidianVault ? index.graphRootRelative : null,
+          });
           await refreshFileTree();
           return;
         }
@@ -4827,6 +4845,41 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       triggerFileImport();
     },
     getFolderPath: () => fileSystemMountPath || '（未选择）',
+    getGraphFolderPath: () => vaultIndex?.isObsidianVault
+      ? `./${vaultIndex.graphRootRelative || 'NodeSpace'}`
+      : '（普通目录直接保存）',
+    canSetGraphFolder: () => !!(window as any).electronAPI && !!vaultIndex?.isObsidianVault,
+    onSetGraphFolder: async (relativePath: string) => {
+      const ea = (window as any).electronAPI;
+      if (!ea?.scanVault || !fileSystemMountPath || !vaultIndex?.isObsidianVault) {
+        showToast('图文件夹设置只用于桌面端 Obsidian 资料库', 'warning', 3600);
+        return;
+      }
+      if (markdownSourceEditor?.hasDraft() || hasActiveTextDraft()) {
+        showToast('请先保存正在编辑的内容，再切换图文件夹', 'warning', 4200);
+        return;
+      }
+      const scanned = await ea.scanVault(fileSystemMountPath, relativePath);
+      if (!scanned || scanned.error) {
+        showToast(scanned?.error || '图文件夹无效', 'error', 5000);
+        return;
+      }
+      const saved = await flushAllGraphs();
+      if (!saved) {
+        showToast('仍有图未保存，已取消切换', 'error', 5000);
+        return;
+      }
+      if (!(await ea.exists(scanned.graphRootPath))) {
+        const created = await ea.mkdir(scanned.graphRootPath);
+        if (created?.error) {
+          showToast(`无法创建图文件夹：${created.error}`, 'error', 6000);
+          return;
+        }
+      }
+      await ea.configWrite({ folderPath: fileSystemMountPath, graphFolderRelative: scanned.graphRootRelative });
+      showToast(`图文件夹已改为 ./${scanned.graphRootRelative}，正在重新载入`, 'success', 1800);
+      setTimeout(() => window.location.reload(), 220);
+    },
     getFileImporter: undefined, // 所有平台统一用 onOpenFolder → 同步 input.click()
     getAutoUpdate: () => localStorage.getItem('fg-auto-update') === 'true',
     onToggleAutoUpdate: (val) => { localStorage.setItem('fg-auto-update', val ? 'true' : 'false'); },
@@ -7867,7 +7920,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       if (targetPane) clearPaneLayout(targetPane);
     }
     activeMode = mode;
-    layoutPane?.simManager?.setStaticMode(mode === 'auto');
+    const usesStaticSimulation = mode === 'auto' || coordinateLayoutModes.has(mode);
+    layoutPane?.simManager?.setStaticMode(usesStaticSimulation);
+    // Card controllers own their small, bounded simulations. Keep the legacy
+    // graph simulation as a direct-reference static facade so later settings
+    // refreshes cannot restart a second, invisible coordinate source.
+    if (coordinateLayoutModes.has(mode)) layoutPane?.simManager?.initStatic();
     if (['cardgrid', 'category', 'fullcat'].includes(mode)) boxSelectMode = false;
     syncFocusedCommands();
     renderModeBar();
@@ -9446,7 +9504,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     else if (reference.kind === 'graph') targetTab = vaultGraphFileName(vaultIndex, reference.path) || '';
     else targetTab = vaultTabId(reference.path);
     if (!targetTab) {
-      showToast('引用目标不在当前 Graph233 中', 'warning', 3500);
+      showToast('引用目标不在当前图文件夹中', 'warning', 3500);
       return;
     }
     if (originTab === targetTab) {
@@ -9561,7 +9619,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (source.kind === 'graph') {
       const graphFile = vaultIndex ? vaultGraphFileName(vaultIndex, source.path) : null;
       if (!graphFile) {
-        showToast('这个图不在当前 Graph233 图目录中', 'warning', 3500);
+        showToast('这个图不在当前图文件夹中', 'warning', 3500);
         return;
       }
       await openTab(graphFile);
@@ -10409,7 +10467,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getSelNode: () => pi.selNode, setSelNode: (v: string | null) => { pi.selNode = v; syncFocusedCommands(); },
     getSelEdge: () => pi.selEdge, setSelEdge: (v: number | null) => { pi.selEdge = v; },
     getSelGroup: () => pi.selGroup, setSelGroup: (v: string | null) => { pi.selGroup = v; },
-    getSimulation: () => getSM().getSim(), getTransform: () => px ? { k: px.viewport.scale.x, x: px.viewport.x, y: px.viewport.y } : { k: 1, x: 0, y: 0 },
+    getSimulation: () => getSM().getSim(),
+    getVisibleNodes: () => coordinateLayoutModes.has(pi.activeMode)
+      ? getStructureProjection(scopedPaneGraph(pi)).nodes
+      : getSM().getSim()?.nodes?.() ?? [],
+    getTransform: () => px ? { k: px.viewport.scale.x, x: px.viewport.x, y: px.viewport.y } : { k: 1, x: 0, y: 0 },
     viewport: px.viewport,
     getCanvas: () => px.app.canvas as any,
     captureMagnifierRegion: (region: Parameters<PixiLayers['captureMagnifierRegion']>[0]) => px.captureMagnifierRegion(region),
@@ -10728,12 +10790,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   if (ea2) {
     const config = await ea2.configRead();
     const savedPath = typeof config.folderPath === 'string' ? config.folderPath : '';
+    configuredGraphFolderRelative = typeof config.graphFolderRelative === 'string'
+      ? config.graphFolderRelative
+      : null;
     // Permission must be restored before fs-exists; otherwise the path guard
     // rejects the very existence check used to decide whether to restore it.
     const permission = savedPath ? await ea2.addAllowedDir(savedPath) : null;
     if (savedPath && permission?.ok && await ea2.exists(savedPath)) {
       fileSystemMountPath = savedPath;
-      await refreshVaultIndex();
+      const index = await refreshVaultIndex();
+      if (index?.isObsidianVault && config.graphFolderRelative !== index.graphRootRelative) {
+        await ea2.configWrite({ folderPath: savedPath, graphFolderRelative: index.graphRootRelative });
+      }
       await refreshFileTree();
     }
   } else {

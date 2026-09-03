@@ -26,28 +26,53 @@ async function importTypeScriptModule(filePath) {
   return import(`data:text/javascript;base64,${Buffer.from(output).toString('base64')}`);
 }
 
-test('vault scan separates source notes, attachments, and Graph233 graphs', async () => {
+test('vault scan uses ./NodeSpace for a new Obsidian Vault', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'nodespace-vault-'));
   try {
     await mkdir(path.join(directory, '.obsidian'));
     await mkdir(path.join(directory, '.history'));
     await mkdir(path.join(directory, '课程'));
-    await mkdir(path.join(directory, 'Graph233'));
+    await mkdir(path.join(directory, 'NodeSpace'));
     await writeFile(path.join(directory, '课程', '概率论.md'), '# 概率论\n\n## 随机变量\n内容', 'utf8');
     await writeFile(path.join(directory, '课程', '讲解.mp3'), 'audio');
-    await writeFile(path.join(directory, 'Graph233', '课程图.json'), '{"nodes":[],"edges":[],"groups":[]}');
+    await writeFile(path.join(directory, 'NodeSpace', '课程图.json'), '{"nodes":[],"edges":[],"groups":[]}');
     await writeFile(path.join(directory, 'settings.json'), '{}');
     await writeFile(path.join(directory, '.history', '旧稿.md'), '# 不应出现');
 
     const { scanVault } = require(path.join(root, 'electron', 'vault-service.cjs'));
     const index = scanVault(directory);
     assert.equal(index.isObsidianVault, true);
-    assert.equal(index.graphRootPath, path.join(directory, 'Graph233'));
+    assert.equal(index.graphRootPath, path.join(directory, 'NodeSpace'));
+    assert.equal(index.graphRootRelative, 'NodeSpace');
+    assert.equal(index.graphRootSource, 'default');
     assert.deepEqual(index.stats, { notes: 1, attachments: 1, graphs: 1, headings: 2 });
     assert.equal(index.notes[0].path, '课程/概率论.md');
     assert.equal(index.notes[0].title, '概率论');
     assert.equal(index.attachments[0].kind, 'audio');
-    assert.equal(index.graphs[0].path, 'Graph233/课程图.json');
+    assert.equal(index.graphs[0].path, 'NodeSpace/课程图.json');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('vault scan accepts a user-selected graph folder and preserves the legacy folder once', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'nodespace-vault-folder-'));
+  try {
+    await mkdir(path.join(directory, '.obsidian'));
+    await mkdir(path.join(directory, '我的图'));
+    await writeFile(path.join(directory, '我的图', '自选.json'), '{"nodes":[],"edges":[],"groups":[]}');
+    const { scanVault } = require(path.join(root, 'electron', 'vault-service.cjs'));
+
+    const selected = scanVault(directory, './我的图');
+    assert.equal(selected.graphRootRelative, '我的图');
+    assert.equal(selected.graphRootSource, 'configured');
+    assert.equal(selected.graphs[0].path, '我的图/自选.json');
+
+    await mkdir(path.join(directory, 'Graph233'));
+    const legacy = scanVault(directory);
+    assert.equal(legacy.graphRootRelative, 'Graph233');
+    assert.equal(legacy.graphRootSource, 'legacy');
+    assert.throws(() => scanVault(directory, '../外部'), /必须位于当前资料库内|不能包含/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -131,8 +156,27 @@ test('desktop wiring keeps the Vault root and graph storage root separate', asyn
   assert.match(electron, /vault-open-in-obsidian/);
   assert.match(preload, /onVaultFileChange/);
   assert.match(sidebar, /Obsidian 资料库/);
-  assert.match(vite, /Graph233/);
-  assert.match(mcp, /Graph233/);
+  assert.match(vite, /resolveGraphDirectory\(config\.folderPath, config\.graphFolderRelative\)/);
+  assert.match(mcp, /resolveGraphDirectory\(config\.folderPath, config\.graphFolderRelative\)/);
+  assert.doesNotMatch(vite, /path\.join\(config\.folderPath, 'Graph233'\)/);
+  assert.doesNotMatch(mcp, /join\(config\.folderPath, 'Graph233'\)/);
+});
+
+test('Vault projections inherit user appearance defaults without surrendering projection layout', async () => {
+  const { applyVaultProjectionDefaults } = await importTypeScriptModule(
+    path.join(root, 'src', 'vault-defaults.ts'),
+  );
+  const graph = applyVaultProjectionDefaults(
+    { nodes: [], edges: [], groups: [], settings: { layoutMode: 'auto', semanticCardDensity: 'full', sourceMode: 'vault-readonly' } },
+    { graphTheme: 'nord-dark', fontFamily: 'serif', nodeColorStyle: 'uniform', gridVis: true },
+    { graphTheme: 'atom-light', fontFamily: 'system-ui', nodeColorStyle: 'spectrum-narrow', gridVis: false, layoutMode: 'force' },
+  );
+  assert.equal(graph.settings.graphTheme, 'atom-light');
+  assert.equal(graph.settings.fontFamily, 'system-ui');
+  assert.equal(graph.settings.nodeColorStyle, 'spectrum-narrow');
+  assert.equal(graph.settings.gridVis, false);
+  assert.equal(graph.settings.layoutMode, 'auto');
+  assert.equal(graph.settings.sourceMode, 'vault-readonly');
 });
 
 test('Vault card titles remain authoritative when layout views contain only internal ids', async () => {

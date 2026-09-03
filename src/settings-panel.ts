@@ -24,6 +24,9 @@ export function createSettingsPanel(
     getPresets: () => { name: string }[];
     onOpenFolder?: () => void;
     getFolderPath?: () => string;
+    onSetGraphFolder?: (relativePath: string) => Promise<void> | void;
+    getGraphFolderPath?: () => string;
+    canSetGraphFolder?: () => boolean;
     /** 移动端：传入此回调时，按钮内嵌 <input type="file"> 直接触发原生选择器 */
     onImportFiles?: (files: FileList) => Promise<void>;
     getFileImporter?: () => HTMLElement | null;
@@ -290,6 +293,8 @@ export function createSettingsPanel(
 
   // 路径标签（需要跨作用域访问，提前声明）
   let pathLabel: HTMLSpanElement | null = null;
+  let graphPathLabel: HTMLSpanElement | null = null;
+  let graphFolderRow: HTMLDivElement | null = null;
 
   // 目录选择
   if (callbacks.onOpenFolder) {
@@ -312,13 +317,13 @@ export function createSettingsPanel(
         `;font-size:${V('--fg-font-xs', '0.72em')};padding:2px 8px;background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
         `color:${V('--fg-text', '#ccc')};border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};` +
         `border-radius:${V('--fg-radius-sm', '6px')};`;
-      importer.textContent = '存储目录';
+      importer.textContent = '资料库目录';
       folderRow.appendChild(importer);
     } else if (callbacks.onImportFiles) {
       // 移动端：用 <label>（不是 <button>）包裹 <input type="file">
       // <button> 在某些 WebView 会吞掉子元素的触摸事件 → label 不会
       const openBtn = document.createElement('label');
-      openBtn.textContent = '存储目录';
+      openBtn.textContent = '资料库目录';
       openBtn.style.cssText =
         `position:relative;overflow:hidden;display:inline-block;` +
         `font-size:${V('--fg-font-xs', '0.72em')};padding:2px 8px;cursor:pointer;` +
@@ -346,7 +351,7 @@ export function createSettingsPanel(
       folderRow.appendChild(openBtn);
     } else {
       const openBtn = document.createElement('button');
-      openBtn.textContent = '存储目录';
+      openBtn.textContent = '资料库目录';
       openBtn.style.cssText =
         `font-size:${V('--fg-font-xs', '0.72em')};padding:2px 8px;cursor:pointer;` +
         `background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
@@ -356,12 +361,45 @@ export function createSettingsPanel(
       openBtn.onclick = async () => {
         await callbacks.onOpenFolder?.();
         if (pathLabel) pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
+        if (graphFolderRow) graphFolderRow.style.display = callbacks.canSetGraphFolder?.() ? 'flex' : 'none';
       };
       folderRow.appendChild(openBtn);
     }
     folderRow.appendChild(pathLabel);
-    folderSection.appendChild(makeSectionIntro('资料库', 'NodeSpace 读取和保存图文件的位置'));
+    folderSection.appendChild(makeSectionIntro('资料库', '选择资料库根目录；图空间可以单独存放在其内的专用文件夹'));
     folderSection.appendChild(folderRow);
+    if (callbacks.onSetGraphFolder && callbacks.getGraphFolderPath) {
+      graphFolderRow = document.createElement('div');
+      graphFolderRow.className = 'fg-settings-storage-row fg-settings-graph-folder-row';
+      graphFolderRow.style.cssText = `${callbacks.canSetGraphFolder?.() ? 'display:flex;' : 'display:none;'}align-items:center;gap:6px;margin-top:6px;`;
+      const graphFolderBtn = document.createElement('button');
+      graphFolderBtn.type = 'button';
+      graphFolderBtn.textContent = '图文件夹';
+      graphFolderBtn.title = '设置资料库内专门存放 NodeSpace 图的相对目录；切换不会移动已有文件';
+      graphFolderBtn.style.cssText =
+        `font-size:${V('--fg-font-xs', '0.72em')};padding:2px 8px;cursor:pointer;` +
+        `background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
+        `color:${V('--fg-text', '#ccc')};border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};` +
+        `border-radius:${V('--fg-radius-sm', '6px')};`;
+      graphPathLabel = document.createElement('span');
+      graphPathLabel.style.cssText =
+        `font-size:${V('--fg-font-xs', '0.72em')};opacity:0.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;` +
+        `color:${V('--fg-text-muted', '')};`;
+      graphPathLabel.textContent = callbacks.getGraphFolderPath();
+      graphFolderBtn.onclick = async () => {
+        const current = callbacks.getGraphFolderPath?.() || './NodeSpace';
+        if (!current.startsWith('./')) {
+          await callbacks.onSetGraphFolder?.('NodeSpace');
+          return;
+        }
+        const next = await safePrompt('资料库内的图文件夹（相对路径）：', current);
+        if (!next) return;
+        await callbacks.onSetGraphFolder?.(next);
+        if (graphPathLabel) graphPathLabel.textContent = callbacks.getGraphFolderPath?.() || './NodeSpace';
+      };
+      graphFolderRow.append(graphFolderBtn, graphPathLabel);
+      folderSection.appendChild(graphFolderRow);
+    }
     panel.appendChild(folderSection);
   }
 
@@ -427,6 +465,8 @@ export function createSettingsPanel(
       if (pathLabel) {
         pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
       }
+      if (graphPathLabel) graphPathLabel.textContent = callbacks.getGraphFolderPath?.() || './NodeSpace';
+      if (graphFolderRow) graphFolderRow.style.display = callbacks.canSetGraphFolder?.() ? 'flex' : 'none';
     },
     hide: () => {
       panel.classList.remove('is-open');

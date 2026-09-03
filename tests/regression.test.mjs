@@ -364,11 +364,25 @@ test('card grid uses bounded continuous motion and independent card gestures', a
   assert.match(source, /sim\.alpha\(1\)\.alphaTarget\(0\)\.stop\(\)/);
   assert.match(source, /const ACTIVE_FRAME_MS = 15/);
   assert.doesNotMatch(source, /IDLE_FRAME_MS|32\s*\/\*.*fps/i);
-  assert.match(source, /now >= this\._activeFpsUntil && !cardsMoving && !simulationsMoving/);
+  assert.match(source, /wake\(alpha = 0\.35, cardId\?: string\)/);
+  assert.match(source, /this\.wake\(0\.2, card\.id\)/);
+  assert.match(source, /this\.wake\(0\.2, cardId\)/);
+  assert.match(source, /this\.wake\(0\.28, cardId\)/);
+  assert.doesNotMatch(source, /\.force\('center', d3\.forceCenter/);
+  assert.match(source, /\.force\('x', d3\.forceX\(cx\)\.strength\(centerStrength\)\)/);
+  assert.match(source, /\.force\('y', d3\.forceY\(cy\)\.strength\(centerStrength\)\)/);
+  assert.match(source, /now >= this\._activeFpsUntil && !cardsMoving && !simulationsMoving && !dragActive/);
   assert.doesNotMatch(source, /const nodeMap = new Map<string, any>\(this\._graph\.nodes/);
   assert.match(source, /Math\.max\(0\.45, Math\.min\(2\.5,/);
   assert.match(source, /_viewSaveTimer/);
   assert.match(source, /const dragNodeId = this\._sm\?\.getDragNode\?\.\(\)/);
+  assert.match(source, /const draggedGraphNode = dragNodeId \? this\._graphNodeById\.get\(dragNodeId\) : null/);
+  assert.match(source, /Number\.isFinite\(draggedGraphNode\?\.fx\)/);
+  assert.match(source, /graphNode\.x = nextX;[\s\S]*?simNode\.x = nextX;/);
+  assert.match(source, /!cardsMoving && !simulationsMoving && !dragActive/);
+  const uiEvents = await readFile(path.join(root, 'src', 'ui-events.ts'), 'utf8');
+  assert.match(uiEvents, /draggedNode\.x = clamped\[0\]; draggedNode\.y = clamped\[1\];/);
+  assert.match(uiEvents, /draggedNode\.fx = clamped\[0\]; draggedNode\.fy = clamped\[1\];/);
   assert.match(source, /implements LayoutController/);
   assert.match(source, /delete n\._pieColors/);
   assert.match(source, /onGraphChanged\(\): void/);
@@ -496,6 +510,12 @@ test('mobile toolbar routes focused-pane commands and keeps touch state synchron
   assert.match(main, /finishLinkMode[\s\S]*?syncFocusedCommands\(\)/);
   assert.match(main, /setBoxSelectMode: \(value: boolean\) => \{ boxSelectMode = value; syncFocusedCommands\(\); \}/);
   assert.match(main, /\['cardgrid', 'category', 'fullcat'\]\.includes\(mode\)\) boxSelectMode = false/);
+  assert.match(main, /const usesStaticSimulation = mode === 'auto' \|\| coordinateLayoutModes\.has\(mode\)/);
+  assert.match(main, /if \(coordinateLayoutModes\.has\(mode\)\) layoutPane\?\.simManager\?\.initStatic\(\)/);
+  assert.match(main, /getVisibleNodes: \(\) => coordinateLayoutModes\.has\(pi\.activeMode\)[\s\S]*?getStructureProjection\(scopedPaneGraph\(pi\)\)\.nodes/);
+  assert.match(main, /const hasPaneOwnedMotion = coordinateLayoutModes\.has\(pi\.activeMode\)/);
+  assert.match(main, /if \(!hasPaneOwnedMotion && !isShared && focusedPaneIndex !== i \+ 1 && frameCount % 4 !== 0\) continue/);
+  assert.match(main, /if \(!hasPaneOwnedMotion && !isShared && focusedPaneIndex !== i \+ 1 && s && s\.alpha\(\) < 0\.01\) continue/);
   const mobileCallbacks = main.slice(
     main.indexOf('const mobileToolbar = createMobileToolbar({'),
     main.indexOf('appShell.appendChild(mobileToolbar.element)')

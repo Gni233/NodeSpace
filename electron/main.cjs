@@ -252,10 +252,10 @@ ipcMain.handle('fs-stat', async (_, p) => {
   catch (e) { return { error: e.message }; }
 });
 
-ipcMain.handle('vault-scan', async (_, rootPath) => {
+ipcMain.handle('vault-scan', async (_, rootPath, graphFolderRelative) => {
   try {
     if (!isAllowed(rootPath)) return { error: 'Access denied' };
-    return scanVault(rootPath);
+    return scanVault(rootPath, graphFolderRelative);
   } catch (e) { return { error: e.message }; }
 });
 

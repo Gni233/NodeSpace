@@ -23,9 +23,10 @@ NodeSpace 是一个以低操作记录为前提的个人信息空间。用户只�
 
 桌面端使用 Electron，移动端使用 Capacitor Android，画布由 PixiJS 8 渲染。默认采用静态语义自动整理，D3 力导向仅作为可选观察方式。
 
-当打开的目录是 Obsidian Vault 且包含 `Graph233/` 时：
+当打开的目录是 Obsidian Vault 时：
 
-- `Graph233/` 中的 JSON 是 NodeSpace 可写空间；
+- 图专用文件夹由用户在“应用与默认值 → 资料库 → 图文件夹”中指定，新资料库默认为 `./NodeSpace`；
+- 旧版本已经使用的图目录会保留，不会自动移动文件；
 - Vault 中的 Markdown 和附件作为只读来源投影；
 - Markdown 原文仍可回到 Obsidian 编辑。
 

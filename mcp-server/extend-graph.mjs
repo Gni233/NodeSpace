@@ -1,7 +1,13 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
+import { resolve } from 'path';
 
-const fp = 'D:/Graph233/实例1.json';
+const requestedFile = process.argv[2];
+if (!requestedFile) {
+  console.error('Usage: node mcp-server/extend-graph.mjs <graph-file.json>');
+  process.exit(1);
+}
+const fp = resolve(requestedFile);
 const data = JSON.parse(readFileSync(fp, 'utf8'));
 
 function genId(label) {

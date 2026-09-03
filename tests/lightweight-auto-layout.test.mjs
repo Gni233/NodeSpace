@@ -42,7 +42,7 @@ test('static simulation retains only the supplied node array and no force state'
   assert.equal(simulation.nodes(), replacement);
 });
 
-test('auto layout uses a static runtime and Pixi renders on demand', async () => {
+test('automatic and card layouts use static graph runtimes while Pixi renders on demand', async () => {
   const [main, graphSim, pixiApp] = await Promise.all([
     readFile(path.join(root, 'src', 'main.ts'), 'utf8'),
     readFile(path.join(root, 'src', 'graph-sim.ts'), 'utf8'),
@@ -55,7 +55,9 @@ test('auto layout uses a static runtime and Pixi renders on demand', async () =>
 
   assert.match(semanticSection, /targetSimManager\.initStatic/);
   assert.doesNotMatch(semanticSection, /targetSimManager\.initSim/);
-  assert.match(main, /setStaticMode\(mode === 'auto'\)/);
+  assert.match(main, /const usesStaticSimulation = mode === 'auto' \|\| coordinateLayoutModes\.has\(mode\)/);
+  assert.match(main, /setStaticMode\(usesStaticSimulation\)/);
+  assert.match(main, /coordinateLayoutModes\.has\(mode\)\) layoutPane\?\.simManager\?\.initStatic\(\)/);
   assert.match(graphSim, /createStaticSimulation\(nodes\)/);
   assert.match(graphSim, /uses graph nodes directly|uses graph nodes directly/i);
   assert.match(pixiApp, /autoStart:\s*false/);

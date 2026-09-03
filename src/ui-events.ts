@@ -22,6 +22,8 @@ export interface EventsContext {
   getSelEdge: () => number | null;  setSelEdge: (v: number | null) => void;
   getSelGroup: () => string | null; setSelGroup: (v: string | null) => void;
   getSimulation: () => any;
+  /** Exact node objects used by the current renderer when they differ from the simulation. */
+  getVisibleNodes?: () => any[];
   getTransform: () => any;
   getCanvas: () => HTMLCanvasElement;
   captureMagnifierRegion?: (region: MagnifierCaptureRegion) => CanvasImageSource | null;
@@ -114,7 +116,11 @@ export function setupCanvasEvents(
   } = ctx;
   // 坐标转换：统一用 canvas 偏移校正
   // 过滤隐藏节点（折叠/搜索），返回可见节点列表
-  const _rawSimNodes = () => getSimulation()?.nodes() || [];
+  // Card/scoped layouts may render graph-owned nodes while retaining a
+  // simulation-compatible object for legacy commands. Hit testing must use
+  // the rendered source or invisible, still-moving simulation nodes produce
+  // ghost hover and drag targets after the canvas settles.
+  const _rawSimNodes = () => ctx.getVisibleNodes?.() ?? getSimulation()?.nodes() ?? [];
   const visibleNodes = () => {
     const all = _rawSimNodes();
     const hidden = ctx.getHiddenNodeIds?.();
@@ -599,10 +605,16 @@ export function setupCanvasEvents(
     else { canvas.style.cursor = "grab"; }
     if (getDraggingNode()) {
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
-      const clamped = ctx.clampNodeDrag ? ctx.clampNodeDrag(getDraggingNode().id, mx, my) : [mx, my];
-      getDraggingNode().fx = clamped[0]; getDraggingNode().fy = clamped[1];
+      const draggedNode = getDraggingNode();
+      const clamped = ctx.clampNodeDrag ? ctx.clampNodeDrag(draggedNode.id, mx, my) : [mx, my];
+      // Keep the exact object selected by hit testing under the pointer. Force
+      // layouts normally copy fx/fy into x/y on their next tick, but card
+      // layouts use a small local simulation node; relying on that copy leaves
+      // the visible node behind while an invisible collider follows the mouse.
+      draggedNode.x = clamped[0]; draggedNode.y = clamped[1];
+      draggedNode.fx = clamped[0]; draggedNode.fy = clamped[1];
       if (!ctx.isCardGridMode?.()) getSimulation()?.alpha(0.3).restart();
-      const membershipMove = membershipDrag.move(getDraggingNode().id, mx, my);
+      const membershipMove = membershipDrag.move(draggedNode.id, mx, my);
       if (membershipMove) ctx.onNodeMembershipDragMove?.(membershipMove.nodeId, membershipMove.x, membershipMove.y);
     }
     // 空白区域拖动由 viewport 处理；这里只取消候选长按。

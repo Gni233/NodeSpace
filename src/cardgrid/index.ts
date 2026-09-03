@@ -226,9 +226,17 @@ export class CardGridController implements LayoutController {
     this._advanceCardLayout();
 
     const dragNodeId = this._sm?.getDragNode?.() as string | null | undefined;
+    const draggedGraphNode = dragNodeId ? this._graphNodeById.get(dragNodeId) : null;
     const draggedSimNode = dragNodeId ? this._globalSimNodeById.get(dragNodeId) : null;
-    const dragX = Number.isFinite(draggedSimNode?.fx) ? draggedSimNode.fx : null;
-    const dragY = Number.isFinite(draggedSimNode?.fy) ? draggedSimNode.fy : null;
+    // The pointer system writes to the visible graph/projection node. In a
+    // static, shared, or scoped view that object is not guaranteed to be the
+    // global simulation node, so prefer the graph-side drag coordinates.
+    const dragX = Number.isFinite(draggedGraphNode?.fx)
+      ? draggedGraphNode.fx
+      : Number.isFinite(draggedSimNode?.fx) ? draggedSimNode.fx : null;
+    const dragY = Number.isFinite(draggedGraphNode?.fy)
+      ? draggedGraphNode.fy
+      : Number.isFinite(draggedSimNode?.fy) ? draggedSimNode.fy : null;
 
     for (const [cardId, sim] of this._cardSims) {
       const cd = (sim as any)._cardData as CardSimData | undefined;
@@ -310,10 +318,13 @@ export class CardGridController implements LayoutController {
   }
 
   /** 卡片交互始终跟随显示器帧率；静止场景由按需渲染负责省电。 */
-  wake(alpha = 0.35): void {
+  wake(alpha = 0.35, cardId?: string): void {
     if (!this._active) return;
     this._activeFpsUntil = performance.now() + ACTIVE_FPS_HOLD_MS;
-    for (const [, sim] of this._cardSims) {
+    const sims = cardId
+      ? [this._cardSims.get(cardId)].filter((sim): sim is d3.Simulation<any, any> => !!sim)
+      : [...this._cardSims.values()];
+    for (const sim of sims) {
       sim.alpha(Math.max(sim.alpha(), alpha)).alphaTarget(0).stop();
     }
     if (this._rafId != null) return;
@@ -334,7 +345,8 @@ export class CardGridController implements LayoutController {
         ),
       );
       const simulationsMoving = [...this._cardSims.values()].some(sim => sim.alpha() > 0.012);
-      if (now >= this._activeFpsUntil && !cardsMoving && !simulationsMoving) {
+      const dragActive = this._sm?.getDragNode?.() != null;
+      if (now >= this._activeFpsUntil && !cardsMoving && !simulationsMoving && !dragActive) {
         this._rafId = null;
         return;
       }
@@ -361,7 +373,7 @@ export class CardGridController implements LayoutController {
     const cd = (sim as any)._cardData as CardSimData;
     for (const n of cd.simNodes) { n.x += p1.x - p0.x; n.y += p1.y - p0.y; }
     this._persistViews();
-    this.wake(0.2);
+    this.wake(0.2, cardId);
   }
 
   zoomCard(cardId: string, factor: number, anchorX: number, anchorY: number): void {
@@ -381,7 +393,7 @@ export class CardGridController implements LayoutController {
     }
     card.viewScale = nextScale;
     this._persistViews();
-    this.wake(0.28);
+    this.wake(0.28, cardId);
   }
 
   resetCardView(cardId: string): void {
@@ -400,7 +412,7 @@ export class CardGridController implements LayoutController {
     card.viewOffsetX = 0;
     card.viewOffsetY = 0;
     this._persistViews();
-    this.wake(0.5);
+    this.wake(0.5, cardId);
   }
 
   /** Returns this node's current local card zoom, or null when it has no card. */
@@ -421,17 +433,36 @@ export class CardGridController implements LayoutController {
   }
 
   constrainNodePosition(nodeId: string, x: number, y: number): [number, number] {
-    this.wake(0.2);
     const card = this._cardByNode.get(nodeId);
     const vp = this._pixi?.viewport;
     if (!card || !vp) return [x, y];
+    this.wake(0.2, card.id);
     const content = cardContentScreenBox(card);
     const tl = vp.toWorld(content.x, content.y);
     const br = vp.toWorld(content.x + content.w, content.y + content.h);
-    return [
-      Math.max(tl.x, Math.min(br.x, x)),
-      Math.max(tl.y, Math.min(br.y, y)),
-    ];
+    const nextX = Math.max(tl.x, Math.min(br.x, x));
+    const nextY = Math.max(tl.y, Math.min(br.y, y));
+
+    // Commit the pointer position directly to both representations. Waiting
+    // for the stopped global simulation to mirror fx/fy made the data change
+    // while the Pixi sprite appeared frozen in scoped/static card views.
+    const graphNode = this._graphNodeById.get(nodeId);
+    if (graphNode) {
+      graphNode.x = nextX;
+      graphNode.y = nextY;
+      graphNode.fx = nextX;
+      graphNode.fy = nextY;
+    }
+    const sim = this._cardSims.get(card.id);
+    const data = sim ? (sim as any)._cardData as CardSimData | undefined : undefined;
+    const simNode = data?.simNodes.find(node => node.id === nodeId);
+    if (simNode) {
+      simNode.x = nextX;
+      simNode.y = nextY;
+      simNode.fx = nextX;
+      simNode.fy = nextY;
+    }
+    return [nextX, nextY];
   }
 
   markNewNode(nodeId: string): void {
@@ -562,7 +593,10 @@ export class CardGridController implements LayoutController {
       };
       const sim = d3.forceSimulation(simNodes)
         .force('charge', d3.forceManyBody().strength(chargeStrength))
-        .force('center', d3.forceCenter(cx, cy).strength(centerStrength))
+        // A per-node pull does not translate the whole card when one node is
+        // pinned under the pointer, unlike forceCenter's centroid correction.
+        .force('x', d3.forceX(cx).strength(centerStrength))
+        .force('y', d3.forceY(cy).strength(centerStrength))
         .force('collide', d3.forceCollide().radius((d: any) => d.r + (this._simParams.getCollideR?.() ?? 4)).strength(1))
         .force('bnd', () => {
           const b = data.box;
@@ -621,12 +655,15 @@ export class CardGridController implements LayoutController {
       card.x + card.w / 2 + card.viewOffsetX,
       card.y + card.h / 2 + card.viewOffsetY,
     );
-    const centerForce = sim.force('center') as any;
-    centerForce?.x?.(center.x)?.y?.(center.y);
+    const xForce = sim.force('x') as any;
+    const yForce = sim.force('y') as any;
+    xForce?.x?.(center.x);
+    yForce?.y?.(center.y);
 
     const centerStrength = this._simParams.getCenterS?.() ?? 0.05;
     if (centerStrength !== data.centerStrength) {
-      centerForce?.strength?.(centerStrength);
+      xForce?.strength?.(centerStrength);
+      yForce?.strength?.(centerStrength);
       data.centerStrength = centerStrength;
     }
     const linkDistance = (this._simParams.getLinkDist?.() ?? 40) * card.viewScale;

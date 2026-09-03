@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copy: (src, dst) => ipcRenderer.invoke('fs-copy', src, dst),
   exists: (path) => ipcRenderer.invoke('fs-exists', path),
   stat: (path) => ipcRenderer.invoke('fs-stat', path),
-  scanVault: (path) => ipcRenderer.invoke('vault-scan', path),
+  scanVault: (path, graphFolderRelative) => ipcRenderer.invoke('vault-scan', path, graphFolderRelative),
   openInObsidian: (rootPath, relativePath, heading) => ipcRenderer.invoke('vault-open-in-obsidian', rootPath, relativePath, heading),
 
   // 对话框

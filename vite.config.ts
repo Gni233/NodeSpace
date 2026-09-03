@@ -2,6 +2,10 @@ import { defineConfig, Plugin } from 'vite';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { resolveGraphDirectory } = require('./electron/graph-folder.cjs');
 
 // 读取 Electron 配置文件中的数据目录（与 MCP server 逻辑一致）
 function getElectronConfigDir(): string | null {
@@ -23,8 +27,7 @@ function getElectronConfigDir(): string | null {
       if (fs.existsSync(cp)) {
         const config = JSON.parse(fs.readFileSync(cp, 'utf-8'));
         if (config.folderPath && fs.existsSync(config.folderPath)) {
-          const graphRoot = path.join(config.folderPath, 'Graph233');
-          return fs.existsSync(graphRoot) && fs.statSync(graphRoot).isDirectory() ? graphRoot : config.folderPath;
+          return resolveGraphDirectory(config.folderPath, config.graphFolderRelative).graphRootPath;
         }
       }
     }

@@ -9,13 +9,13 @@
 路径：`mcp-server/server.js`
 数据目录默认：`~/Documents/NodeSpace`，可通过 `--dir` 或环境变量 `NODESPACE_DATA_DIR` 指定。
 
-当桌面应用打开的是 Obsidian Vault 且根目录下存在 `Graph233/` 时，应用、Vite 开发服务和按应用配置启动的 MCP Server 都把 `Graph233/` 作为可写图目录；Vault 中的 Markdown 与附件只作为只读来源投影，不当作图 JSON 改写。
+当桌面应用打开的是 Obsidian Vault 时，应用、Vite 开发服务和按应用配置启动的 MCP Server 共用用户选择的图专用文件夹；新资料库默认为 `./NodeSpace`。Vault 中的 Markdown 与附件只作为只读来源投影，不当作图 JSON 改写。
 
 详细用法见 `mcp-server/AGENT_INSTRUCTIONS.md`。
 
 快速示例（用 `--dir` 指定数据目录）：
 ```
-node mcp-server/server.js --dir D:/Graph233
+node mcp-server/server.js --dir D:/Notes/NodeSpace
 ```
 
 然后通过 MCP 工具操作图：
@@ -32,9 +32,9 @@ node mcp-server/server.js --dir D:/Graph233
 MCP 工具本质就是读写 JSON，也可以直接写脚本处理：
 
 ```js
-const data = JSON.parse(readFileSync('D:/Graph233/实例1.json', 'utf8'));
+const data = JSON.parse(readFileSync('D:/Notes/NodeSpace/实例1.json', 'utf8'));
 // ...增删节点/边...
-writeFileSync('D:/Graph233/实例1.json', JSON.stringify(data, null, 2));
+writeFileSync('D:/Notes/NodeSpace/实例1.json', JSON.stringify(data, null, 2));
 ```
 
 图文件结构：`{ nodes: [...], edges: [...], groups: [...], settings: {...} }`

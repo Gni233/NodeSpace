@@ -18,6 +18,7 @@ import { NodeSprite } from './pixi-nodes';
 import { GraphData } from './data/storage';
 import { nodeContainsPoint } from './geometry/hit';
 import { isNodeInGroup } from './group-membership';
+import { getStructureProjection } from './structure-nodes';
 
 // ---- PaneExternals — 窗格需要的外部回调（由 main.ts 注入） ----
 
@@ -279,6 +280,9 @@ function createEventsContextForPane(
     getSelGroup: () => pi.selGroup,
     setSelGroup: (v: string | null) => { pi.selGroup = v; },
     getSimulation: () => getSim(),
+    getVisibleNodes: () => ['cardgrid', 'category', 'fullcat'].includes(pi.activeMode)
+      ? getStructureProjection(paneGraph(pi)).nodes
+      : getSim()?.nodes?.() ?? [],
     isReadOnlyNode: (id: string) => !!pi.structureView?.proxyNodeIds.has(id),
     isReadOnlyEdge: (index: number) => !!pi.structureView?.isReadOnlyEdge(index),
     getOriginalEdgeIndex: (index: number) => pi.structureView?.getOriginalEdgeIndex(index) ?? index,

@@ -24,6 +24,9 @@ import { homedir, platform } from 'node:os';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { resolveInside } from './path-utils.js';
+import graphFolderConfig from '../electron/graph-folder.cjs';
+
+const { resolveGraphDirectory } = graphFolderConfig;
 
 // ---- 数据目录 ----
 function getElectronConfigDir() {
@@ -50,8 +53,7 @@ function getElectronConfigDir() {
         const raw = readFileSync(cp, 'utf-8');
         const config = JSON.parse(raw);
         if (config.folderPath && existsSync(config.folderPath)) {
-          const graphRoot = join(config.folderPath, 'Graph233');
-          return existsSync(graphRoot) ? graphRoot : config.folderPath;
+          return resolveGraphDirectory(config.folderPath, config.graphFolderRelative).graphRootPath;
         }
       }
     }

@@ -80,7 +80,7 @@ test('pointer event API only wires membership callbacks to real node drag lifecy
   const setup = visit(file, node => ts.isFunctionDeclaration(node) && node.name?.text === 'setupCanvasEvents');
   const body = setup.body.getText(file);
   assert.match(body, /gestureMove\?\.startedNodeDrag[\s\S]*?membershipDrag\.start\(node\.id, mx, my\)/);
-  assert.match(body, /membershipDrag\.move\(getDraggingNode\(\)\.id, mx, my\)/);
+  assert.match(body, /membershipDrag\.move\(draggedNode\.id, mx, my\)/);
   assert.match(body, /endMembershipDrag\(false, e\)/);
   assert.match(body, /endMembershipDrag\(true, e\)/);
   assert.match(body, /endMembershipDrag\(true\);/);

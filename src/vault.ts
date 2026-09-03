@@ -33,6 +33,7 @@ export interface VaultIndex {
   isObsidianVault: boolean;
   graphRootPath: string;
   graphRootRelative: string;
+  graphRootSource?: 'configured' | 'default' | 'legacy' | 'root';
   notes: VaultResource[];
   attachments: VaultResource[];
   graphs: VaultResource[];

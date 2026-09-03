@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveGraphDirectory } = require('./graph-folder.cjs');
 
 const MEDIA_EXTENSIONS = new Map([
   ['.png', 'image'], ['.jpg', 'image'], ['.jpeg', 'image'], ['.gif', 'image'],
@@ -159,7 +160,7 @@ function markdownExcerpt(markdown, limit = 280) {
   return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1)).trimEnd()}…` : text;
 }
 
-function scanVault(rootPath) {
+function scanVault(rootPath, graphFolderRelative) {
   const root = path.resolve(rootPath);
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
     throw new Error('Vault directory not found');
@@ -168,10 +169,8 @@ function scanVault(rootPath) {
   const notes = [];
   const attachments = [];
   const graphs = [];
-  const graphDirectory = fs.existsSync(path.join(root, 'Graph233'))
-    && fs.statSync(path.join(root, 'Graph233')).isDirectory()
-    ? path.join(root, 'Graph233')
-    : root;
+  const graphLocation = resolveGraphDirectory(root, graphFolderRelative);
+  const graphDirectory = graphLocation.graphRootPath;
 
   const walk = directory => {
     let entries = [];
@@ -217,9 +216,10 @@ function scanVault(rootPath) {
   return {
     rootPath: root,
     name: path.basename(root),
-    isObsidianVault: fs.existsSync(path.join(root, '.obsidian')),
+    isObsidianVault: graphLocation.isObsidianVault,
     graphRootPath: graphDirectory,
-    graphRootRelative: normalizeRelativePath(path.relative(root, graphDirectory)),
+    graphRootRelative: graphLocation.graphRootRelative,
+    graphRootSource: graphLocation.source,
     notes,
     attachments,
     graphs,

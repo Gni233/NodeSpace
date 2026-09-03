@@ -4,7 +4,7 @@ You have access to NodeSpace MCP tools for creating and editing semantic node gr
 
 ## Graph File Model
 
-If the desktop workspace is an Obsidian Vault containing `Graph233/`, the MCP server automatically uses that subdirectory for graph JSON files. Markdown notes elsewhere in the Vault remain source documents and are not MCP graph files.
+If the desktop workspace is an Obsidian Vault, the MCP server uses the graph folder selected in NodeSpace. New Vaults default to `./NodeSpace`; an existing legacy selection is preserved. Markdown notes elsewhere in the Vault remain source documents and are not MCP graph files.
 
 Each graph is a `.json` file containing three arrays:
 
