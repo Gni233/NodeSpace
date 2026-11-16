@@ -2,9 +2,11 @@ import { GRAPH_STORAGE_PREFIX, RECOVERY_STORAGE_PREFIX } from './storage-keys';
 
 type RecoveryStorageBackend = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
-export function createRecoveryStorage(graphName: string, storage: RecoveryStorageBackend = localStorage) {
-  const dataKey = GRAPH_STORAGE_PREFIX + graphName;
-  const recoveryKey = RECOVERY_STORAGE_PREFIX + graphName;
+export function createRecoveryStorage(graphName: string, storage: RecoveryStorageBackend = localStorage, scope: string | null = null) {
+  // Mounted caches must not be visible as graph files in the localStorage adapter.
+  const mountKey = scope === null ? null : `${encodeURIComponent(scope)}:${graphName}`;
+  const dataKey = mountKey === null ? GRAPH_STORAGE_PREFIX + graphName : `fg-mounted-data:${mountKey}`;
+  const recoveryKey = mountKey === null ? RECOVERY_STORAGE_PREFIX + graphName : `fg-mounted-recovery:${mountKey}`;
   return {
     readSnapshot: (): string | null => {
       try { return storage.getItem(dataKey); } catch { return null; }

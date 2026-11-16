@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const root = 'D:/cc/workspace/nodespace';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const serverPath = path.join(root, 'mcp-server', 'server.js');
 
 function requestMcp(directory, calls) {

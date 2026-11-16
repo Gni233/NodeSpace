@@ -4,13 +4,14 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { inlineNodeRadiusModule } from './helpers/node-radius-module.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function transpiledModule(relativePath) {
-  let source = await readFile(path.join(root, relativePath), 'utf8');
+  let source = inlineNodeRadiusModule(await readFile(path.join(root, relativePath), 'utf8'));
   if (source.includes("'../group-membership'")) {
     const groupSource = await readFile(path.join(root, 'src', 'group-membership.ts'), 'utf8');
     const groupOutput = ts.transpileModule(groupSource, {

@@ -2,21 +2,27 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
+import { mediaImportModuleUrl, mediaAssetsModuleUrl } from './helpers/media-import-module.mjs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { inlineNodeRadiusModule } from './helpers/node-radius-module.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function importEditor() {
-  let source = await readFile(path.join(root, 'src', 'ui-edit.ts'), 'utf8');
+  let source = inlineNodeRadiusModule(await readFile(path.join(root, 'src', 'ui-edit.ts'), 'utf8'));
+  source = source.replace("import './inspector-design.css';", '');
   let structureSource = await readFile(path.join(root, 'src', 'structure-nodes.ts'), 'utf8');
   const nodeOrderSource = await readFile(path.join(root, 'src', 'node-order.ts'), 'utf8');
   const nodeOrderOutput = ts.transpileModule(nodeOrderSource, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const nodeOrderUrl = `data:text/javascript;base64,${Buffer.from(nodeOrderOutput).toString('base64')}`;
+  source = source.replace("from './media-import'", `from '${mediaImportModuleUrl}'`);
+  source = source.replace("from './media-assets'", `from '${mediaAssetsModuleUrl}'`);
+  source = source.replace("from './node-order'", `from '${nodeOrderUrl}'`);
   structureSource = structureSource.replace("from './node-order'", `from '${nodeOrderUrl}'`);
   const structureOutput = ts.transpileModule(structureSource, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
@@ -29,6 +35,11 @@ async function importEditor() {
   const groupUrl = `data:text/javascript;base64,${Buffer.from(groupOutput).toString('base64')}`;
   source = source.replace("from './structure-nodes'", `from '${structureUrl}'`);
   source = source.replace("from './group-membership'", `from '${groupUrl}'`);
+  const revealSource = await readFile(path.join(root, 'src', 'canvas-reveal.ts'), 'utf8');
+  const revealOutput = ts.transpileModule(revealSource, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  source = source.replace("from './canvas-reveal'", `from 'data:text/javascript;base64,${Buffer.from(revealOutput).toString('base64')}'`);
   source = source.replace(/import .*? from "\.\/utils\/color";\r?\n/, '');
   source = source.replace(/import .*? from "\.\/data\/storage";\r?\n/, '');
   source = source.replace(/import .*? from '\.\/dialog';\r?\n/, '');
@@ -41,6 +52,20 @@ async function importEditor() {
 }
 
 const { createStructureReflectionEditor } = await importEditor();
+
+test('structure reflection cannot begin or finish after the editor becomes read-only', () => {
+  const node = { id: 's', structure: { memberIds: ['a'], purpose: '原文' } };
+  const graph = { nodes: [node], edges: [], groups: [] };
+  let mutable = true, saves = 0, undos = 0;
+  const editor = createStructureReflectionEditor({ getGraph: () => graph, getSelectedNode: () => node,
+    canMutate: () => mutable, saveUndo: () => undos++, triggerSave: () => saves++, draw() {} });
+  editor.begin('purpose'); mutable = false;
+  assert.equal(editor.update('purpose', '迟到输入'), false);
+  editor.begin('purpose');
+  assert.equal(editor.update('purpose', '只读输入'), false);
+  assert.equal(node.structure.purpose, '原文');
+  assert.equal(saves + undos, 0);
+});
 
 test('structure reflection updates live with one undo snapshot per field edit', () => {
   const structure = { id: 's', structure: { memberIds: ['a', 'b'], collapsed: true } };

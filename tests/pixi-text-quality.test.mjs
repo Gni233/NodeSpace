@@ -77,3 +77,45 @@ test('semantic cards and world labels opt into the shared low-zoom policy', asyn
   assert.match(edges, /new Text\(\{ text: e\.label, style: labelStyle, \.\.\.WORLD_TEXT_SAMPLING \}\)/);
   assert.match(main, /semanticZoom: st\.activeMode === 'auto' \? pixi\.viewport\.scale\.x : undefined/);
 });
+
+test('viewport title compensation reuses text textures, respects label space, and resets for card headers', async () => {
+  const { semanticZoomProfile } = await (async () => {
+    const source = await readFile(path.join(root, 'src', 'semantic-zoom.ts'), 'utf8');
+    const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
+    return import(`data:text/javascript;base64,${Buffer.from(output).toString('base64')}`);
+  })();
+  const source = await readFile(path.join(root, 'src', 'pixi-nodes.ts'), 'utf8');
+  const file = ts.createSourceFile('pixi-nodes.ts', source, ts.ScriptTarget.ES2022, true);
+  const declaration = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'updateSemanticViewportDetails');
+  const output = ts.transpileModule(declaration.getText(file).replace('export ', ''), {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const update = new Function('semanticZoomProfile', 'updateSemanticBodyViewport', 'updateSpacePortalViewport',
+    `${output}\nreturn updateSemanticViewportDetails;`)(semanticZoomProfile, () => false, () => false);
+  let scaleWrites = 0;
+  const label = { text: '窗边的光', style: { fontSize: 13 }, alpha: 1, visible: true,
+    scale: { x: 1, set(value) { this.x = value; scaleWrites++; } } };
+  const sprite = { label, _semanticTitleViewport: { baseAlpha: 1, nodeForm: true, maxScale: 1.5 } };
+  assert.equal(update(sprite, 0.7), true);
+  assert.equal(label.scale.x, 1.4);
+  assert.equal(update(sprite, 0.701), false);
+  assert.equal(scaleWrites, 1);
+  assert.equal(label.style.fontSize, 13);
+  assert.equal(label.text, '窗边的光');
+  sprite._semanticTitleViewport.maxScale = 1.1;
+  update(sprite, 0.6);
+  assert.equal(label.scale.x, 1.1);
+  sprite._semanticTitleViewport.nodeForm = false;
+  update(sprite, 0.6);
+  assert.equal(label.scale.x, 1);
+  sprite._semanticTitleViewport.selected = true;
+  sprite._semanticTitleViewport.nodeForm = true;
+  update(sprite, 0.2);
+  assert.equal(label.alpha, 1);
+  assert.equal(label.visible, true);
+  assert.equal(label.scale.x, 1.1);
+  sprite._semanticTitleViewport.selected = false;
+  update(sprite, 0.2);
+  assert.equal(label.alpha, 0);
+  assert.equal(label.visible, false);
+});

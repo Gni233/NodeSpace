@@ -17,6 +17,8 @@ export interface VaultResource {
   size: number;
   mtime: number;
   title?: string;
+  /** YAML or first level-one heading retained for link lookup. */
+  documentTitle?: string;
   headingCount?: number;
   charCount?: number;
   hasFrontmatter?: boolean;
@@ -37,6 +39,8 @@ export interface VaultIndex {
   notes: VaultResource[];
   attachments: VaultResource[];
   graphs: VaultResource[];
+  /** Real readable directories, including empty ones, relative to the Vault. */
+  directories?: string[];
   stats: { notes: number; attachments: number; graphs: number; headings: number };
 }
 
@@ -165,6 +169,7 @@ export function vaultFolderResources(index: VaultIndex, folderPath = ''): Array<
 }
 
 function vaultResourceLabel(resource: VaultResource): string {
+  if (resource.kind === 'markdown') return vaultDisplayName(vaultTabId(resource.path));
   return resource.title?.trim() || resource.name.replace(/\.[^.]+$/, '') || resource.name;
 }
 
@@ -197,9 +202,7 @@ export function vaultFolderToGraph(index: VaultIndex, folderPath = '', absoluteR
   const children = vaultFolderResources(index, folder);
   const linkCounts = vaultLinkCounts(index);
   const nodes = children.map((child, order) => {
-    const label = child.kind === 'folder'
-      ? child.name
-      : (child.resource?.title || child.name.replace(/\.[^.]+$/, ''));
+    const label = child.resource ? vaultResourceLabel(child.resource) : child.name;
     const fallbackDetail = child.kind === 'folder'
       ? `包含 ${child.resourceCount || 0} 项 · 双击进入`
       : child.kind === 'markdown'
@@ -317,38 +320,67 @@ interface MarkdownSection {
   level: number;
   line: number;
   markdown: string;
+  start: number;
+  end: number;
+  titleStart: number;
+  titleEnd: number;
+  bodyStart: number;
+}
+
+/** Keep a byte order mark and a complete Obsidian frontmatter block outside document edits. */
+export function markdownPreambleEnd(markdown: string): number {
+  const bom = markdown.startsWith('\uFEFF') ? 1 : 0;
+  const opener = /^---[ \t]*(?:\r\n|\r|\n)/.exec(markdown.slice(bom));
+  if (!opener) return bom;
+  const bodyStart = bom + opener[0].length;
+  const closer = /^(?:---|\.\.\.)[ \t]*(?:\r\n|\r|\n|$)/m.exec(markdown.slice(bodyStart));
+  return closer ? bodyStart + closer.index + closer[0].length : bom;
 }
 
 export function parseMarkdownSections(markdown: string): MarkdownSection[] {
-  const lines = String(markdown || '').split(/\r?\n/);
+  const source = String(markdown || '');
+  const preamble = markdownPreambleEnd(source);
+  let lineNumber = source.slice(0, preamble).split(/\r\n|\r|\n/).length;
   const sections: MarkdownSection[] = [];
-  let fenced = false;
-  let current: MarkdownSection | null = null;
+  let fence: string | null = null;
   const headingStack: string[] = [];
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-    const heading = !fenced ? line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/) : null;
+  for (const match of source.slice(preamble).matchAll(/([^\r\n]*)(?:\r\n|\r|\n|$)/g)) {
+    if (match[0] === '') break;
+    const line = match[1];
+    const start = preamble + match.index;
+    const number = lineNumber++;
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+      continue;
+    }
+    if (marker && (marker[1][0] === '~' || !marker[2].includes('`'))) {
+      fence = marker[1];
+      continue;
+    }
+    const heading = /^( {0,3})(#{1,6})([ \t]+)(.*)$/.exec(line);
     if (heading) {
-      if (current) sections.push(current);
-      const level = heading[1].length;
-      const title = heading[2].trim();
+      const closing = /[ \t]+#+[ \t]*$/.exec(heading[4]);
+      const title = heading[4].slice(0, closing?.index).trimEnd();
+      if (!title || /^#+$/.test(title)) continue;
+      const level = heading[2].length;
+      const titleStart = start + heading[1].length + level + heading[3].length;
       headingStack.length = Math.max(0, level - 1);
       headingStack[level - 1] = title;
-      current = { title, headingPath: headingStack.filter(Boolean).join('#'), level, line: index + 1, markdown: line };
-    } else if (current) {
-      current.markdown += `\n${line}`;
+      const previous = sections[sections.length - 1];
+      if (previous) previous.end = start;
+      sections.push({
+        title, headingPath: headingStack.filter(Boolean).join('#'), level, line: number, start,
+        end: source.length, titleStart, titleEnd: titleStart + title.length, bodyStart: start + match[0].length,
+        markdown: '',
+      });
     }
   }
-  if (current) sections.push(current);
+  sections.forEach((section, index) => {
+    const text = source.slice(section.start, section.end).replace(/\r\n|\r/g, '\n');
+    section.markdown = index < sections.length - 1 ? text.replace(/\n$/, '') : text;
+  });
   return sections;
-}
-
-function markdownDocumentTitle(relativePath: string, markdown: string, resource?: VaultResource): string {
-  if (resource?.title?.trim()) return resource.title.trim();
-  const firstHeading = parseMarkdownSections(markdown)[0];
-  if (firstHeading?.level === 1) return firstHeading.title;
-  return (relativePath.split('/').pop() || relativePath).replace(/\.md$/i, '');
 }
 
 function sourceNode(path: string, label: string, markdown: string, source: VaultSourceRef, headingLevel: number, order: number) {
@@ -698,7 +730,7 @@ export function markdownToGraph(
   absoluteRootPath = index?.rootPath || '',
 ): GraphData {
   const path = normalizeVaultPath(relativePath);
-  const title = markdownDocumentTitle(path, markdown, resource);
+  const title = vaultDisplayName(vaultTabId(path));
   const sections = parseMarkdownSections(markdown);
   const shortDocument = markdown.length <= SHORT_DOCUMENT_CHARS && sections.length <= SHORT_DOCUMENT_HEADINGS;
   const root = sourceNode(path, title, markdown, { path, kind: 'markdown', line: 1 }, 1, 0);

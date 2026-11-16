@@ -9,7 +9,7 @@
 路径：`mcp-server/server.js`
 数据目录默认：`~/Documents/NodeSpace`，可通过 `--dir` 或环境变量 `NODESPACE_DATA_DIR` 指定。
 
-当桌面应用打开的是 Obsidian Vault 时，应用、Vite 开发服务和按应用配置启动的 MCP Server 共用用户选择的图专用文件夹；新资料库默认为 `./NodeSpace`。Vault 中的 Markdown 与附件只作为只读来源投影，不当作图 JSON 改写。
+当桌面应用打开的是 Obsidian Vault 时，应用、Vite 开发服务和按应用配置启动的 MCP Server 共用用户选择的图专用文件夹，新资料库默认为 `./NodeSpace`。桌面应用可从图投影编辑 Markdown 标题和正文，保存会写回 `.md` 原文。MCP 只操作图 JSON，附件用于读取和引用。
 
 详细用法见 `mcp-server/AGENT_INSTRUCTIONS.md`。
 

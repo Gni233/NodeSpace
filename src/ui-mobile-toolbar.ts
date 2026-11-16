@@ -57,13 +57,6 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
 
   let barLeft: number | null = null;
   let barTop: number | null = null;
-  const applyPos = () => {
-    if (barLeft === null || barTop === null) return;
-    bar.style.left = `${barLeft}px`;
-    bar.style.top = `${barTop}px`;
-    bar.style.bottom = 'auto';
-    bar.style.transform = 'none';
-  };
 
   bar.style.cssText = [
     'position:fixed; bottom:calc(10px + env(safe-area-inset-bottom, 0px) + var(--ns-visual-bottom, 0px)); left:50%; transform:translateX(-50%)',
@@ -244,9 +237,12 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     if (barLeft === null || barTop === null) return;
     const bounds = viewportBounds();
     const margin = 6;
-    barLeft = Math.max(bounds.left + margin, Math.min(bounds.left + bounds.width - bar.offsetWidth - margin, barLeft));
-    barTop = Math.max(bounds.top + margin, Math.min(bounds.top + bounds.height - bar.offsetHeight - margin, barTop));
-    applyPos();
+    const left = Math.max(bounds.left + margin, Math.min(bounds.left + bounds.width - bar.offsetWidth - margin, barLeft));
+    const top = Math.max(bounds.top + margin, Math.min(bounds.top + bounds.height - bar.offsetHeight - margin, barTop));
+    bar.style.left = `${left}px`;
+    bar.style.top = `${top}px`;
+    bar.style.bottom = 'auto';
+    bar.style.transform = 'none';
   };
 
   const updateViewport = () => {
@@ -265,17 +261,13 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
   let dragOrigin: { left: number; top: number } | null = null;
 
   const onPointerDown = (e: PointerEvent) => {
-    if ((e.target as Element).closest('.fg-mobile-toolbar-menu')) return;
+    if (e.button !== 0 || gesture.pointerId !== null || (e.target as Element).closest('.fg-mobile-toolbar-menu')) return;
     const rect = bar.getBoundingClientRect();
-    barLeft = rect.left;
-    barTop = rect.top;
-    applyPos();
-    dragOrigin = { left: barLeft, top: barTop };
+    dragOrigin = { left: rect.left, top: rect.top };
     const fromButton = !!(e.target as Element).closest('button');
     gesture.begin(e.pointerId, e.clientX, e.clientY, fromButton);
-    bar.setPointerCapture(e.pointerId);
     if (!fromButton) {
-      bar.style.transition = 'none';
+      bar.setPointerCapture(e.pointerId);
       e.preventDefault();
     }
   };
@@ -283,9 +275,9 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
   const onPointerMove = (e: PointerEvent) => {
     const move = gesture.move(e.pointerId, e.clientX, e.clientY);
     if (!move || !dragOrigin) return;
-    if (move.started && !bar.hasPointerCapture(e.pointerId)) {
-      bar.setPointerCapture(e.pointerId);
-      bar.style.transition = 'none';
+    if (move.started) {
+      if (!bar.hasPointerCapture(e.pointerId)) bar.setPointerCapture(e.pointerId);
+      bar.classList.add('is-dragging-toolbar');
     }
     if (!move.dragging) return;
     barLeft = dragOrigin.left + move.dx;
@@ -299,7 +291,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     gesture.end(e.pointerId);
     if (bar.hasPointerCapture(e.pointerId)) bar.releasePointerCapture(e.pointerId);
     dragOrigin = null;
-    bar.style.transition = '';
+    bar.classList.remove('is-dragging-toolbar');
   };
 
   const onPointerCancel = (e: PointerEvent) => {
@@ -307,7 +299,7 @@ export function createMobileToolbar(callbacks: MobileToolbarCallbacks): MobileTo
     gesture.cancel();
     if (bar.hasPointerCapture(e.pointerId)) bar.releasePointerCapture(e.pointerId);
     dragOrigin = null;
-    bar.style.transition = '';
+    bar.classList.remove('is-dragging-toolbar');
   };
 
   const onClickCapture = (e: MouseEvent) => {

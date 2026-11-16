@@ -1,4 +1,4 @@
-import { Container, Graphics, Text } from 'pixi.js';
+import { Container, Graphics, Text, CanvasTextMetrics } from 'pixi.js';
 import type { SemanticCardMetrics } from './layouts/semantic';
 import { semanticBodyDetailAlpha, semanticBodyScale, semanticReferenceBodyDetailAlpha, semanticReferenceBodyScale, WORLD_TEXT_SAMPLING } from './pixi-text-quality';
 import { semanticZoomProfile } from './semantic-zoom';
@@ -90,7 +90,7 @@ export function getHeadingColor(level: number, accentHex: string, isDark: boolea
   const bgG = isDark ? 30 : 235;
   const bgB = isDark ? 30 : 235;
   // h1 接近强调色本身，h6 混入较多背景但保留可辨识度
-  const blend = t * t * 0.55; // h1=0, h3≈0.09, h6≈0.55
+  const blend = t * t * (isDark ? 0.55 : 0.24);
   const R = Math.round(ar + (bgR - ar) * blend);
   const G = Math.round(ag + (bgG - ag) * blend);
   const B = Math.round(ab + (bgB - ab) * blend);
@@ -105,6 +105,8 @@ export interface NodeSprite {
 }
 
 export interface NodeVisualState {
+  /** Resolved per-graph font; global font remains a compatibility fallback. */
+  fontFamily?: string;
   selected: boolean;
   boxSelected: boolean;
   searchMatch: boolean;
@@ -126,6 +128,8 @@ export interface NodeVisualState {
   groupEdgeOnly?: boolean;
   pieColors?: number[];
   mediaType?: string;
+  /** Paper tone resolved from the pane's theme. */
+  surfaceColor?: number;
   vaultResourceKind?: string;
   resourceReferenceKind?: string;
   resourceReferenceStatus?: 'ok' | 'broken';
@@ -158,6 +162,15 @@ const SEMANTIC_PALETTE = [0x5e81ac, 0x88c0d0, 0x8fbcbb, 0xa3be8c, 0xb48ead, 0xd0
 
 const TEXT_RESOLUTION = Math.max(3, (window.devicePixelRatio || 1) * 2);
 
+function mixColor(base: number, tint: number, amount: number): number {
+  const channel = (shift: number) => {
+    const from = (base >> shift) & 255;
+    const to = (tint >> shift) & 255;
+    return Math.round(from + (to - from) * amount);
+  };
+  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
+}
+
 function fitCardExcerpt(value: string, limit: number): string {
   const characters = Array.from(String(value || '').replace(/\s+/g, ' ').trim());
   if (characters.length <= limit) return characters.join('');
@@ -166,17 +179,19 @@ function fitCardExcerpt(value: string, limit: number): string {
 
 interface SemanticBodyViewportState {
   excerpt: string;
-  width: number;
-  height: number;
-  headerHeight: number;
+  contentWidth: number;
+  contentHeight: number;
   focusAlpha: number;
   isReferencePreview: boolean;
-  reservedRight?: number;
   spacePortal?: boolean;
 }
 
 interface SemanticTitleViewportState {
   baseAlpha: number;
+  selected?: boolean;
+  /** Only compact nodes compensate for modest zoom-out; card headers stay fixed. */
+  nodeForm?: boolean;
+  maxScale?: number;
 }
 
 interface SemanticMediaViewportState {
@@ -206,11 +221,11 @@ export function updateSemanticBodyViewport(sprite: NodeSprite, zoom: number): bo
   const previewScale = view.isReferencePreview
     ? semanticReferenceBodyScale(zoom)
     : semanticBodyScale(zoom);
-  const bodyWidth = (view.width - 30 - (view.reservedRight || 0)) / previewScale;
-  const lineHeight = view.isReferencePreview ? 15 : 17;
-  const availableHeight = Math.max(lineHeight, (view.height - view.headerHeight - 14) / previewScale);
+  const bodyWidth = Math.max(1, view.contentWidth / previewScale);
+  const lineHeight = view.isReferencePreview ? 16 : 18;
+  const availableHeight = Math.max(lineHeight, view.contentHeight / previewScale);
   const visibleLines = Math.max(1, Math.min(3, Math.floor(availableHeight / lineHeight)));
-  const visibleCharacters = Math.max(6, Math.floor(bodyWidth / 11) * visibleLines);
+  const visibleCharacters = Math.max(6, Math.floor(bodyWidth / 12) * visibleLines);
   const excerpt = fitCardExcerpt(view.excerpt, visibleCharacters);
   const detailAlpha = (view.isReferencePreview
     ? semanticReferenceBodyDetailAlpha(zoom)
@@ -222,7 +237,7 @@ export function updateSemanticBodyViewport(sprite: NodeSprite, zoom: number): bo
     || body.scale.x !== previewScale
     || body.visible !== visible;
   const portalBodyAlpha = view.spacePortal ? spacePortalZoomProfile(zoom).bodyAlpha : 1;
-  const alpha = (view.isReferencePreview ? 0.68 : 0.58) * view.focusAlpha * detailAlpha * portalBodyAlpha;
+  const alpha = (view.isReferencePreview ? 0.84 : 0.79) * view.focusAlpha * detailAlpha * portalBodyAlpha;
   changed ||= Math.abs(body.alpha - alpha) > 0.001;
   if (body.text !== excerpt) body.text = excerpt;
   if (body.style.wordWrapWidth !== bodyWidth) body.style.wordWrapWidth = bodyWidth;
@@ -265,11 +280,14 @@ export function updateSemanticViewportDetails(sprite: NodeSprite, zoom: number):
   const profile = semanticZoomProfile(zoom);
   const title = (sprite as any)._semanticTitleViewport as SemanticTitleViewportState | undefined;
   if (title) {
-    const alpha = title.baseAlpha * profile.titleAlpha;
+    const alpha = title.baseAlpha * (title.selected ? 1 : profile.titleAlpha);
     const visible = alpha > 0.015;
     changed ||= Math.abs(sprite.label.alpha - alpha) > 0.001 || sprite.label.visible !== visible;
     sprite.label.alpha = alpha;
     sprite.label.visible = visible;
+    const scale = title.nodeForm ? Math.min(profile.nodeTitleScale, title.maxScale ?? 1.5) : 1;
+    changed ||= Math.abs(sprite.label.scale.x - scale) > 0.001;
+    if (Math.abs(sprite.label.scale.x - scale) > 0.001) sprite.label.scale.set(scale);
   }
   const media = (sprite as any)._semanticMediaViewport as SemanticMediaViewportState | undefined;
   const mediaIcon = (sprite as any)._mediaIcon as Graphics | undefined;
@@ -294,6 +312,28 @@ export function setNodeFontFamily(f: string) { _nodeFontFamily = f; }
 
 function readFontFamily(): string {
   return _nodeFontFamily;
+}
+
+/** Compact titles stay inside their allocated cell. The selected title gets a
+ * second line, never an unbounded tooltip that hides neighbouring ideas. */
+export function fitCompactNodeTitle(value: string, width: number, measure: (value: string) => number, selected: boolean): string {
+  const characters = Array.from(String(value || '').replace(/\s+/g, ' ').trim());
+  const maxLines = selected ? 2 : 1;
+  const lines: string[] = [];
+  let line = '';
+  for (let index = 0; index < characters.length; index++) {
+    const character = characters[index];
+    const remaining = index < characters.length - 1;
+    const reserve = lines.length === maxLines - 1 && remaining ? '…' : '';
+    if (measure(line + character + reserve) > width && line) {
+      if (lines.length === maxLines - 1) { lines.push(`${line.trimEnd()}…`); return lines.join('\n'); }
+      lines.push(line.trimEnd()); line = '';
+    }
+    if (!line && character === ' ') continue;
+    line += character;
+  }
+  if (line) lines.push(line);
+  return lines.join('\n');
 }
 
 export function createNodeSprite(
@@ -345,8 +385,14 @@ function animateFixedAnim(sprite: NodeSprite, target: number) {
 
   // 终止旧动画
   if (sn._fixedAnimRaf) cancelAnimationFrame(sn._fixedAnimRaf);
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    sn._fixedAnim = target;
+    sn._fixedAnimRaf = null;
+    return;
+  }
 
   const step = () => {
+    if (sprite.container.destroyed) { sn._fixedAnimRaf = null; return; }
     const cur = (sn._fixedAnim as number) ?? (target === 1 ? 1 : 0);
     if (typeof cur !== 'number' || isNaN(cur)) { sn._fixedAnim = target; sn._fixedAnimRaf = null; return; }
     const diff = target - cur;
@@ -368,6 +414,33 @@ export function cancelSpriteAnimations(sprite: NodeSprite): void {
   if (sn._dyingRaf) { cancelAnimationFrame(sn._dyingRaf); sn._dyingRaf = null; }
 }
 
+function applyHierarchyNodeTransform(sprite: NodeSprite, state: NodeVisualState, alpha: number, reducedMotion: boolean): void {
+  const container = sprite.container;
+  const motion = sprite as NodeSprite & { _hierarchyScale?: number };
+  if (reducedMotion || (state.collapsing == null && state.expanding == null)) {
+    // Only release the scale we own. A drag or a node animation can have replaced it.
+    if (motion._hierarchyScale !== undefined) {
+      if (container.scale.x === motion._hierarchyScale && container.scale.y === motion._hierarchyScale) container.scale.set(1);
+      delete motion._hierarchyScale;
+    }
+    container.alpha = alpha;
+    return;
+  }
+
+  if (state.expanding != null) {
+    const t = state.expanding;
+    motion._hierarchyScale = Math.max(0.01, 1 - (1 - t) ** 3);
+    container.alpha = t;
+  } else {
+    const t = Math.min(1, state.collapsing! / 0.65);
+    motion._hierarchyScale = t < 0.15
+      ? 1 + t / 0.15 * 0.12
+      : Math.max(0.01, 1.12 * (1 - ((t - 0.15) / 0.85) ** 3));
+    container.alpha = Math.max(0, 1 - t * t);
+  }
+  container.scale.set(motion._hierarchyScale);
+}
+
 export function applyNodeVisual(
   sprite: NodeSprite,
   baseColor: number,
@@ -375,8 +448,24 @@ export function applyNodeVisual(
   labelSize: number,
   state: NodeVisualState
 ) {
+  const fontFamily = state.fontFamily?.trim() || readFontFamily();
+  sprite.label.style.fontFamily = fontFamily;
   // 节点固定状态过渡动画：首次渲染也从 0 起跳，保证动画可见
   const sn = sprite as any;
+  if (sn._dyingAnim && !state.dying) {
+    if (sn._dyingRaf) cancelAnimationFrame(sn._dyingRaf);
+    sn._dyingRaf = null;
+    sn._dyingAnim = false;
+    sprite.container.scale.set(1);
+    sprite.container.alpha = 1;
+  }
+  // Counts belong to the current representation, not to the sprite lifetime.
+  const oldDotsLabel = sn._collapseDots as Text | undefined;
+  if (oldDotsLabel) {
+    sprite.container.removeChild(oldDotsLabel);
+    oldDotsLabel.destroy();
+    sn._collapseDots = null;
+  }
   if (sn._fixedAnimTarget !== (state.fixed ? 1 : 0)) {
     if (sn._fixedAnim === undefined) sn._fixedAnim = 0;
     animateFixedAnim(sprite, state.fixed ? 1 : 0);
@@ -384,6 +473,9 @@ export function applyNodeVisual(
   const { circle, container, radius } = sprite;
   const r = radius;
   const alpha = state.inFocus ? 1 : 0.15;
+  const surface = state.surfaceColor ?? (labelColor > 0x7f7f7f ? 0x252119 : 0xfbf8f0);
+  const resourceKind = state.spaceReferenceKind || state.mediaType || state.resourceReferenceKind || state.vaultResourceKind;
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 
   // Media identity is a compact badge attached to the card/node silhouette.
   // It remains visible while the reader is open, using the accent ring as its
@@ -420,19 +512,21 @@ export function applyNodeVisual(
     sprite.container.addChild(g);
   };
   const drawMediaBadge = (x: number, y: number, size: number, tint: number, focusAlpha = 1, nodeForm = false) => {
-    const resourceKind = state.spaceReferenceKind || state.mediaType || state.resourceReferenceKind || state.vaultResourceKind;
     if (!resourceKind) return;
     const g = new Graphics();
-    const s = Math.max(4.5, size);
+    const s = Math.max(5.5, size);
     const active = !!state.mediaExpanded;
     const isReference = Boolean(state.resourceReferenceKind || state.spaceReferenceKind);
     const isBroken = state.resourceReferenceStatus === 'broken' || state.spaceReferenceStatus === 'broken';
-    const badgeTint = isBroken ? 0xbf616a : tint;
-    g.circle(0, 0, s)
-      .fill({ color: badgeTint, alpha: (active ? 0.34 : isReference ? 0.22 : 0.16) * focusAlpha })
-      .stroke({ color: active ? state.accentColor : badgeTint, width: active || isReference ? 1.6 : 1, alpha: (active ? 0.9 : isReference ? 0.7 : 0.48) * focusAlpha });
-    const u = s * 0.46;
-    const stroke = { color: 0xffffff, width: Math.max(1, s * 0.13), alpha: 0.82 * focusAlpha, cap: 'round' as const, join: 'round' as const };
+    const badgeTint = isBroken ? 0xbf616a : active ? state.accentColor : tint;
+    const ink = mixColor(labelColor, badgeTint, active ? 0.28 : 0.16);
+    g.roundRect(-s, -s, s * 2, s * 2, s * 0.43)
+      .fill({ color: mixColor(surface, badgeTint, active ? 0.23 : 0.085), alpha: focusAlpha })
+      .stroke({ color: badgeTint, width: active ? 1.45 : 0.9,
+        alpha: (active || isBroken ? 0.92 : isReference ? 0.62 : 0.44) * focusAlpha });
+    const u = s * 0.57;
+    const solid = { color: ink, alpha: 0.96 * focusAlpha };
+    const stroke = { ...solid, width: Math.max(0.85, s * 0.13), cap: 'round' as const, join: 'round' as const };
     if (resourceKind === 'node') {
       g.circle(-u * 0.32, 0, u * 0.42).stroke(stroke);
       g.circle(u * 0.32, 0, u * 0.42).stroke(stroke);
@@ -443,35 +537,39 @@ export function applyNodeVisual(
       g.moveTo(-u * 0.72, -u * 0.42).lineTo(-u * 0.12, -u * 0.42).lineTo(u * 0.08, -u * 0.62)
         .lineTo(u * 0.7, -u * 0.62).lineTo(u * 0.7, u * 0.55).lineTo(-u * 0.72, u * 0.55).closePath().stroke(stroke);
     } else if (resourceKind === 'graph') {
-      g.circle(-u * 0.52, u * 0.28, u * 0.2).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
-      g.circle(0, -u * 0.48, u * 0.2).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
-      g.circle(u * 0.52, u * 0.28, u * 0.2).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
+      g.circle(-u * 0.52, u * 0.28, u * 0.2).fill(solid);
+      g.circle(0, -u * 0.48, u * 0.2).fill(solid);
+      g.circle(u * 0.52, u * 0.28, u * 0.2).fill(solid);
       g.moveTo(-u * 0.38, u * 0.14).lineTo(-u * 0.1, -u * 0.32).lineTo(u * 0.1, -u * 0.32).lineTo(u * 0.38, u * 0.14).stroke(stroke);
     } else if (resourceKind === 'image') {
       g.roundRect(-u, -u * 0.82, u * 2, u * 1.64, u * 0.2).stroke(stroke);
-      g.circle(-u * 0.28, -u * 0.24, u * 0.2).fill({ color: 0xffffff, alpha: 0.78 * focusAlpha });
+      g.circle(-u * 0.28, -u * 0.24, u * 0.18).fill(solid);
       g.moveTo(-u * 0.72, u * 0.5).lineTo(-u * 0.12, 0).lineTo(u * 0.2, u * 0.3).lineTo(u * 0.66, -u * 0.18).stroke(stroke);
     } else if (resourceKind === 'audio') {
-      g.moveTo(-u * 0.58, u * 0.45).lineTo(-u * 0.58, -u * 0.34).lineTo(u * 0.45, -u * 0.58).lineTo(u * 0.45, u * 0.2).stroke(stroke);
-      g.circle(-u * 0.72, u * 0.5, u * 0.25).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
-      g.circle(u * 0.3, u * 0.28, u * 0.25).fill({ color: 0xffffff, alpha: 0.82 * focusAlpha });
+      for (const [offset, height] of [[-0.75, 0.24], [-0.375, 0.53], [0, 0.84], [0.375, 0.53], [0.75, 0.24]]) {
+        g.moveTo(u * offset, -u * height).lineTo(u * offset, u * height).stroke(stroke);
+      }
     } else if (resourceKind === 'video') {
-      g.moveTo(-u * 0.35, -u * 0.58).lineTo(u * 0.62, 0).lineTo(-u * 0.35, u * 0.58).closePath().fill({ color: 0xffffff, alpha: 0.84 * focusAlpha });
+      g.roundRect(-u, -u * 0.72, u * 2, u * 1.44, u * 0.24).stroke(stroke);
+      g.moveTo(-u * 0.24, -u * 0.36).lineTo(u * 0.42, 0).lineTo(-u * 0.24, u * 0.36).closePath().fill(solid);
     } else if (resourceKind === 'pdf') {
-      g.moveTo(-u * 0.52, -u * 0.72).lineTo(u * 0.18, -u * 0.72).lineTo(u * 0.54, -u * 0.34).lineTo(u * 0.54, u * 0.72).lineTo(-u * 0.52, u * 0.72).closePath().stroke(stroke);
-      g.moveTo(-u * 0.22, u * 0.28).lineTo(u * 0.28, u * 0.28).stroke(stroke);
+      g.moveTo(-u * 0.66, -u * 0.84).lineTo(u * 0.12, -u * 0.84).lineTo(u * 0.65, -u * 0.3)
+        .lineTo(u * 0.65, u * 0.84).lineTo(-u * 0.66, u * 0.84).closePath().stroke(stroke);
+      g.moveTo(u * 0.12, -u * 0.84).lineTo(u * 0.12, -u * 0.32).lineTo(u * 0.65, -u * 0.32)
+        .moveTo(-u * 0.28, u * 0.31).lineTo(u * 0.28, u * 0.31).stroke(stroke);
     } else {
-      g.moveTo(-u * 0.52, -u * 0.68).lineTo(u * 0.52, -u * 0.68).lineTo(u * 0.52, u * 0.68).lineTo(-u * 0.52, u * 0.68).closePath().stroke(stroke);
-      g.moveTo(-u * 0.26, -u * 0.2).lineTo(u * 0.27, -u * 0.2).moveTo(-u * 0.26, u * 0.18).lineTo(u * 0.16, u * 0.18).stroke(stroke);
+      g.roundRect(-u * 0.69, -u * 0.85, u * 1.38, u * 1.7, u * 0.18).stroke(stroke);
+      g.moveTo(-u * 0.31, -u * 0.36).lineTo(u * 0.32, -u * 0.36)
+        .moveTo(-u * 0.31, 0).lineTo(u * 0.32, 0).moveTo(-u * 0.31, u * 0.36).lineTo(u * 0.12, u * 0.36).stroke(stroke);
     }
     if (isReference) {
-      g.circle(s * 0.7, -s * 0.7, Math.max(1.35, s * 0.22))
+      g.circle(s * 0.78, -s * 0.78, Math.max(1.35, s * 0.21))
         .fill({ color: isBroken ? 0xbf616a : state.accentColor, alpha: 0.94 * focusAlpha })
-        .stroke({ color: 0xffffff, width: Math.max(0.7, s * 0.08), alpha: 0.72 * focusAlpha });
+        .stroke({ color: surface, width: Math.max(0.7, s * 0.08), alpha: focusAlpha });
     }
     if (isBroken) {
       g.moveTo(-s * 0.58, s * 0.58).lineTo(s * 0.58, -s * 0.58)
-        .stroke({ color: 0xffffff, width: Math.max(1.1, s * 0.15), alpha: 0.9 * focusAlpha, cap: 'round' });
+        .stroke({ color: ink, width: Math.max(1.1, s * 0.15), alpha: 0.9 * focusAlpha, cap: 'round' });
     }
     g.position.set(x, y);
     (sprite as any)._mediaIcon = g;
@@ -494,21 +592,15 @@ export function applyNodeVisual(
     const tint = regionIndex >= 0 ? SEMANTIC_PALETTE[regionIndex % SEMANTIC_PALETTE.length] : baseColor;
     const identityColor = state.groupColor && !state.groupEdgeOnly ? state.groupColor : baseColor;
     const focusAlpha = state.inFocus ? 1 : 0.18;
-    const fillAlpha = card.kind === 'private' ? 0.055 : 0.075;
-    const borderAlpha = state.selected ? 0.82 : state.boxSelected ? 0.68 : 0.32;
-    const headerHeight = (card.titleLines || 1) > 1 ? 49 : 32;
 
     if (card.form === 'node') {
-      const nodeRadius = Math.max(5, Number(card.nodeRadius) || r);
+      const nodeRadius = Math.max(1, Number(card.nodeRadius) || r);
       const body = (sprite as any)._semanticBody as Text | undefined;
       if (body) body.visible = false;
       delete (sprite as any)._semanticBodyViewport;
       const drawGlow = (color: number, maxAlpha: number) => {
-        for (let index = 5; index >= 0; index--) {
-          const progress = (5 - index) / 5;
-          circle.circle(0, 0, nodeRadius + index + 0.5)
-            .fill({ color, alpha: maxAlpha * (1 - progress) * (1 - progress) });
-        }
+        // One quiet wash keeps the selection ring distinct from the node ink.
+        circle.circle(0, 0, nodeRadius + 5.5).fill({ color, alpha: maxAlpha });
       };
       if (state.searchMatch) drawGlow(state.accentColor, 0.10 * focusAlpha);
       if (state.selected && !state.boxSelected) drawGlow(state.accentColor, 0.16 * focusAlpha);
@@ -524,7 +616,7 @@ export function applyNodeVisual(
       if (state.fixedHollow && fixedT > 0) {
         circle.circle(0, 0, nodeRadius)
           .fill({ color: identityColor, alpha: Math.max(0.15, nodeAlpha) * fixedT });
-        circle.circle(0, 0, nodeRadius - Math.max(1.5, nodeRadius * 0.25)).cut();
+        circle.circle(0, 0, Math.max(0.5, nodeRadius - Math.max(1.5, nodeRadius * 0.25))).cut();
         circle.circle(0, 0, Math.max(nodeRadius * 0.3, 1.5))
           .fill({ color: identityColor, alpha: Math.max(0.3, nodeAlpha) * fixedT });
       }
@@ -533,8 +625,8 @@ export function applyNodeVisual(
           .stroke({ color: state.groupColor!, width: 2, alpha: focusAlpha });
       }
       if (state.selected && !state.boxSelected) {
-        circle.circle(0, 0, nodeRadius + 1)
-          .stroke({ color: state.accentColor, width: 2, alpha: focusAlpha });
+        circle.circle(0, 0, nodeRadius + 5)
+          .stroke({ color: state.accentColor, width: 1.5, alpha: focusAlpha });
       }
       if (state.boxSelected) {
         circle.circle(0, 0, nodeRadius + 1)
@@ -548,7 +640,9 @@ export function applyNodeVisual(
       // A short regional arc is the only new mark. The node itself keeps the
       // same color, radius, fill and selection language as the legacy renderer.
       if (regionIndex >= 0) {
-        circle.arc(0, 0, nodeRadius + 3, -Math.PI * 0.78, -Math.PI * 0.22)
+        const arcRadius = nodeRadius + 3;
+        circle.moveTo(Math.cos(-Math.PI * 0.78) * arcRadius, Math.sin(-Math.PI * 0.78) * arcRadius)
+          .arc(0, 0, arcRadius, -Math.PI * 0.78, -Math.PI * 0.22)
           .stroke({ color: tint, width: 1.35, alpha: 0.46 * focusAlpha, cap: 'round' });
       }
       const markerX = nodeRadius * 0.62;
@@ -568,78 +662,110 @@ export function applyNodeVisual(
 
       sprite.label.anchor.set(0.5, 0);
       sprite.label.position.set(0, nodeRadius + 3);
-      const labelCharacters = Array.from(String(sprite.label.text || ''));
-      if (labelCharacters.length > 9) sprite.label.text = `${labelCharacters.slice(0, 8).join('')}…`;
       sprite.label.style.fontSize = Math.max(11, Math.min(15, labelSize));
-      sprite.label.style.fontWeight = 'normal';
+      sprite.label.style.fontWeight = state.selected || state.boxSelected ? '600' : '400';
+      sprite.label.style.fontFamily = fontFamily;
+      const titleSize = Number(sprite.label.style.fontSize);
+      const titleWidth = Math.max(30, width - 10);
+      const titleSource = String(sprite.label.text || '');
+      const titleKey = JSON.stringify([titleSource, titleWidth, titleSize, sprite.label.style.fontFamily, sprite.label.style.fontWeight, state.selected]);
+      if (sn._compactTitleCache?.key !== titleKey) {
+        sn._compactTitleCache = { key: titleKey, text: fitCompactNodeTitle(titleSource, titleWidth,
+          value => CanvasTextMetrics.measureText(value, sprite.label.style, undefined, false).width, state.selected) };
+      }
+      sprite.label.text = sn._compactTitleCache.text;
+      sprite.label.style.lineHeight = titleSize + 2;
       sprite.label.style.align = 'center';
       sprite.label.style.wordWrap = false;
       sprite.label.style.breakWords = false;
       sprite.label.style.fill = labelColor;
       (sprite as any)._semanticTitleViewport = {
         baseAlpha: focusAlpha * (state.semanticTransitionAlpha ?? 1),
+        selected: state.selected,
+        nodeForm: true,
+        // Fit within the compositor's reserved label width plus half its
+        // neighbour gap. Long headings must not grow across nearby ideas.
+        maxScale: Math.max(1, Math.min(1.5, (width + 16)
+          / Math.max(1, sprite.label.width / Math.max(0.01, sprite.label.scale.x)),
+        // Only the active title may use half the surrounding vertical gap.
+        state.selected ? (height / 2 - nodeRadius - 3 + 16)
+          / ((titleSize + 2) * String(sprite.label.text).split('\n').length) : 1.5)),
       } satisfies SemanticTitleViewportState;
       (sprite as any)._semanticMode = true;
       updateSemanticViewportDetails(sprite, state.semanticZoom ?? 1);
-      container.alpha = state.dying ? 0.25 : 1;
+      applyHierarchyNodeTransform(sprite, state, state.dying ? 0.25 : 1, reducedMotion);
       return;
     }
 
-    circle
-      .roundRect(-width / 2, -height / 2, width, height, 9)
-      .fill({ color: tint, alpha: fillAlpha * focusAlpha })
-      .stroke({ color: state.selected ? state.accentColor : state.boxSelected ? state.accentAltColor : tint, width: state.selected || state.boxSelected ? 2 : 1, alpha: borderAlpha * focusAlpha });
+    const left = -width / 2;
+    const top = -height / 2;
     const isSpacePortal = state.spaceReferenceKind === 'space' || state.spaceReferenceKind === 'fragment';
-    if (isSpacePortal) {
-      circle
-        .roundRect(-width / 2 + 5, -height / 2 + 5, width - 10, height - 10, 7)
-        .stroke({ color: identityColor, width: 0.8, alpha: 0.18 * focusAlpha });
-      circle
-        .moveTo(width / 2 - 54, -height / 2)
-        .lineTo(width / 2 - 18, -height / 2)
-        .stroke({ color: identityColor, width: 2.2, alpha: 0.58 * focusAlpha, cap: 'round' });
-    }
-    circle
-      .roundRect(-width / 2, -height / 2, 4, height, 2)
-      .fill({ color: identityColor, alpha: 0.78 * focusAlpha });
-    circle
-      .moveTo(-width / 2 + 15, -height / 2 + headerHeight)
-      .lineTo(width / 2 - 15, -height / 2 + headerHeight)
-      .stroke({ color: tint, width: 1, alpha: 0.16 * focusAlpha });
-
-    if (card.kind === 'task') {
-      circle.rect(width / 2 - 25, -height / 2 + 12, 10, 10)
-        .stroke({ color: identityColor, width: 1.2, alpha: 0.62 * focusAlpha });
-    } else if (card.kind === 'question') {
-      circle.circle(width / 2 - 20, -height / 2 + 17, 5)
-        .stroke({ color: identityColor, width: 1.2, alpha: 0.58 * focusAlpha });
-      circle.circle(width / 2 - 20, -height / 2 + 17, 1.2)
-        .fill({ color: identityColor, alpha: 0.7 * focusAlpha });
-    } else if (card.kind === 'private') {
-      circle.circle(width / 2 - 20, -height / 2 + 17, 3)
-        .fill({ color: identityColor, alpha: 0.5 * focusAlpha });
-    }
-
-    sprite.label.anchor.set(0, 0);
-    sprite.label.position.set(-width / 2 + 15, -height / 2 + 9);
-    sprite.label.style.fontSize = Math.max(12, Math.min(17, labelSize));
-    sprite.label.style.fontWeight = '600';
-    sprite.label.style.align = 'left';
-    sprite.label.style.wordWrap = true;
-    sprite.label.style.breakWords = true;
-    sprite.label.style.lineHeight = 18;
-    sprite.label.style.wordWrapWidth = width - 50;
-    sprite.label.style.fill = labelColor;
-    (sprite as any)._semanticTitleViewport = {
-      baseAlpha: focusAlpha * (state.semanticTransitionAlpha ?? 1),
-    } satisfies SemanticTitleViewportState;
-    (sprite as any)._semanticMode = true;
-
     const isReferenceCard = Boolean(state.resourceReferenceKind || state.spaceReferenceKind);
     const semanticExcerpt = isReferenceCard
       ? String(state.spaceReferencePreview || state.resourceReferencePreview || card.excerpt
         || (state.resourceReferenceStatus === 'broken' || state.spaceReferenceStatus === 'broken' ? '引用目标暂时不可用' : '引用内容暂时没有摘要 · 双击阅读')).trim()
       : card.excerpt;
+    const hasAttachment = Boolean(state.mediaType && !state.spaceReferenceKind);
+    const hasMediaBadge = Boolean(resourceKind);
+    const hasKindMarker = card.kind === 'task' || card.kind === 'question' || card.kind === 'private';
+    const titleLines = (card.titleLines || 1) > 1 ? 2 : 1;
+    const titleLineHeight = 18;
+    const headerHeight = titleLines * titleLineHeight + 16;
+    const hasBody = Boolean(semanticExcerpt || isSpacePortal);
+    const titleY = top + (hasBody ? 10 : Math.max(10, (height - titleLines * titleLineHeight) / 2));
+    const firstTitleLineCenter = titleY + titleLineHeight / 2;
+    const kindMarkerY = hasMediaBadge ? height / 2 - 14 : firstTitleLineCenter;
+    const contentInset = state.localContextProxy ? 26 : 17;
+    const contentX = left + contentInset;
+    const selected = state.selected || state.boxSelected;
+    const outlineColor = state.boxSelected ? state.accentAltColor
+      : state.selected || state.searchMatch ? state.accentColor
+      : state.groupEdgeOnly ? state.groupColor ?? labelColor : labelColor;
+    const outlineAlpha = selected ? 0.9 : state.searchMatch ? 0.6 : state.groupEdgeOnly ? 0.66 : 0.21;
+    const paperColor = selected || state.searchMatch ? mixColor(surface, outlineColor, selected ? 0.07 : 0.045) : surface;
+    circle
+      .roundRect(left, top, width, height, 10)
+      .fill({ color: paperColor, alpha: focusAlpha })
+      .stroke({ color: outlineColor, width: selected ? 1.7 : 1, alpha: outlineAlpha * focusAlpha });
+    if (!state.localContextProxy) {
+      circle.circle(left + 9, firstTitleLineCenter, 2.1)
+        .fill({ color: identityColor, alpha: 0.8 * focusAlpha });
+    }
+    if (hasBody) {
+      circle.moveTo(contentX, top + headerHeight)
+        .lineTo(width / 2 - 17, top + headerHeight)
+        .stroke({ color: labelColor, width: 0.8, alpha: 0.13 * focusAlpha });
+    }
+
+    if (card.kind === 'task') {
+      circle.rect(width / 2 - 25, kindMarkerY - 5, 10, 10)
+        .stroke({ color: identityColor, width: 1.2, alpha: 0.62 * focusAlpha });
+    } else if (card.kind === 'question') {
+      circle.circle(width / 2 - 20, kindMarkerY, 5)
+        .stroke({ color: identityColor, width: 1.2, alpha: 0.58 * focusAlpha });
+      circle.circle(width / 2 - 20, kindMarkerY, 1.2)
+        .fill({ color: identityColor, alpha: 0.7 * focusAlpha });
+    } else if (card.kind === 'private') {
+      circle.circle(width / 2 - 20, kindMarkerY, 3)
+        .fill({ color: identityColor, alpha: 0.5 * focusAlpha });
+    }
+
+    sprite.label.anchor.set(0, 0);
+    sprite.label.position.set(contentX, titleY);
+    sprite.label.style.fontSize = Math.max(12, Math.min(17, labelSize));
+    sprite.label.style.fontWeight = '600';
+    sprite.label.style.align = 'left';
+    sprite.label.style.wordWrap = true;
+    sprite.label.style.breakWords = true;
+    sprite.label.style.lineHeight = titleLineHeight;
+    sprite.label.style.wordWrapWidth = width - contentInset - (hasMediaBadge || hasKindMarker ? 35 : 17);
+    sprite.label.style.fill = labelColor;
+    (sprite as any)._semanticTitleViewport = {
+      baseAlpha: focusAlpha * (state.semanticTransitionAlpha ?? 1),
+      selected: state.selected,
+    } satisfies SemanticTitleViewportState;
+    (sprite as any)._semanticMode = true;
+
     let body = (sprite as any)._semanticBody as Text | undefined;
     if (semanticExcerpt) {
       if (!body || body.destroyed) {
@@ -648,9 +774,9 @@ export function applyNodeVisual(
           resolution: TEXT_RESOLUTION,
           ...(isReferenceCard ? WORLD_TEXT_SAMPLING : {}),
           style: {
-            fontFamily: readFontFamily(),
-            fontSize: 11,
-            lineHeight: 17,
+            fontFamily,
+            fontSize: 12,
+            lineHeight: 18,
             fill: labelColor,
             align: 'left',
             wordWrap: true,
@@ -661,15 +787,19 @@ export function applyNodeVisual(
         (sprite as any)._semanticBody = body;
         container.addChild(body);
       }
-      body.position.set(-width / 2 + 15, -height / 2 + headerHeight + 7);
+      // Existing paragraph textures also follow this pane's settings.
+      body.style.fontFamily = fontFamily;
+      body.style.fill = labelColor;
+      const bodyTop = headerHeight + 7;
+      const reservedRight = state.spaceReferenceKind !== 'node' && state.spaceReferenceMiniMap?.points.length ? 58
+        : hasMediaBadge && hasKindMarker ? 13 : 0;
+      body.position.set(contentX, top + bodyTop);
       (sprite as any)._semanticBodyViewport = {
         excerpt: semanticExcerpt,
-        width,
-        height,
-        headerHeight,
+        contentWidth: width - contentInset - 17 - reservedRight,
+        contentHeight: height - bodyTop - 10,
         focusAlpha,
         isReferencePreview: isReferenceCard,
-        reservedRight: state.spaceReferenceKind !== 'node' && state.spaceReferenceMiniMap?.points.length ? 58 : 0,
         spacePortal: isSpacePortal,
       } satisfies SemanticBodyViewportState;
     } else if (body) {
@@ -724,7 +854,7 @@ export function applyNodeVisual(
             resolution: TEXT_RESOLUTION,
             ...WORLD_TEXT_SAMPLING,
             style: {
-              fontFamily: readFontFamily(),
+              fontFamily,
               fontSize: 8,
               fill: labelColor,
               fontWeight: '500',
@@ -740,7 +870,7 @@ export function applyNodeVisual(
         resolution: TEXT_RESOLUTION,
         ...WORLD_TEXT_SAMPLING,
         style: {
-          fontFamily: readFontFamily(),
+          fontFamily,
           fontSize: 8.5,
           fill: labelColor,
           fontWeight: '600',
@@ -764,10 +894,11 @@ export function applyNodeVisual(
         focusAlpha,
       } satisfies SpacePortalViewportState;
     }
-    drawMediaBadge(width / 2 - 17, height / 2 - 15, 6.5, tint, focusAlpha);
-    drawProjectionBadge(-width / 2 + 17, -height / 2 + 15, 6.2, tint, focusAlpha);
+    drawMediaBadge(width / 2 - 18, firstTitleLineCenter,
+      hasAttachment ? 8 : 6.5, hasAttachment ? identityColor : tint, focusAlpha);
+    drawProjectionBadge(left + 13, firstTitleLineCenter, 6.2, tint, focusAlpha);
     updateSemanticViewportDetails(sprite, state.semanticZoom ?? 1);
-    container.alpha = state.dying ? 0.25 : 1;
+    applyHierarchyNodeTransform(sprite, state, state.dying ? 0.25 : 1, reducedMotion);
     return;
   }
 
@@ -775,10 +906,12 @@ export function applyNodeVisual(
     (sprite as any)._semanticMode = false;
     sprite.label.anchor.set(0.5, 0);
     sprite.label.position.set(0, radius + 3);
+    sprite.label.scale.set(1);
     sprite.label.style.fontWeight = 'normal';
     sprite.label.style.align = 'center';
     sprite.label.style.wordWrap = false;
     sprite.label.style.breakWords = false;
+    sprite.label.style.lineHeight = 0;
     const body = (sprite as any)._semanticBody as Text | undefined;
     if (body) body.visible = false;
     delete (sprite as any)._semanticBodyViewport;
@@ -791,14 +924,9 @@ export function applyNodeVisual(
   let fillColor = baseColor;
   if (state.groupColor && !state.groupEdgeOnly) fillColor = state.groupColor;
 
-  // --- 发光（6步同心圆 + 二次衰减模拟平滑渐变）---
+  // A flat, translucent wash reads as selection rather than a glowing object.
   const drawSmoothGlow = (color: number, maxAlpha: number) => {
-    for (let i = 5; i >= 0; i--) {
-      const t = (5 - i) / 5;
-      const offset = (i + 0.5);
-      const alpha = maxAlpha * (1 - t) * (1 - t);
-      circle.circle(0, 0, r + offset).fill({ color, alpha });
-    }
+    circle.circle(0, 0, r + 5.5).fill({ color, alpha: maxAlpha });
   };
 
   const accentGlow = (state.selected && !state.boxSelected);
@@ -840,7 +968,7 @@ export function applyNodeVisual(
 
   // 选中描边 vs 框选描边（使用主题强调色）
   if (state.selected && !state.boxSelected) {
-    circle.circle(0, 0, r + 1).stroke({ color: state.accentColor, width: 2, alpha });
+    circle.circle(0, 0, r + 5).stroke({ color: state.accentColor, width: 1.5, alpha });
   }
   if (state.boxSelected) {
     circle.circle(0, 0, r + 1).stroke({ color: state.accentAltColor, width: 2, alpha });
@@ -852,15 +980,13 @@ export function applyNodeVisual(
   }
 
   // 折叠标记：节点名下方加 ...
-  const oldDotsLabel = (sprite as any)._collapseDots as Text | undefined;
-  if (oldDotsLabel) { oldDotsLabel.visible = false; sprite.container.removeChild(oldDotsLabel); (sprite as any)._collapseDots = null; }
   if (state.structureMemberCount || (state.collapsed && state.hasChildren)) {
     const dots = new Text({
       text: state.structureMemberCount ? String(state.structureMemberCount) : '...',
       resolution: TEXT_RESOLUTION,
       ...WORLD_TEXT_SAMPLING,
       style: {
-        fontFamily: readFontFamily(),
+        fontFamily,
         fontSize: Math.max(10, labelSize * 0.75),
         fill: labelColor,
         fontWeight: 'bold',
@@ -875,71 +1001,50 @@ export function applyNodeVisual(
     sprite.container.addChild(dots);
   }
 
-  // 新节点弹性生长动画
-  if (state.isNew && !(sprite as any)._grew) {
+  if (reducedMotion) {
+    cancelSpriteAnimations(sprite);
+    sprite.container.scale.set(1);
+    if (state.isNew) (sprite as any)._grew = true;
+  }
+  // 新节点柔和出现，不增加末尾弹跳。
+  if (state.isNew && !(sprite as any)._grew && !reducedMotion) {
     (sprite as any)._grew = true;
     sprite.container.scale.set(0.01);
     const start = performance.now();
     const grow = () => {
-      const t = Math.min(1, (performance.now() - start) / 350);
+      if (sprite.container.destroyed) return;
+      const t = Math.min(1, (performance.now() - start) / 240);
       const s = 1 - Math.pow(1 - t, 3); // ease-out cubic
-      const bounce = 1 + (1 - s) * 0.1; // slight overshoot then settle
-      const scale = t < 0.85 ? s : bounce * (1 - (t - 0.85) / 0.15) + 1 * ((t - 0.85) / 0.15);
-      sprite.container.scale.set(Math.max(0.01, scale));
-      if (t < 1) requestAnimationFrame(grow);
-      else sprite.container.scale.set(1);
+      sprite.container.scale.set(Math.max(0.01, s));
+      if (t < 1) sn._growRaf = requestAnimationFrame(grow);
+      else { sprite.container.scale.set(1); sn._growRaf = null; }
     };
-    requestAnimationFrame(grow);
+    sn._growRaf = requestAnimationFrame(grow);
   }
 
   // 消失动画：缩放到 0 + 淡出
+  if (state.dying && reducedMotion) { container.alpha = 0; return; }
   if (state.dying && !(sprite as any)._dyingAnim) {
+    if (sn._growRaf) { cancelAnimationFrame(sn._growRaf); sn._growRaf = null; }
     (sprite as any)._dyingAnim = true;
     const start = performance.now();
     const shrink = () => {
-      if (!sprite || !sprite.container || !sprite.container.scale) return;
+      if (sprite.container.destroyed) return;
       const t = Math.min(1, (performance.now() - start) / 200);
       sprite.container.scale.set(1 - t);
       sprite.container.alpha = 1 - t;
-      if (t < 1) requestAnimationFrame(shrink);
+      if (t < 1) sn._dyingRaf = requestAnimationFrame(shrink);
+      else sn._dyingRaf = null;
     };
-    requestAnimationFrame(shrink);
+    sn._dyingRaf = requestAnimationFrame(shrink);
     return;
   }
 
-  // 折叠动画：先微放大再缩小吸入父节点
-  // 缩放进度快于位移，在到达父节点边界前就已消失
-  if (state.collapsing != null) {
-    const t = state.collapsing;
-    const scaleT = Math.min(1, t / 0.65); // 缩放比位移早 35% 完成
-    let scale: number;
-    if (scaleT < 0.15) {
-      // 先微放大到 112%
-      scale = 1 + (scaleT / 0.15) * 0.12;
-    } else {
-      // 再缩小吸入
-      const ts = (scaleT - 0.15) / 0.85;
-      scale = 1.12 * (1 - ts * ts * ts);
-      scale = Math.max(0.01, scale);
-    }
-    sprite.container.scale.set(scale);
-    sprite.container.alpha = Math.max(0, 1 - scaleT * scaleT);
-  }
-
-  // 展开动画：放大（ease-out cubic，从父节点长出）
-  if (state.expanding != null) {
-    const t = state.expanding;
-    const easeOut = 1 - Math.pow(1 - t, 3); // ease-out cubic
-    sprite.container.scale.set(Math.max(0.01, easeOut));
-    sprite.container.alpha = Math.min(1, t);
-  }
-
-  if (state.collapsing == null && state.expanding == null) {
-    container.alpha = alpha;
-  }
+  applyHierarchyNodeTransform(sprite, state, alpha, reducedMotion);
   sprite.label.style.fontSize = labelSize;
+  sprite.label.style.fontWeight = state.selected || state.boxSelected ? '600' : '400';
   sprite.label.style.fill = labelColor;
-  sprite.label.style.fontFamily = readFontFamily();
+  sprite.label.style.fontFamily = fontFamily;
   sprite.label.y = r + 3;
   drawMediaBadge(r * 0.72, -r * 0.72, Math.max(4.5, r * 0.42), baseColor, alpha);
   drawProjectionBadge(-r * 0.72, -r * 0.72, Math.max(4.5, r * 0.38), baseColor, alpha);

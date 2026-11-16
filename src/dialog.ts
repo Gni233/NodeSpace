@@ -5,8 +5,21 @@
 
 import {Z_MODAL, Z_MODAL_BACKDROP, V } from "./layout-constants";
 
+export function activeDialogContainer(): HTMLElement {
+  return document.querySelector<HTMLElement>('dialog[open]') ?? document.body;
+}
+
+export function wrapDialogTab(event: KeyboardEvent, overlay: HTMLElement, first: HTMLElement, last: HTMLElement): void {
+  if (event.key !== 'Tab') return;
+  const active = document.activeElement;
+  if (overlay.contains(active) && active !== (event.shiftKey ? first : last)) return;
+  event.preventDefault();
+  (event.shiftKey ? last : first).focus();
+}
+
 export function safePrompt(msg: string, defaultValue?: string): Promise<string | null> {
   return new Promise((resolve) => {
+    const opener = document.activeElement;
     const overlay = document.createElement('div');
     overlay.className = 'fg-modal-backdrop';
     overlay.style.cssText =
@@ -63,16 +76,29 @@ export function safePrompt(msg: string, defaultValue?: string): Promise<string |
     box.appendChild(input);
     box.appendChild(btnRow);
     overlay.appendChild(box);
-    document.body.appendChild(overlay);
+    activeDialogContainer().appendChild(overlay);
     requestAnimationFrame(() => { overlay.style.opacity = '1'; box.style.opacity = '1'; box.style.transform = 'scale(1)'; });
+    let closing = false;
     const cleanup = (val: string | null) => {
+      if (closing) return;
+      closing = true;
       document.removeEventListener('keydown', onKey);
       overlay.style.opacity = '0';
       box.style.opacity = '0';
       box.style.transform = 'scale(0.95)';
-      setTimeout(() => { overlay.remove(); resolve(val); }, 200);
+      setTimeout(() => {
+        const restore = overlay.contains(document.activeElement);
+        overlay.remove();
+        if (restore && opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
+        resolve(val);
+      }, 200);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') cleanup(null); };
+    const onKey = (e: KeyboardEvent) => {
+      wrapDialogTab(e, overlay, input, okBtn);
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      cleanup(null);
+    };
     document.addEventListener('keydown', onKey);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(null); });
     okBtn.onclick = () => { cleanup(input.value || null); };

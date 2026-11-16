@@ -1,5 +1,7 @@
 import { safePrompt } from './dialog';
 import { confirmAction } from './toast';
+import { bindContextMenuTrigger } from './context-menu-trigger';
+import { showActionWheel } from './ui-contextmenu';
 import {Z_SETTINGS_PANEL, V } from "./layout-constants";
 
 /** 浮动设置面板 + 预设管理 */
@@ -40,6 +42,19 @@ export function createSettingsPanel(
   panel.className = 'fg-settings-dialog';
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', '应用与默认值');
+  let returnFocus: HTMLElement | null = null;
+  function hide() {
+    panel.classList.remove('is-open');
+    panel.style.display = 'none';
+    parent.classList.remove('is-settings-panel-open');
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+  }
+  panel.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    hide();
+  });
   const panelMaxW = Math.min(500, window.innerWidth - 40);
   panel.style.cssText =
     `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:${Z_SETTINGS_PANEL};` +
@@ -83,11 +98,7 @@ export function createSettingsPanel(
   closeBtn.style.cssText =
     `cursor:pointer;font-size:10px;width:16px;height:16px;line-height:16px;text-align:center;opacity:0.5;color:${V('--fg-text','#d0d0d0')};` +
     `border-radius:${V('--fg-radius-sm', '6px')};transition:all var(--fg-transition-fast,0.15s ease);`;
-  closeBtn.onclick = () => {
-    panel.classList.remove('is-open');
-    panel.style.display = 'none';
-    parent.classList.remove('is-settings-panel-open');
-  };
+  closeBtn.onclick = hide;
   closeBtn.onmouseenter = () => { closeBtn.style.opacity = '1'; closeBtn.style.background = `var(--fg-accent,#5B8FF9)`; closeBtn.style.color = '#fff'; };
   closeBtn.onmouseleave = () => { closeBtn.style.opacity = '0.5'; closeBtn.style.background = 'transparent'; closeBtn.style.color = V('--fg-text','#d0d0d0'); };
   titleBar.appendChild(titleLeft);
@@ -235,13 +246,40 @@ export function createSettingsPanel(
       pill.type = 'button';
       pill.className = 'fg-settings-pill';
       pill.textContent = p.name;
-      pill.title = '右键删除';
+      pill.title = '应用方案 ' + p.name;
+      pill.setAttribute('aria-label', '应用方案 ' + p.name);
       pill.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.18)')};`);
       pill.onclick = () => callbacks.onLoadPreset(p.name);
-      pill.oncontextmenu = async (e) => { e.preventDefault(); if (await confirmAction(`删除预设 "${p.name}"？`)) callbacks.onDeletePreset(p.name); };
+      let deleting = false;
+      const deletePreset = async () => {
+        if (deleting) return;
+        deleting = true;
+        if (await confirmAction(`删除预设 "${p.name}"？`)) {
+          callbacks.onDeletePreset(p.name);
+          presetRow.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+        } else remove.focus({ preventScroll: true });
+        deleting = false;
+      };
+      bindContextMenuTrigger(pill, (x, y) => {
+        const { left, top } = parent.getBoundingClientRect();
+        showActionWheel(parent, x - left, y - top, [
+          { label: '应用', icon: 'open', action: () => callbacks.onLoadPreset(p.name) },
+          { label: '删除', icon: 'delete', destructive: true, action: deletePreset },
+        ], { label: '预设操作', returnFocus: pill, clearSelection: false });
+      });
       pill.onmouseenter = () => { pill.style.background = V('--fg-button-hover', 'rgba(255,255,255,0.1)'); };
       pill.onmouseleave = () => { pill.style.background = ''; };
-      presetRow.appendChild(pill);
+      const pair = document.createElement('div');
+      pair.className = 'fg-settings-preset-pair';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'fg-settings-preset-remove';
+      remove.textContent = '×';
+      remove.title = '删除方案 ' + p.name;
+      remove.setAttribute('aria-label', remove.title);
+      remove.onclick = deletePreset;
+      pair.append(pill, remove);
+      presetRow.appendChild(pair);
     }
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
@@ -458,6 +496,7 @@ export function createSettingsPanel(
   return {
     panel,
     show: () => {
+      if (!panel.contains(document.activeElement)) returnFocus = document.activeElement as HTMLElement | null;
       panel.style.display = 'block';
       panel.classList.add('is-open');
       parent.classList.add('is-settings-panel-open');
@@ -467,12 +506,9 @@ export function createSettingsPanel(
       }
       if (graphPathLabel) graphPathLabel.textContent = callbacks.getGraphFolderPath?.() || './NodeSpace';
       if (graphFolderRow) graphFolderRow.style.display = callbacks.canSetGraphFolder?.() ? 'flex' : 'none';
+      closeBtn.focus({ preventScroll: true });
     },
-    hide: () => {
-      panel.classList.remove('is-open');
-      panel.style.display = 'none';
-      parent.classList.remove('is-settings-panel-open');
-    },
+    hide,
     updateInfo: () => { renderPresets(); },
   };
 }

@@ -1,7 +1,7 @@
 {
   "name": "nodespace-mcp",
   "version": "0.1.0",
-  "description": "MCP Server for NodeSpace - AI-assisted graph creation",
+  "description": "Local graph file tools for NodeSpace",
   "type": "module",
   "main": "server.js",
   "bin": {

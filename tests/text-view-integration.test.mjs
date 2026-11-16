@@ -112,7 +112,7 @@ test('main wiring exposes text view per pane and protects drafts and render work
   const editor = await readFile(path.join(root, 'src', 'text-view', 'editor.ts'), 'utf8');
   const paneState = await readFile(path.join(root, 'src', 'pane-state.ts'), 'utf8');
 
-  assert.match(main, /textViewPill\.textContent = '文字编辑'/);
+  assert.match(main, /const textViewPill = viewButton\('文字编辑'/);
   assert.match(main, /mountTextEditor\(pane0\)/);
   assert.match(main, /mountTextEditor\(pane1\)/);
   assert.match(main, /mountTextEditor\(np\)/);
@@ -120,7 +120,7 @@ test('main wiring exposes text view per pane and protects drafts and render work
   assert.match(main, /if \(pane0St\.textViewActive\) return/);
   assert.match(main, /!px \|\| !sm \|\| pi\.textViewActive/);
   assert.match(main, /blockForTextDraft\('切换文件'\)/);
-  assert.match(main, /blockForTextDraft\('关闭标签或窗格'\)/);
+  assert.match(main, /blockForTextDraft\('关闭窗格'\)/);
   assert.match(main, /blockExternalForTextDraft\(graphName\)/);
   assert.match(main, /if \(hasActiveTextDraft\(\)\)/);
   assert.match(main, /repairGraphCreatedOrders\(compiled\)/);

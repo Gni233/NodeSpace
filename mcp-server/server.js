@@ -17,9 +17,9 @@
  *   }
  */
 
-import { readdir, readFile, writeFile, mkdir, stat, unlink, rename, copyFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile, mkdir, stat, unlink, rename, copyFile, link, lstat, open, realpath } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
-import { join, extname, basename, resolve, dirname } from 'node:path';
+import { join, extname, basename, resolve, dirname, relative } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -27,6 +27,12 @@ import { resolveInside } from './path-utils.js';
 import graphFolderConfig from '../electron/graph-folder.cjs';
 
 const { resolveGraphDirectory } = graphFolderConfig;
+
+function assignExplicitColor(item, color) {
+  item.color = color || '';
+  if (typeof color === 'string' && color.trim()) item.colorMode = 'custom';
+  else delete item.colorMode;
+}
 
 // ---- 数据目录 ----
 function getElectronConfigDir() {
@@ -272,6 +278,36 @@ async function writeGraph(name, data, { undo = true } = {}) {
   await rename(tmpPath, p);
 }
 
+async function createGraph(name, data) {
+  const graphRoot = DATA_DIR;
+  const requested = graphPath(name);
+  if (/[:\x00-\x1f\x7f]/.test(relative(graphRoot, requested))) throw new Error('Invalid graph path');
+  await mkdir(graphRoot, { recursive: true });
+  const root = await realpath(graphRoot);
+  const directory = resolveInside(root, relative(graphRoot, dirname(requested)));
+  if (relative(directory, await realpath(directory)) !== '') throw new Error('Access denied: graph directory is a symbolic link');
+  const target = join(directory, basename(requested));
+  try { await lstat(target); return false; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+
+  const temporary = join(directory, `.nodespace-create-${randomUUID()}.tmp`);
+  const handle = await open(temporary, 'wx');
+  try {
+    try {
+      await handle.writeFile(JSON.stringify(data, null, 2), 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try { await link(temporary, target); }
+    catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+    return true;
+  } finally {
+    try { await unlink(temporary); }
+    catch (error) { if (error.code !== 'ENOENT') log(`[NodeSpace MCP] 无法清理临时图: ${error.message}`); }
+  }
+}
+
 // ---- 撤销/重做 ----
 const MAX_UNDO = 50;
 const undoStack = []; // { graph, data }
@@ -354,7 +390,7 @@ const TOOLS = [
         headingLevel: { type: 'number', description: '标题级别 1-6，1=最大，默认 1' },
         tags: { type: 'array', items: { type: 'string' }, description: '标签数组' },
         note: { type: 'string', description: '备注文本' },
-        color: { type: 'string', description: '自定义颜色，如 #FF6600' },
+        color: { type: 'string', description: '自定义颜色，如 #FF6600；空字符串跟随主题' },
         radius: { type: 'number', description: '节点半径，默认基于 headingLevel' },
         hyperlink: { type: 'string', description: '超链接 URL' },
         fixed: { type: 'boolean', description: '是否固定位置，默认 false' },
@@ -408,7 +444,7 @@ const TOOLS = [
         headingLevel: { type: 'number', description: '标题级别 1-6' },
         tags: { type: 'array', items: { type: 'string' }, description: '标签数组（替换全部）' },
         note: { type: 'string', description: '备注' },
-        color: { type: 'string', description: '颜色' },
+        color: { type: 'string', description: '自定义颜色；空字符串恢复跟随主题' },
         radius: { type: 'number', description: '半径' },
         hyperlink: { type: 'string', description: '超链接' },
         fixed: { type: 'boolean', description: '是否固定' },
@@ -819,8 +855,7 @@ const handlers = {
   },
 
   async create_graph({ name }) {
-    if (existsSync(graphPath(name))) return { error: `图 "${name}" 已存在。` };
-    await writeGraph(name, { nodes: [], edges: [], groups: [], settings: {
+    const created = await createGraph(name, { nodes: [], edges: [], groups: [], settings: {
         linkDist: 120, labelSize: 18, charge: -100, linkStr: 0.3,
         collideR: 10, centerS: 0.02, groupBound: 0.8,
         heatingTime: 2, alphaTarget: 0.3, editPanelOpacity: 0.9,
@@ -837,6 +872,7 @@ const handlers = {
         fixedHollow: true, starRotateMode: false,
         selectedTooltip: false, expandedMedia: [],
       } });
+    if (!created) return { error: `图 "${name}" 已存在。` };
     return { ok: true, name };
   },
 
@@ -1011,6 +1047,7 @@ const handlers = {
       mediaUrl: null,
       radiusMode: 'level',
     };
+    if (color !== undefined) assignExplicitColor(node, color);
     if (assignOrder) assignCreatedOrder(node, data.nodes);
     data.nodes.push(node);
     return { node };
@@ -1042,6 +1079,7 @@ const handlers = {
     for (const k of allowed) {
       if (updates[k] !== undefined) node[k] = updates[k];
     }
+    if (updates.color !== undefined) assignExplicitColor(node, updates.color);
     if (updates.x !== undefined) node.fx = updates.x;
     if (updates.y !== undefined) node.fy = updates.y;
 
@@ -1076,7 +1114,7 @@ const handlers = {
     return { removed, removedEdges, message: removedEdges > 0 ? `同时删除了 ${removedEdges} 条关联边。` : '' };
   },
 
-  async create_edge({ graph, source, target, label = '', color = '#BFBFBF', lineStyle, arrow, kind }) {
+  async create_edge({ graph, source, target, label = '', color, lineStyle, arrow, kind }) {
     const data = await readGraph(graph);
     if (!data) return { error: `图 "${graph}" 不存在。` };
 
@@ -1095,7 +1133,8 @@ const handlers = {
 
     data.edges = data.edges || [];
     const idx = data.edges.length;
-    const edge = { source, target, label, color, lineStyle: lineStyle || 'solid', arrow: arrow === 'forward' || arrow === true || arrow === 'both', index: idx };
+    const edge = { source, target, label, color: color || '#BFBFBF', lineStyle: lineStyle || 'solid', arrow: arrow === 'forward' || arrow === true || arrow === 'both', index: idx };
+    if (color !== undefined) assignExplicitColor(edge, color);
     if (kind) edge.kind = kind;
     data.edges.push(edge);
 
@@ -1120,7 +1159,7 @@ const handlers = {
     );
 
     for (const e of edges) {
-      const { source, target, label = '', color = '#BFBFBF', lineStyle, arrow, kind } = e;
+      const { source, target, label = '', color, lineStyle, arrow, kind } = e;
       // 验证源和目标节点存在
       const srcNode = (data.nodes || []).find(n => n.id === source);
       const tgtNode = (data.nodes || []).find(n => n.id === target);
@@ -1133,7 +1172,8 @@ const handlers = {
         skipped.push({ source, target, reason: '边已存在' });
         continue;
       }
-      const edge = { source, target, label, color, lineStyle: lineStyle || 'solid', arrow: arrow === 'forward' || arrow === true || arrow === 'both', index: data.edges.length };
+      const edge = { source, target, label, color: color || '#BFBFBF', lineStyle: lineStyle || 'solid', arrow: arrow === 'forward' || arrow === true || arrow === 'both', index: data.edges.length };
+      if (color !== undefined) assignExplicitColor(edge, color);
       if (kind) edge.kind = kind;
       data.edges.push(edge);
       existing.add(key);
@@ -1174,6 +1214,7 @@ const handlers = {
         changed.push(k);
       }
     }
+    if (updates.color !== undefined) assignExplicitColor(edge, updates.color);
     if (changed.length === 0) return { error: '未提供任何有效更新字段。可更新: label, color, lineStyle, arrow, kind' };
     await writeGraph(graph, data);
     return { ok: true, changed, edge };
@@ -1509,7 +1550,7 @@ const handlers = {
         changed.push('removeTags');
       }
       if (updates.setHeadingLevel !== undefined) { n.headingLevel = updates.setHeadingLevel; changed.push('setHeadingLevel'); }
-      if (updates.setColor !== undefined) { n.color = updates.setColor; changed.push('setColor'); }
+      if (updates.setColor !== undefined) { assignExplicitColor(n, updates.setColor); changed.push('setColor'); }
       if (updates.setRadius !== undefined) { n.radius = updates.setRadius; changed.push('setRadius'); }
       if (updates.setNote !== undefined) { n.note = updates.setNote; changed.push('setNote'); }
       if (updates.setFixed !== undefined) {
@@ -1668,7 +1709,7 @@ function handleRequest(req) {
     _writeLocks.set(graphKey, nextLock);
 
     prevLock.then(() => {
-      return Promise.resolve(handler(args || {}));
+      return Promise.resolve(handler.call(handlers, args || {}));
     }).then(result => {
       const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });

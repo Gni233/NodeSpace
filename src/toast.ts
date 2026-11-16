@@ -1,5 +1,6 @@
 import {Z_TOAST, Z_MODAL_BACKDROP, TOAST_MAX_COUNT, V } from "./layout-constants";
 import { EASING, DURATION } from './utils/easing';
+import { activeDialogContainer, wrapDialogTab } from './dialog';
 
 const COLORS: Record<string, string> = {
   info: V('--fg-accent', '#5B8FF9'),
@@ -17,8 +18,9 @@ function ensureContainer() {
     toastsContainer.style.cssText =
       `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:${Z_TOAST};` +
       'display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;';
-    document.body.appendChild(toastsContainer);
   }
+  const host = activeDialogContainer();
+  if (toastsContainer.parentElement !== host) host.appendChild(toastsContainer);
   return toastsContainer;
 }
 
@@ -68,12 +70,7 @@ export function showToast(msg: string, type: 'info' | 'success' | 'error' | 'war
 
   // Limit max toasts
   while (container.children.length > TOAST_MAX_COUNT) {
-    const oldest = container.children[0];
-    if (oldest instanceof HTMLElement) {
-      oldest.style.opacity = '0';
-      oldest.style.transform = 'translateY(-10px) scale(0.95)';
-    }
-    setTimeout(() => oldest?.remove(), DURATION.normal);
+    container.firstElementChild?.remove();
   }
 
   // Animate in with queue position
@@ -94,6 +91,8 @@ export function confirmAction(
   labels: { confirm?: string; cancel?: string } = {},
 ): Promise<boolean> {
   return new Promise((resolve) => {
+    const host = activeDialogContainer();
+    const opener = document.activeElement;
     const overlay = document.createElement('div');
     overlay.className = 'fg-modal-backdrop';
     overlay.style.cssText =
@@ -140,9 +139,12 @@ export function confirmAction(
     dialog.style.transform = 'scale(0.95)';
     dialog.style.transition = 'opacity 0.2s ease,transform 0.2s ease';
     overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
+    host.appendChild(overlay);
     requestAnimationFrame(() => { overlay.style.opacity = '1'; dialog.style.opacity = '1'; dialog.style.transform = 'scale(1)'; });
+    let closing = false;
     const cleanup = (val: boolean) => {
+      if (closing) return;
+      closing = true;
       document.removeEventListener('keydown', onKeyDown);
       okBtn.onclick = null;
       cancelBtn.onclick = null;
@@ -150,15 +152,23 @@ export function confirmAction(
       overlay.style.opacity = '0';
       dialog.style.opacity = '0';
       dialog.style.transform = 'scale(0.95)';
-      setTimeout(() => { overlay.remove(); resolve(val); }, 200);
+      setTimeout(() => {
+        const restore = overlay.contains(document.activeElement);
+        overlay.remove();
+        if (restore && opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
+        resolve(val);
+      }, 200);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cleanup(false);
-      if (e.key === 'Enter') cleanup(true);
+      wrapDialogTab(e, overlay, cancelBtn, okBtn);
+      if (e.defaultPrevented || e.key !== 'Escape') return;
+      e.preventDefault();
+      cleanup(false);
     };
     document.addEventListener('keydown', onKeyDown);
     okBtn.onclick = () => cleanup(true);
     cancelBtn.onclick = () => cleanup(false);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
+    (host === document.body ? okBtn : cancelBtn).focus({ preventScroll: true });
   });
 }

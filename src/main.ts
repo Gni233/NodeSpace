@@ -4,23 +4,25 @@ import * as d3 from 'd3';
 (window as any).d3 = d3;
 
 import { sharedState } from './shared-state';
-import { createStorage, GraphData, GraphSettings } from './data/storage';
+import { GraphData, GraphSettings } from './data/storage';
 import { createRecoveryStorage } from './recovery-storage';
 import { createSimManager } from './graph-sim';
-import { getCollapsedHierarchyHiddenNodeIds } from './graph-visibility';
-import { setupCanvasEvents } from './ui-events';
-import { showContextMenu, type ContextMenuItem } from './ui-contextmenu';
-import { createEditPanel } from './ui-edit';
+import { getCollapsedHierarchyHiddenNodeIds, getHierarchyFoldActions, type HierarchyFoldAction } from './graph-visibility';
+import { setupCanvasEvents, type CanvasBoxSelection } from './ui-events';
+import { showActionWheel, showContextWheel, type ContextMenuItem } from './ui-contextmenu';
+import { bindContextMenuTrigger } from './context-menu-trigger';
+import { nodeContextActions } from './node-context-actions';
+import { createEditPanel, createNodeTextEditor, type NodeTextField } from './ui-edit';
+import { createInlineNodeTitleEditor } from './inline-node-title';
 import { buildSettings } from './ui-settings';
-import { getTheme, applyThemeVars, getAccentColorsForTheme, ThemeConfig } from './theme';
+import { getTheme, applyThemeVars, getAccentColorsForTheme, isThemeDark, ThemeConfig, DEFAULT_GRAPH_THEME, DEFAULT_CANVAS_FONT } from './theme';
 import { createSidebar } from './ui-sidebar';
-import { createTabBar } from './ui-tabs';
-import { openFolder, restoreFolder, listFileTree, flatFilePaths, getDirHandle } from './file-system';
-import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
+import { restoreFolder, getDirHandle } from './file-system';
+import { saveFolderHandle, loadFolderSelection, findSavedFolderId } from './folder-store';
 import { isCapacitor, importFilesMobile, pickDirectoryAndImport, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
-import { safPickDirectory, safRestoreDirectory, safIsAvailable } from './saf-bridge';
+import { safPickDirectory, safRestoreDirectory, safIsAvailable, safSaveBackup } from './saf-bridge';
 import { isHarmonyOS } from './utils/platform';
-import { FileAdapter, Result, joinPath, replacePathName } from './file-adapter';
+import { FileAdapter, FileEntry, Result, createFileWithFallback, joinPath, replacePathName } from './file-adapter';
 import { createFSAAdapter } from './file-system';
 import { createCapacitorAdapter } from './fs-mobile';
 import { createHarmonyAdapter } from './fs-harmony';
@@ -34,21 +36,42 @@ import { showUpdateDialog } from './update-dialog';
 import { BUILTIN_GRAPHS, BUILTIN_NAMES, BUILTIN_NAMES_SET, isBuiltin } from './demo-data';
 import { computeRadialLayout } from './layouts/radial';
 import { computeTreeLayout } from './layouts/tree';
-import { computeSemanticLayout, semanticGraphSignature, SemanticLayoutController, stabilizeSemanticLayout, type SemanticLayoutSource } from './layouts/semantic';
-import { LocalSemanticEmbeddingProvider, type LocalSemanticState } from './semantic-embeddings';
-import { computeSemanticLens, resolveSemanticLensBand } from './semantic-lens';
+import { computeSemanticLayout, SemanticLayoutController, stabilizeSemanticLayout } from './layouts/semantic';
+import { computeSemanticLens, resolveSemanticLensBand, DEFAULT_SEMANTIC_CARD_DENSITY } from './semantic-lens';
+import { createCanvasEmptyState } from './canvas-empty-state';
+import { computeRevealTranslation, type RevealRect } from './canvas-reveal';
 import { semanticZoomProfile } from './semantic-zoom';
 import { CardGridController, getCardLabelSize } from './cardgrid';
 import { clearCards } from './cardgrid/render';
 import { BlurFilter, Container, Graphics, Text } from 'pixi.js';
-import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia } from './media-nodes';
-import { createMarkdownSourceEditor, type MarkdownSourceEditor } from './markdown-source-editor';
+import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia, toFileUrl } from './media-nodes';
+import { createMarkdownSourceEditor, type MarkdownProjectionField, type MarkdownSourceEditor } from './markdown-source-editor';
+import type { MarkdownProjectionTarget } from './markdown-projection-edit';
 import { createSettingsPanel } from './settings-panel';
 import { createMobileToolbar } from './ui-mobile-toolbar';
 import { createMobileViewportCoordinator } from './mobile-viewport';
 import { isNodeInGroup, isStructureCollection } from './group-membership';
-import { searchGraph, type SearchField, type SearchMatchMode } from './search';
+import { searchGraph, searchResultViewport, type SearchField, type SearchMatchMode } from './search';
 import { UndoManager } from './undo-redo';
+import { getConfiguredNodeRadius } from './node-radius';
+import { createNodeNotePreview, type NodeNoteEdit } from './node-note-preview';
+import { renderedNodeTitleHitBounds } from './node-title-hit';
+import { createMediaImportSession, readBrowserMediaSources, mediaTypeForFile, MEDIA_FILE_ACCEPT } from './media-import';
+import { createMediaTextEditor } from './media-text-editor';
+import { prepareGraphCopy } from './graph-copy';
+import { setupGroupSearch } from './group-search';
+import { createSpaceBackup, inspectSpaceBackup, restoreSpaceBackup, SPACE_BACKUP_EXTENSION, SPACE_BACKUP_MAX_FILE_BYTES } from './space-backup';
+import { backupFileStem, findAvailableSpacePath, findRestoreCopyPath, describeBackupContents } from './space-backup-ui';
+import { createWorkbenchHome, type WorkbenchSpace } from './workbench-home';
+import { getVaultWallFolder } from './vault-wall';
+import { createWindowControls } from './window-controls';
+import type { WorkbenchCoverAnchor, WorkbenchCoverPalette } from './workbench-gallery';
+import { animateWorkbenchCoverNodes, WORKBENCH_MORPH_DURATION, type ScreenNode } from './workbench-morph';
+import { buildWorkbenchCover, type WorkbenchCover } from './workbench-cover';
+import { createWorkbenchCoverCache } from './workbench-cover-cache';
+import { resolveObsidianLink } from './obsidian-links';
+import { createWorkbenchHistory } from './workbench-history';
+import { darken, getExplicitGraphColor } from './utils/color';
 import { showToast, confirmAction } from './toast';
 import { startNodeAnimation } from './utils/animate-nodes';
 import { EASING, DURATION } from './utils/easing';
@@ -56,17 +79,17 @@ import { clearMembershipDragPreview, clearPaneStructureBoundaries, createPaneSta
 import { LayoutSlot } from './layout-controller';
 import { GraphRuntime, GraphRuntimeRegistry } from './graph-runtime';
 import { InternalGraphWriteGuard } from './external-change-guard';
-import { filterUserFacingGraphEntries } from './file-tree-visibility';
+import { userFacingGraphPaths } from './file-tree-visibility';
+import { GRAPH_STORAGE_PREFIX } from './storage-keys';
 import { serializeGraphSnapshot } from './graph-snapshot';
 import { PaneManager, PaneExternals } from './pane-manager';
 import { createMultiPaneLayout, MultiPaneDOM } from './dual-pane-layout';
-import { SIDEBAR_LEFT, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH, sidebarExpandedLeft, sidebarCollapsedLeft, getResponsiveSidebarWidth, Z_CANVAS, Z_LOADING, Z_FLOATING_UI, Z_MOBILE_TOOLBAR, Z_MEDIA_OVERLAY, Z_EDIT_PANEL, Z_SELECTION_BOX, Z_SETTINGS_PANEL, Z_DROPDOWN, Z_CONTEXT_MENU, Z_WINDOW_CONTROLS, Z_STATS, Z_TOAST, WIN_CONTROLS_WIDTH, LAYOUT_ANIM_DURATION, SEARCH_MOVE_DURATION, FIT_ALL_DURATION } from './layout-constants';
-const ANIM_DURATION = 500;
-(window as any).__triggerSave = () => {};
+import { SIDEBAR_COLLAPSED_WIDTH, getResponsiveSidebarWidth, Z_CANVAS, Z_LOADING, Z_FLOATING_UI, Z_MOBILE_TOOLBAR, Z_MEDIA_OVERLAY, Z_EDIT_PANEL, Z_SELECTION_BOX, Z_SETTINGS_PANEL, Z_TOOLBAR_POPOVER, Z_STATS, Z_TOAST, LAYOUT_ANIM_DURATION, SEARCH_MOVE_DURATION, FIT_ALL_DURATION } from './layout-constants';
+const ANIM_DURATION = 260;
 import { clearBlobLayer, createPixiApp, PixiLayers } from './pixi-app';
-import { canDissolveStructure, createStructureNode, detachNodeFromStructure, dissolveStructureNode, getDirectStructureEdges, getExpandedStructureBoundaryModels, getStructureProjection, isStructureNode, normalizeStructureNodeSizing, normalizeStructureRelations, previewStructureMembershipTransaction, sanitizeCopiedNode, setStructureCollapsed, syncStructureCollections, transactStructureMembership, type StructureMembershipRequest, type StructureMembershipTransactionResult } from './structure-nodes';
+import { canDissolveStructure, createStructureNode, detachNodeFromStructure, dissolveStructureNode, getDirectStructureEdges, getExpandedStructureBoundaryModels, getStructureProjection, isStructureNode, normalizeStructureNodeSizing, normalizeStructureRelations, previewStructureMembershipTransaction, setStructureCollapsed, syncStructureCollections, transactStructureMembership, type StructureMembershipRequest, type StructureMembershipTransactionResult } from './structure-nodes';
 import { createPaneStructureView, createStructureBreadcrumb, getPaneOriginalEdgeIndex, isPaneStructureProxyEdge, isPaneStructureProxyNode, PaneStructureView, StructureNavigationState } from './structure-view';
-import { assignCreatedOrder, assignCreatedOrders, repairCreatedOrders } from './node-order';
+import { assignCreatedOrder, assignCreatedOrders, repairCreatedOrders, createNodeId, createGroupId } from './node-order';
 import { createTextViewEditor, TextViewEditor } from './text-view/editor';
 import { createNodeSprite, updateNodePosition, applyNodeVisual, getHeadingColor, getSpectrumColor, getNarrowSpectrumColor, NodeSprite, NodeVisualState, setNodeFontFamily, updateSemanticBodiesForViewport } from './pixi-nodes';
 import { getNodeVisualRadius, updateEdges } from './pixi-edges';
@@ -94,10 +117,11 @@ const DEFAULT_SETTINGS: GraphSettings = {
   heatingTime: 2, alphaTarget: 0.3, editPanelOpacity: 0.9,
   useRAFL: true, nodeExpand: 8, lineExpand: 6,
   showGLabels: true, glMin: 10, glMax: 28,
-  gridVis: true, gridMode: 'dot' as 'line' | 'dot', axisVis: false, axisTicks: false, gridSp: 30, layoutMode: 'auto', gridSnap: false, partialGridSnap: false, nodeColorStyle: 'spectrum-narrow', fontFamily: '"SiYuan Songti", serif',
+  gridVis: true, gridMode: 'dot' as 'line' | 'dot', axisVis: false, axisTicks: false, gridSp: 30, layoutMode: 'auto', gridSnap: false, partialGridSnap: false, fixedHollow: true, nodeColorStyle: 'hierarchical', fontFamily: DEFAULT_CANVAS_FONT,
   cardBorderStyle: 'straight' as 'straight' | 'rounded',
-  ar: 0.75, graphTheme: 'nord-dark', focusMode: false, centerMode: false, glowAppearance: true, selectedTooltip: false, gridWidth: 0.5, categoryLayout: false,
+  ar: 0.75, graphTheme: DEFAULT_GRAPH_THEME, focusMode: false, centerMode: false, glowAppearance: true, selectedTooltip: false, gridWidth: 0.5, categoryLayout: false,
   edgeColorGradient: false, edgeWidthByLevel: false,
+  semanticCardDensity: DEFAULT_SEMANTIC_CARD_DENSITY,
 };
 
 const PRESET_DEFAULT_KEY = 'fg-preset-default';
@@ -108,6 +132,10 @@ try { presetDefaults = JSON.parse(localStorage.getItem(PRESET_DEFAULT_KEY) || '{
 export function normalizeLayoutMode(mode?: string | null): string {
   if (!mode || mode === 'default' || mode === 'gridsnap') return 'auto';
   return mode;
+}
+
+export function mediaAccentForNode(node: any, theme: ThemeConfig): string {
+  return getExplicitGraphColor(node, 'node') || theme.accentColor || theme.nodeDefaultColor;
 }
 
 export interface ToolbarDropdownPanel {
@@ -141,16 +169,16 @@ export function setupToolbarDropdowns(
     requestAnimationFrame(() => {
       if (!panel.details.open || !panel.popover) return;
       const trigger = panel.summary.getBoundingClientRect();
-      const popoverWidth = panel.popover.getBoundingClientRect().width;
+      const dockBottom = panel.details.parentElement?.getBoundingClientRect().bottom ?? trigger.bottom;
+      const popoverWidth = panel.popover.offsetWidth;
       const position = calculateToolbarPopoverPosition(
-        trigger,
+        { left: trigger.left, right: trigger.right, bottom: dockBottom },
         popoverWidth,
         window.innerWidth,
         panel.align,
       );
       panel.popover.style.left = `${position.left}px`;
-      panel.popover.style.right = 'auto';
-      panel.popover.style.top = `${position.top}px`;
+      panel.popover.style.setProperty('--fg-toolbar-popover-top', `${position.top}px`);
     });
   };
   const syncPanel = ({ details, summary }: ToolbarDropdownPanel) => {
@@ -182,7 +210,7 @@ export function setupToolbarDropdowns(
     }
   };
   const closeOnEscape = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
     const panel = panels.find(candidate => candidate.details.open);
     if (!panel) return;
     event.preventDefault();
@@ -226,65 +254,39 @@ async function main() {
   const mobileViewport = createMobileViewportCoordinator(appShell);
   window.addEventListener('beforeunload', () => mobileViewport.destroy(), { once: true });
 
-  // 选中节点 tooltip（独立于各窗格的 tooltip，全局唯一）
-  const selTooltip = document.createElement('div');
-  selTooltip.className = 'fg-selection-tooltip';
-  selTooltip.style.cssText = 'position:absolute;z-index:50;background:rgba(0,0,0,0.8);color:#fff;padding:4px 8px;border-radius:6px;font-size:12px;max-width:200px;pointer-events:none;display:none;white-space:pre-wrap;word-break:break-word;';
-  appShell.appendChild(selTooltip);
+  const selectedNotePreview = createNodeNotePreview(appShell);
+  const inlineNodeTitle = createInlineNodeTitleEditor(appShell);
 
   // 玻璃效果现在通过 CSS 类 .fg-glass 实现，定义在 index.html 中
   // 所有 UI 组件使用 CSS 变量 var(--fg-xxx)，由 applyThemeVars() 统一设置
 
-  // --- 窗口控制按钮（仅 Electron 桌面端）---
-  const isElectron = !!(window as any).electronAPI;
-  const floatingRight = isElectron ? `${WIN_CONTROLS_WIDTH + 6}px` : '6px';
-
-  if (isElectron) {
-    const winCtrls = document.createElement('div');
-    winCtrls.className = 'fg-window-controls';
-    winCtrls.style.cssText = `position:absolute;top:4px;right:6px;z-index:${Z_WINDOW_CONTROLS};display:flex;gap:4px;`;
-
-    function makeWinBtn(label: string, hoverBg: string) {
-      const btn = document.createElement('button');
-      btn.textContent = label;
-      btn.className = 'fg-glass';
-      btn.style.cssText = 'width:30px;height:26px;border:none;display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;cursor:pointer;padding:0;transition:background 0.15s;border-radius:6px;';
-      btn.addEventListener('mouseenter', () => { btn.style.background = hoverBg; });
-      btn.addEventListener('mouseleave', () => { btn.style.background = ''; });
-      return btn;
-    }
-
-    const btnMin = makeWinBtn('\u2500', 'rgba(255,255,255,0.12)'); // ─
-    const btnMax = makeWinBtn('\u25A1', 'rgba(255,255,255,0.12)'); // □
-    const btnClose = makeWinBtn('\u2715', 'rgba(232,68,68,0.85)'); // ✕
-
-    const api = (window as any).electronAPI;
-    btnMin.addEventListener('click', () => api.minimizeWindow());
-    btnMax.addEventListener('click', () => api.maximizeWindow());
-    btnClose.addEventListener('click', () => api.closeWindow());
-    api.onMaximizeChange((maximized: boolean) => {
-      btnMax.textContent = maximized ? '\u25A3' : '\u25A1'; // ▣ / □
-    });
-
+  const desktopApi = (window as any).electronAPI;
+  const isElectron = Boolean(desktopApi);
+  const windowControls = desktopApi ? createWindowControls(desktopApi) : undefined;
+  if (windowControls) {
+    appShell.classList.add('fg-desktop-window');
+    appShell.append(windowControls);
     // ---- 外部文件变更监听（MCP Server 等外部工具修改了图文件） ----
-    api.onExternalFileChange((graphName: string) => {
+    desktopApi.onExternalFileChange((graphName: string) => {
       handleExternalGraphChange(graphName);
     });
-    api.onVaultFileChange?.((relativePath: string) => {
+    desktopApi.onVaultFileChange?.((relativePath: string) => {
       void handleExternalVaultChange(relativePath);
     });
 
-    winCtrls.appendChild(btnMin);
-    winCtrls.appendChild(btnMax);
-    winCtrls.appendChild(btnClose);
-    appShell.appendChild(winCtrls);
   }
 
-  // --- 浮动顶栏（标签 + 搜索 + 操作）---
+  // --- 画布导航与工具 ---
+  const editorShell = document.createElement('header');
+  editorShell.className = 'fg-editor-shell';
+  const editorNavigation = document.createElement('nav');
+  editorNavigation.className = 'fg-shell-toolbar fg-shell-navigation';
+  editorNavigation.setAttribute('aria-label', '空间导航');
+  editorShell.appendChild(editorNavigation);
+  appShell.appendChild(editorShell);
   const floatingTop = document.createElement('div');
-  floatingTop.className = 'fg-glass';
-  floatingTop.className = 'fg-glass fg-command-center' + (isElectron ? ' fg-drag-region' : '');
-  floatingTop.style.cssText = `position:absolute;left:${sidebarCollapsedLeft()}px;top:6px;right:${floatingRight};z-index:${Z_FLOATING_UI};display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;transition:left 0.25s ease;`;
+  floatingTop.className = 'fg-glass fg-command-center';
+  floatingTop.style.cssText = `position:absolute;left:var(--fg-shell-inset-inline, 12px);right:6px;z-index:${Z_FLOATING_UI};display:flex;flex-direction:column;gap:4px;`;
   appShell.appendChild(floatingTop);
   interface SpacePortalTransitionSnapshot {
     anchor: NormalizedSpacePortalAnchor;
@@ -304,218 +306,144 @@ async function main() {
   const referenceJourneys = new Map<number, ReferenceJourneyState[]>();
   let returnFromResourceReference: () => Promise<void> = async () => {};
 
-  // --- 标签栏 ---
   let blockForTextDraft = (_action: string) => false;
+  let showWorkbench: () => Promise<void> = async () => {};
+  let updateOpenWorkbench = (_invalidateCovers = false) => {};
+  let workbenchHistory = createWorkbenchHistory(localStorage);
   let hasActiveTextDraft = () => false;
   let blockExternalForTextDraft = (_graphName: string) => false;
   let markdownSourceEditor: MarkdownSourceEditor | null = null;
-  let openMarkdownSourceEditor: (_pane: PaneState, _node: any) => Promise<void> = async () => {
+  let openMarkdownSourceEditor: (_pane: PaneState, _node: any, _field?: MarkdownProjectionField) => Promise<boolean> = async () => {
     showToast('Markdown 编辑器尚未就绪', 'warning', 2200);
+    return false;
   };
-  let renderTabs: (groups: { tabs: string[]; active: string; dirty?: Set<string> }[]) => void;
-  const tabBarInit = createTabBar(floatingTop, {
-    onSwitchTab: (fileName) => {
-      if (blockForTextDraft('切换文件')) return;
-      if (!splitActive) { switchTab(fileName); return; }
-      // 找到该标签所属的窗格索引
-      let targetPaneIdx = PANE_LEFT;
-      if (openTabs.includes(fileName)) targetPaneIdx = PANE_LEFT;
-      else if (pane1.openTabs.includes(fileName)) targetPaneIdx = PANE_RIGHT;
-      else {
-        for (let i = 1; i < extraPanes.length; i++) {
-          if (extraPanes[i].openTabs.includes(fileName)) { targetPaneIdx = i + 1; break; }
-        }
-      }
-      // 切换到目标窗格
-      if (focusedPaneIndex !== targetPaneIdx) switchFocusedPane(targetPaneIdx);
-      // 打开标签（若尚未激活）
-      if (targetPaneIdx === PANE_LEFT) {
-        if (activeTab !== fileName) {
-          const runtime = primaryRuntime;
-          saveRuntimeNow(runtime, collectSettings()).then(saved => {
-            if (saved) dirtyTabs.delete(runtime.fileName);
-          });
-          activeTab = fileName; loadGraphData(fileName);
-        }
-      } else {
-        const ep = extraPanes[targetPaneIdx - 1];
-        if (ep && ep.activeTab !== fileName) {
-          const runtime = ep.runtime;
-          saveRuntimeNow(runtime, collectPaneSettings(ep)).then(saved => {
-            if (saved) ep.dirtyTabs.delete(runtime.fileName);
-          });
-          loadGraphForPane(ep, fileName);
-        }
-      }
-      renderAllTabs(); persistTabs(); draw();
-    },
-    onCloseTab: (fileName) => {
-      if (blockForTextDraft('关闭标签或窗格')) return;
-      if (splitActive && !openTabs.includes(fileName)) {
-        // 找到该标签所属的额外窗格
-        let targetEpIdx = -1;
-        for (let i = 0; i < extraPanes.length; i++) {
-          if (extraPanes[i].openTabs.includes(fileName)) { targetEpIdx = i; break; }
-        }
-        if (targetEpIdx >= 0) {
-          const ep = extraPanes[targetEpIdx];
-          if (ep.openTabs.length <= 1) {
-            // 最后一个标签 → 关闭该分屏
-            if (targetEpIdx === 0) splitActive = false; // pane1 关闭则隐藏分屏
-            removeSplitPane(targetEpIdx);
-            renderAllTabs(); persistTabs(); draw();
-            return;
-          }
-          if (fileName === ep.activeTab) {
-            const runtime = ep.runtime;
-            saveRuntimeNow(runtime, collectPaneSettings(ep)).then(saved => {
-              if (saved) ep.dirtyTabs.delete(runtime.fileName);
-            });
-          }
-          ep.openTabs = ep.openTabs.filter(t => t !== fileName);
-          if (fileName === ep.activeTab) { ep.activeTab = ep.openTabs[ep.openTabs.length - 1]; loadGraphForPane(ep, ep.activeTab); }
-        }
-      } else {
-        closeTab(fileName);
-      }
-      renderAllTabs();
-      persistTabs();
-      draw();
-    },
-    onSplitTab: (fileName) => {
-      if (blockForTextDraft('调整分屏')) return;
-      if (!splitActive) {
-        splitActive = true;
-        pane1.openTabs = [fileName];
-        pane1.activeTab = fileName;
-        dualPane.paneContainers[PANE_RIGHT].style.display = '';
-        dualPane.layoutPanes();
-        // 懒加载：确保右窗格 pixi 和 sim 就绪后再加载数据
-        const initAndLoad = async () => {
-          if (!extraPixis[0]) {
-            extraPixis[0] = await createPixiApp(pane1Container);
-            pixi1 = extraPixis[0];
-            pixi1.viewport.on('moved', () => { scheduleVaultViewportSave(pane1); if (readyToDraw) drawGridOnly(); });
-            pixi1.viewport.on('zoomed-end', () => { scheduleVaultViewportSave(pane1); if (readyToDraw) { draw(); refreshSemanticLensForPane(pane1); } });
-            extraPanes[0].pixi = extraPixis[0];
-            // extraSims[0] 已由 simManager1 填充，不重复创建（修复 Issue #2）
-            // simManager1.initSim() 在 loadGraphDataPane1 中调用
-            // 绑定 pane1 的 canvas 事件（修复 Issue #1）
-            pane1.pixi = extraPixis[0];
-            pixi1.onContextRestored = () => { simManager1.initSim(); draw(); };
-            bindCanvasEvents(pane1, pixi1.app.canvas as any, bindPaneEvents(
-              pane1, pixi1, simManager1, pane1NodeSprites, { v: null }
-            ));
-          }
-          await loadGraphDataPane1(fileName);
-          dualPane.layoutPanes();
-          if (extraPixis[0]) {
-            const pw = pane1Container.clientWidth, ph = pane1Container.clientHeight;
-            const center = { x: extraPixis[0].viewport.center.x, y: extraPixis[0].viewport.center.y };
-            extraPixis[0].app.renderer.resize(pw, ph);
-            extraPixis[0].viewport.resize(pw, ph);
-            extraPixis[0].viewport.moveCenter(center.x, center.y);
-          }
-          switchFocusedPane(PANE_RIGHT);
-          draw();
-        };
-        initAndLoad();
-      } else {
-        // 已分屏 → 右键"分屏"创建新窗格（等比例扩展）
-        addSplitPane(fileName);
-      }
-      renderAllTabs();
-    },
-    onNewTab: () => { createNewTab(); },
-    onToggleSplit: () => {
-      if (blockForTextDraft('调整分屏')) return;
-      if (splitActive) {
-        splitActive = false;
-        dualPane.paneContainers[PANE_RIGHT].style.display = 'none';
-        dualPane.layoutPanes();
-        if (focusedPaneIndex === PANE_RIGHT) switchFocusedPane(PANE_LEFT);
-      } else {
-        createNewTab();
-      }
-      renderAllTabs();
-    },
-    onReorder: (from, to) => {
-      const ts = focusedPaneIndex === PANE_RIGHT ? pane1 : { openTabs, activeTab, dirtyTabs, saveTimeout };
-      const item = (ts as any).openTabs.splice(from, 1)[0];
-      (ts as any).openTabs.splice(to, 0, item);
-      renderAllTabs();
-      persistTabs();
-    },
-  });
-  renderTabs = tabBarInit.renderTabs;
+  let syncSplitControls = () => {};
   const vaultSpaceBreadcrumb = createVaultSpaceBreadcrumb(floatingTop, {
     navigate: tabId => { void openTab(tabId); },
     returnToOrigin: () => { void returnFromResourceReference(); },
   });
 
-  // --- 搜索栏 ---
+  // --- 工具面板内的搜索 ---
+  const searchHeader = document.createElement('div');
+  searchHeader.className = 'fg-tool-search-header';
+  const searchModes = document.createElement('div');
+  searchModes.className = 'fg-tool-search-modes';
+  searchModes.setAttribute('role', 'group');
+  searchModes.setAttribute('aria-label', '搜索类型');
+  const nodeSearchButton = document.createElement('button');
+  nodeSearchButton.type = 'button';
+  nodeSearchButton.textContent = '节点';
+  nodeSearchButton.setAttribute('aria-pressed', 'true');
+  nodeSearchButton.setAttribute('aria-controls', 'ns-node-search');
+  const groupSearchButton = document.createElement('button');
+  groupSearchButton.type = 'button';
+  groupSearchButton.textContent = '集合';
+  groupSearchButton.setAttribute('aria-pressed', 'false');
+  groupSearchButton.setAttribute('aria-controls', 'ns-group-search');
+  searchModes.append(nodeSearchButton, groupSearchButton);
+  const searchFiltersButton = document.createElement('button');
+  searchFiltersButton.type = 'button';
+  searchFiltersButton.className = 'fg-search-filter-toggle';
+  searchFiltersButton.textContent = '筛选';
+  searchFiltersButton.setAttribute('aria-expanded', 'false');
+  searchFiltersButton.setAttribute('aria-controls', 'ns-node-search-filters');
   const searchRow = document.createElement('div');
   searchRow.className = 'fg-search-row';
-  searchRow.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex-shrink:0;position:relative;';
-  const searchLabel = document.createElement('span');
-  searchLabel.textContent = '搜索:';
-  searchLabel.style.cssText = `font-size:${V('--fg-font-sm', '0.84em')};color:${V('--fg-text-muted', '#999')};flex-shrink:0;`;
-  searchRow.appendChild(searchLabel);
+  searchRow.id = 'ns-node-search';
+  const searchFilterControls = document.createElement('div');
+  searchFilterControls.className = 'fg-search-filter-controls';
+  searchFilterControls.id = 'ns-node-search-filters';
+  searchFilterControls.hidden = true;
+  searchFiltersButton.onclick = () => {
+    const open = searchFilterControls.hidden;
+    searchFilterControls.hidden = !open;
+    searchFiltersButton.setAttribute('aria-expanded', String(open));
+  };
   const fieldSelect = document.createElement('select');
-  fieldSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
+  fieldSelect.setAttribute('aria-label', '搜索范围');
   ['全部', '名称', '标签', '内容'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['all', 'name', 'tags', 'note'][i]; o.textContent = t; fieldSelect.appendChild(o); });
-  searchRow.appendChild(fieldSelect);
   const matchModeSelect = document.createElement('select');
-  matchModeSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
+  matchModeSelect.setAttribute('aria-label', '搜索匹配方式');
   ['包含', '开头', '结尾', '模糊'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['contains', 'startsWith', 'endsWith', 'fuzzy'][i]; o.textContent = t; matchModeSelect.appendChild(o); });
-  searchRow.appendChild(matchModeSelect);
   const modeSelect = document.createElement('select');
-  modeSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
+  modeSelect.setAttribute('aria-label', '搜索显示方式');
   ['高亮', '仅显示'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['highlight', 'show'][i]; o.textContent = t; modeSelect.appendChild(o); });
-  searchRow.appendChild(modeSelect);
+  for (const [label, select] of [['范围', fieldSelect], ['匹配', matchModeSelect], ['画布', modeSelect]] as const) {
+    const field = document.createElement('label');
+    field.append(label, select);
+    searchFilterControls.appendChild(field);
+  }
+  const searchQueryRow = document.createElement('div');
+  searchQueryRow.className = 'fg-search-query';
+  searchRow.appendChild(searchQueryRow);
   const searchInput = document.createElement('input');
-  searchInput.type = 'text'; searchInput.placeholder = '搜索...';
+  searchInput.type = 'text'; searchInput.placeholder = '搜索节点';
+  searchInput.autocomplete = 'off';
+  searchInput.enterKeyHint = 'search';
   searchInput.setAttribute('aria-label', '搜索当前空间');
-  searchInput.style.cssText = `flex:1;min-width:80px;font-size:${V('--fg-font-sm', '0.8em')};padding:2px 6px;`;
-  searchRow.appendChild(searchInput);
+  searchInput.setAttribute('role', 'combobox');
+  searchInput.setAttribute('aria-autocomplete', 'list');
+  searchInput.setAttribute('aria-controls', 'ns-search-results');
+  searchInput.setAttribute('aria-expanded', 'false');
+  searchQueryRow.appendChild(searchInput);
   const searchPrevBtn = document.createElement('button');
   searchPrevBtn.type = 'button'; searchPrevBtn.className = 'fg-search-nav'; searchPrevBtn.textContent = '↑'; searchPrevBtn.title = '上一个结果（Shift+Enter）';
+  searchPrevBtn.setAttribute('aria-label', '上一个搜索结果');
   const searchNextBtn = document.createElement('button');
   searchNextBtn.type = 'button'; searchNextBtn.className = 'fg-search-nav'; searchNextBtn.textContent = '↓'; searchNextBtn.title = '下一个结果（Enter）';
+  searchNextBtn.setAttribute('aria-label', '下一个搜索结果');
   const searchClearBtn = document.createElement('button');
   searchClearBtn.type = 'button'; searchClearBtn.className = 'fg-search-nav'; searchClearBtn.textContent = '×'; searchClearBtn.title = '清除搜索（Esc）';
-  searchRow.append(searchPrevBtn, searchNextBtn, searchClearBtn);
+  searchClearBtn.setAttribute('aria-label', '清除搜索');
+  searchPrevBtn.hidden = searchNextBtn.hidden = searchClearBtn.hidden = true;
+  searchQueryRow.append(searchPrevBtn, searchNextBtn, searchClearBtn);
   const searchStatus = document.createElement('span');
   searchStatus.className = 'fg-search-status';
-  searchStatus.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};color:${V('--fg-danger','#e03030')};display:none;white-space:nowrap;`;
-  searchRow.appendChild(searchStatus);
+  searchStatus.setAttribute('role', 'status');
+  searchStatus.hidden = true;
+  searchHeader.append(searchModes, searchFiltersButton, searchStatus);
+  searchRow.appendChild(searchFilterControls);
   const searchResults = document.createElement('div');
   searchResults.className = 'fg-search-results';
+  searchResults.id = 'ns-search-results';
   searchResults.setAttribute('role', 'listbox');
+  searchResults.setAttribute('aria-label', '当前空间搜索结果');
   searchResults.hidden = true;
+  const searchResultRowHeight = 56;
+  const searchResultTrack = document.createElement('div');
+  searchResultTrack.className = 'fg-search-result-track';
+  searchResultTrack.setAttribute('role', 'presentation');
+  searchResultTrack.style.setProperty('--ns-search-result-row-height', `${searchResultRowHeight}px`);
+  searchResults.appendChild(searchResultTrack);
   searchRow.appendChild(searchResults);
+  const groupSearchPanel = document.createElement('div');
+  groupSearchPanel.className = 'fg-search-row';
+  groupSearchPanel.id = 'ns-group-search';
+  groupSearchPanel.hidden = true;
+  const groupInput = document.createElement('input');
+  groupInput.type = 'text';
+  groupInput.placeholder = '搜索集合';
+  groupInput.enterKeyHint = 'search';
+  const groupDropdown = document.createElement('div');
+  groupDropdown.className = 'fg-search-results fg-group-dropdown';
+  groupSearchPanel.append(groupInput, groupDropdown);
 
   // --- 主要操作按钮行（始终可见）---
   const primaryRow = document.createElement('div');
-  primaryRow.className = 'fg-primary-actions';
-  primaryRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex-shrink:0;';
-  floatingTop.appendChild(primaryRow);
+  primaryRow.className = 'fg-shell-toolbar fg-editor-tools';
+  editorShell.appendChild(primaryRow);
 
   // --- 操作栏下拉：低频工具 ---
+  const toolbarSummaryClass = 'fg-toolbar-summary fg-action fg-shell-control';
   const controlsDetails = document.createElement('details');
   controlsDetails.className = 'fg-toolbar-panel fg-tools-panel';
   const controlsSum = document.createElement('summary');
-  controlsSum.className = 'fg-toolbar-summary fg-action';
+  controlsSum.className = toolbarSummaryClass;
   controlsSum.textContent = '工具';
   controlsDetails.appendChild(controlsSum);
   const controlsDiv = document.createElement('div');
   controlsDiv.className = 'fg-toolbar-popover fg-tools-content';
-  // 搜索栏收入工具面板
-  controlsDiv.appendChild(searchRow);
-  // 中间行：集合搜索 + 旋转 + 适应
-  const controlsRow2 = document.createElement('div');
-  controlsRow2.className = 'fg-secondary-actions';
-  controlsRow2.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;';
+  controlsDiv.append(searchHeader, searchRow, groupSearchPanel);
   controlsDetails.appendChild(controlsDiv);
 
   // --- 分屏布局 ---
@@ -527,7 +455,7 @@ async function main() {
   const statsEl = document.createElement('div');
   statsEl.className = 'fg-status-line';
   statsEl.style.cssText = `position:fixed;right:10px;bottom:calc(4px + env(safe-area-inset-bottom,0px));z-index:${Z_STATS};font-size:${V('--fg-font-xs', '0.72em')};color:${V('--fg-text-muted','#aaa')};pointer-events:none;`;
-  document.body.appendChild(statsEl);
+  appShell.appendChild(statsEl);
 
   // 加载遮罩
   const loadingOverlay = document.createElement('div');
@@ -563,7 +491,7 @@ async function main() {
   const settingsDet = document.createElement('details');
   settingsDet.className = 'fg-toolbar-panel fg-appearance-panel';
   const settingsSum = document.createElement('summary');
-  settingsSum.className = 'fg-toolbar-summary fg-action';
+  settingsSum.className = toolbarSummaryClass;
   settingsSum.textContent = '外观';
   settingsDet.appendChild(settingsSum);
   const setDiv = document.createElement('div');
@@ -590,7 +518,7 @@ async function main() {
   // --- 控制台面板 ---
   const consolePanel = document.createElement('div');
   consolePanel.className = 'fg-glass fg-console-panel';
-  consolePanel.style.cssText = `position:absolute;left:${sidebarExpandedLeft()}px;right:74px;bottom:42px;z-index:${Z_FLOATING_UI};display:none;padding:6px 8px;gap:4px;flex-direction:column;`;
+  consolePanel.style.cssText = `position:absolute;left:var(--fg-shell-inset-inline, 12px);right:74px;bottom:42px;z-index:${Z_FLOATING_UI};display:none;padding:6px 8px;gap:4px;flex-direction:column;`;
   appShell.appendChild(consolePanel);
 
   const consoleInput = document.createElement('textarea');
@@ -661,6 +589,7 @@ async function main() {
           const tags = args.tags ? args.tags.split(',').map((t: string) => t.trim()) : [];
           const id = label.replace(/\s+/g, '-').replace(/[^\w\u4e00-\u9fff\-]/g, '').slice(0, 30) + '-' + Math.random().toString(36).slice(2, 8);
           const node: any = { id, label, x, y, headingLevel: Math.max(1, Math.min(6, hl)), tags, note: '', color, radius: [0,20,17,14,12,10,8][Math.min(6,hl)], hyperlink: '', fixed: false, fx: null, fy: null, collapsed: hl >= 3, _isNew: false, mediaType: null, mediaUrl: null, radiusMode: 'level' };
+          if (args.color) node.colorMode = 'custom';
           assignCreatedOrder(node, graph.nodes);
           saveUndo();
           graph.nodes.push(node); scheduleSave();
@@ -680,32 +609,8 @@ async function main() {
           if (id) found = graph.nodes.find((n: any) => n.id === id);
           else if (label) found = graph.nodes.find((n: any) => n.label === label);
           if (!found) { results.push('node not found'); break; }
-          const directEdgeCount = isStructureNode(found) ? getDirectStructureEdges(graph, found.id).length : 0;
-          if (directEdgeCount > 0) {
-            showToast(`请先删除或改接 ${directEdgeCount} 条结构整体关系；未删除任何节点`, 'warning', 4500);
-            results.push(`blocked: ${directEdgeCount} direct structure edge(s)`);
-            break;
-          }
-          if (isStructureNode(found)) {
-            saveUndo();
-            dissolveStructureNode(graph, found.id);
-            reinitializeRuntimeViews(primaryRuntime);
-            scheduleSave(); draw();
-          } else {
-            saveUndo();
-            detachNodeFromStructure(graph, found.id);
-            markNodesDying([found.id]);
-            const idx = graph.nodes.findIndex((n: any) => n.id === found.id);
-            if (idx >= 0) graph.nodes.splice(idx, 1);
-            for (const e of graph.edges) {
-              const s = typeof e.source === 'object' ? e.source.id : e.source;
-              const t = typeof e.target === 'object' ? e.target.id : e.target;
-              if (s === found.id || t === found.id) (e as any)._dyingAt = performance.now();
-            }
-            scheduleSave(); draw();
-            setTimeout(() => { for (let i = graph.edges.length - 1; i >= 0; i--) { if ((graph.edges[i] as any)._dyingAt) graph.edges.splice(i, 1); } draw(); }, 400);
-          }
-          results.push(`deleted: ${found.id}`); break;
+          const deleted = deleteNodesForPane(pane0 as unknown as PaneState, [found.id]);
+          results.push(deleted ? `deleted: ${found.id}` : 'deletion blocked'); break;
         }
         case 'create_edge': {
           const src = graph.nodes.find((n: any) => n.id === args.source || n.label === args.source);
@@ -713,6 +618,7 @@ async function main() {
           if (!src || !tgt) { results.push('source or target not found'); break; }
           saveUndo();
           const edge: any = { source: src.id, target: tgt.id, label: args.label || '', color: args.color || '#BFBFBF', lineStyle: args.linestyle || 'solid', arrow: args.arrow === 'forward', index: graph.edges.length };
+          if (args.color) edge.colorMode = 'custom';
           graph.edges.push(edge); scheduleSave();
           const s = simManager.getSim();
           if (s) {
@@ -725,10 +631,10 @@ async function main() {
         case 'delete_edge': {
           const idx = parseInt(args.index);
           if (isNaN(idx) || idx < 0 || idx >= graph.edges.length) { results.push(`invalid index (0-${graph.edges.length - 1})`); break; }
-          saveUndo();
-          (graph.edges[idx] as any)._dyingAt = performance.now(); scheduleSave(); draw();
-          setTimeout(() => { for (let i = graph.edges.length - 1; i >= 0; i--) { if ((graph.edges[i] as any)._dyingAt) graph.edges.splice(i, 1); } draw(); }, 400);
-          results.push('edge deleted'); break;
+          const pane = pane0 as unknown as PaneState;
+          const projectedIndex = projectedEdgeIndexForPane(pane, idx);
+          const deleted = projectedIndex !== null && deleteEdgesForPane(pane, [projectedIndex]);
+          results.push(deleted ? 'edge deleted' : 'deletion blocked'); break;
         }
         case 'create_graph': {
           const name = args.name || args.label;
@@ -737,17 +643,17 @@ async function main() {
           if (openTabs.includes(fn)) { results.push(`"${name}" already open`); break; }
           await writeGraphData(fn, { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
           openTabs.push(fn); activeTab = fn;
-          persistTabs(); renderAllTabs(); refreshFileTree();
+          persistTabs(); syncSpaceNavigation(); refreshFileTree();
           await loadGraphData(fn);
           results.push(`created & opened: ${name}`); break;
         }
         case 'delete_graph': {
           const name = args.name || args.label;
           if (!name) { results.push('need "name" arg'); break; }
-          createRecoveryStorage(name).delete(); await adapter.deleteFile(name);
+          graphRecovery(name).delete(); await adapter.deleteFile(name);
           openTabs = openTabs.filter(t => t !== name);
           if (activeTab === name) activeTab = openTabs[0] || '';
-          persistTabs(); renderAllTabs();
+          persistTabs(); syncSpaceNavigation();
           if (activeTab) await loadGraphData(activeTab);
           results.push(`deleted: ${name}`); break;
         }
@@ -757,12 +663,12 @@ async function main() {
           if (!raw) { results.push('need "name" arg'); break; }
           const name = raw.endsWith('.json') ? raw : raw + '.json';
           if (!openTabs.includes(name)) openTabs.push(name);
-          activeTab = name; persistTabs(); renderAllTabs();
+          activeTab = name; persistTabs(); syncSpaceNavigation();
           await loadGraphData(name);
           results.push(`switched to: ${name}`); break;
         }
         case 'refresh': {
-          await refreshFileTree(); renderAllTabs();
+          await refreshFileTree(); syncSpaceNavigation();
           results.push('file tree refreshed'); break;
         }
         case 'list': {
@@ -792,6 +698,7 @@ async function main() {
 
   // Ctrl+Shift+P 快捷键
   document.addEventListener('keydown', (e) => {
+    if ((e.target as Element)?.closest?.('.ns-home')) return;
     if (e.ctrlKey && e.shiftKey && e.key === 'P') { e.preventDefault(); toggleConsole(); }
   });
 
@@ -968,6 +875,18 @@ async function main() {
   let fileSystemMountPath: string | null = null; // Electron 模式下的文件夹路径
   let graphStorageMountPath: string | null = null;
   let configuredGraphFolderRelative: string | null = null;
+  let mountedStorageScope: string | null = null;
+  let workspacePickerActive = false;
+  let mountWritesPaused = false;
+  const workspaceStateKey = (key: string) => mountedStorageScope === null
+    ? key : `${key}:mount:${encodeURIComponent(mountedStorageScope)}`;
+  const graphRecovery = (fileName: string) => createRecoveryStorage(fileName, localStorage, mountedStorageScope);
+  const readRecoveryGraph = (fileName: string): GraphData | null => {
+    try {
+      const raw = graphRecovery(fileName).readSnapshot();
+      return raw ? JSON.parse(raw) as GraphData : null;
+    } catch { return null; }
+  };
   let vaultIndex: VaultIndex | null = null;
   let refreshOpenResourceReferences: () => void = () => {};
   let hydrateGraphResourceReferencePreviews: (data: GraphData) => Promise<boolean> = async () => false;
@@ -984,14 +903,22 @@ async function main() {
 
   // ---- 文件适配器（统一五平台 I/O） ----
   let adapter: FileAdapter = createStorageAdapter();
+  let adapterScope: string | FileSystemDirectoryHandle = 'storage';
   const selectAdapter = () => {
-    if (safIsAvailable()) { adapter = createSAFAdapter(); return; }
     const ea = (window as any).electronAPI;
-    if (ea && (graphStorageMountPath || fileSystemMountPath) && fileSystemMountPath !== 'graphs') { adapter = createElectronAdapter(graphStorageMountPath || fileSystemMountPath!); return; }
-    if (fileSystemMountPath && fileSystemMountPath !== 'graphs') { adapter = createFSAAdapter(() => getDirHandle()); return; }
-    if (capApp) { adapter = createCapacitorAdapter(); return; }
-    if (isHarmony) { adapter = createHarmonyAdapter(); return; }
-    adapter = createStorageAdapter();
+    const mountedPath = fileSystemMountPath && fileSystemMountPath !== 'graphs' ? fileSystemMountPath : null;
+    const electronRoot = ea && mountedPath ? graphStorageMountPath || mountedPath : null;
+    const handle = !ea && mountedPath ? getDirHandle() : null;
+    const safMounted = mountedStorageScope?.startsWith('saf:') && safIsAvailable();
+    const scope = safMounted ? 'saf' : electronRoot ? `electron:${electronRoot}` : handle ?? (capApp ? 'capacitor' : isHarmony ? 'harmony' : 'storage');
+    if (scope === adapterScope) return;
+    adapterScope = scope;
+    if (scope === 'saf') adapter = createSAFAdapter();
+    else if (electronRoot) adapter = createElectronAdapter(electronRoot);
+    else if (handle) adapter = createFSAAdapter(() => handle);
+    else if (capApp) adapter = createCapacitorAdapter();
+    else if (isHarmony) adapter = createHarmonyAdapter();
+    else adapter = createStorageAdapter();
   };
   const reinitAdapter = () => { selectAdapter(); };
 
@@ -1047,12 +974,12 @@ async function main() {
     return null;
   };
 
-  const readGraphData = async (fileName: string): Promise<GraphData | null> => {
+  const readGraphData = async (fileName: string, diskOnly = false): Promise<GraphData | null> => {
     if (isVaultLocationTabId(fileName)) return readVaultGraphData(fileName);
-    const recovery = createRecoveryStorage(fileName);
+    const recovery = graphRecovery(fileName);
     const r = await adapter.readFile(fileName);
     if (r.ok && r.value) {
-      if (recovery.hasUnsynced()) {
+      if (!diskOnly && recovery.hasUnsynced()) {
         const useRecovery = await confirmAction(
           `“${fileName.replace(/\.json$/, '')}”有尚未同步到文件的恢复副本。`,
           { confirm: '使用恢复副本', cancel: '使用磁盘版本' },
@@ -1069,12 +996,13 @@ async function main() {
         }
       }
       const parsed = repairGraphCreatedOrders(JSON.parse(r.value) as GraphData);
-      const cached = await createStorage(fileName).readData();
+      const cached = diskOnly ? null : readRecoveryGraph(fileName);
       if (cached?.settings) parsed.settings = { ...cached.settings, ...(parsed.settings || {}) };
       clearTransientCategoryVisuals(parsed);
       return parsed;
     }
-    const stored = await createStorage(fileName).readData();
+    if (diskOnly) return null;
+    const stored = readRecoveryGraph(fileName);
     if (!stored) return null;
     if (recovery.hasUnsynced()) {
       const useRecovery = await confirmAction(
@@ -1098,10 +1026,14 @@ async function main() {
     showToast(`“${fileName.replace(/\.json$/, '')}”保存失败：${detail}`, 'error', 6000);
   };
 
-  const writeGraphSnapshot = async (fileName: string, snapshot: string): Promise<boolean> => {
+  const writeGraphSnapshot = async (fileName: string, snapshot: string, targetAdapter = adapter): Promise<boolean> => {
     if (isVaultLocationTabId(fileName)) return true;
-    const recovery = createRecoveryStorage(fileName);
-    const result = await adapter.writeFile(fileName, snapshot);
+    if (mountWritesPaused) return false;
+    const recovery = graphRecovery(fileName);
+    const result = await targetAdapter.writeFile(fileName, snapshot).catch(error => ({
+      ok: false as const,
+      error: error instanceof Error ? error.message : String(error),
+    }));
     if (!result.ok || result.value !== true) {
       const recovered = recovery.writeSnapshot(snapshot) && recovery.markUnsynced();
       const recoveryStatus = recovered ? '，已保留恢复副本' : '，且无法写入恢复缓存';
@@ -1117,23 +1049,33 @@ async function main() {
   const writeGraphData = async (fileName: string, data: GraphData): Promise<boolean> =>
     writeGraphSnapshot(fileName, serializeGraphSnapshot(data, data.settings));
 
+  const isNewGraphPathReserved = (path: string) => Boolean(runtimeRegistry.get(path) || graphRecovery(path).hasUnsynced());
+  const writeNewGraph = async (destination: FileAdapter, path: string, data: GraphData) => {
+    const canWrite = () => destination === adapter && !mountWritesPaused && !isNewGraphPathReserved(path);
+    const result = await createFileWithFallback(destination, path, serializeGraphSnapshot(data, data.settings), canWrite);
+    if (!result.ok) {
+      throw new Error(canWrite() ? '存储未能新建空间' : '存储位置或目标文件已变更，请重试');
+    }
+    if (result.value === 'exists') throw new Error('已有同名空间，请重试');
+  };
+
   // --- 标签页持久化 ---
   const TABS_KEY = 'fg-open-tabs';
   const ACTIVE_KEY = 'fg-active-tab';
   function persistTabs() {
-    localStorage.setItem(TABS_KEY, JSON.stringify(openTabs));
-    localStorage.setItem(ACTIVE_KEY, activeTab);
+    localStorage.setItem(workspaceStateKey(TABS_KEY), JSON.stringify(openTabs));
+    localStorage.setItem(workspaceStateKey(ACTIVE_KEY), activeTab);
     // 持久化所有分屏窗格标签
     for (let i = 0; i < extraPanes.length; i++) {
       const ep = extraPanes[i];
-      localStorage.setItem(TABS_KEY + '-ep' + i, JSON.stringify(ep.openTabs));
-      localStorage.setItem(ACTIVE_KEY + '-ep' + i, ep.activeTab);
+      localStorage.setItem(workspaceStateKey(TABS_KEY + '-ep' + i), JSON.stringify(ep.openTabs));
+      localStorage.setItem(workspaceStateKey(ACTIVE_KEY + '-ep' + i), ep.activeTab);
     }
   }
   function restoreTabs(): { tabs: string[]; active: string } | null {
     try {
-      const raw = localStorage.getItem(TABS_KEY);
-      const active = localStorage.getItem(ACTIVE_KEY);
+      const raw = localStorage.getItem(workspaceStateKey(TABS_KEY));
+      const active = localStorage.getItem(workspaceStateKey(ACTIVE_KEY));
       if (raw) {
         const tabs = JSON.parse(raw);
         if (Array.isArray(tabs) && tabs.length > 0) return { tabs, active: active || tabs[0] };
@@ -1157,10 +1099,12 @@ async function main() {
   };
 
   const removeOpenFile = async (path: string) => {
+    const fallback = _flatTreePaths.find(name => name !== path)
+      ?? (path === '未命名.json' ? '未命名 2.json' : '未命名.json');
     openTabs = openTabs.filter(tab => tab !== path);
     dirtyTabs.delete(path);
     if (activeTab === path) {
-      if (openTabs.length === 0) openTabs.push(BUILTIN_NAMES[0]);
+      if (openTabs.length === 0) openTabs.push(fallback);
       activeTab = openTabs[openTabs.length - 1];
       await loadGraphData(activeTab);
     }
@@ -1168,7 +1112,7 @@ async function main() {
       pane.openTabs = pane.openTabs.filter(tab => tab !== path);
       pane.dirtyTabs.delete(path);
       if (pane.activeTab !== path) continue;
-      if (pane.openTabs.length === 0) pane.openTabs.push(BUILTIN_NAMES[0]);
+      if (pane.openTabs.length === 0) pane.openTabs.push(fallback);
       await loadGraphForPane(pane, pane.openTabs[pane.openTabs.length - 1]);
     }
   };
@@ -1181,7 +1125,7 @@ async function main() {
       return false;
     }
     const runtime = runtimeRegistry.get(oldPath);
-    const oldRecovery = createRecoveryStorage(oldPath);
+    const oldRecovery = graphRecovery(oldPath);
     const hadUnsyncedRecovery = oldRecovery.hasUnsynced();
     const data = runtime?.graph ?? await readGraphData(oldPath);
     const finishRuntimeOperation = () => {
@@ -1194,9 +1138,10 @@ async function main() {
         await saveRuntimeNow(runtime);
       }, 300);
     };
+    if (runtime?.fileOperationActive) return false;
     if (runtime) {
       runtime.fileOperationActive = true;
-      if (!await saveRuntimeNow(runtime)) {
+      if (!await saveRuntimeNow(runtime, undefined, true)) {
         finishRuntimeOperation();
         return false;
       }
@@ -1224,14 +1169,14 @@ async function main() {
         }
       }
       if (data) {
-        const targetRecovery = createRecoveryStorage(newPath);
+        const targetRecovery = graphRecovery(newPath);
         targetRecovery.writeSnapshot(serializeGraphSnapshot(data, data.settings));
         if (hadUnsyncedRecovery) targetRecovery.markUnsynced();
       }
       oldRecovery.delete();
       if (runtimeRegistry.get(oldPath)) runtimeRegistry.rename(oldPath, newPath);
       renameOpenFile(oldPath, newPath);
-      renderAllTabs();
+      syncSpaceNavigation();
       persistTabs();
       sidebar.syncActiveFile(activeTab);
       return true;
@@ -1247,6 +1192,76 @@ async function main() {
     if (result?.error) showToast(`无法打开原文：${result.error}`, 'error', 5000);
   };
 
+  const deleteSpaceFile = async (path: string, expectedContents?: string) => {
+    if (blockForTextDraft('删除文件')) return false;
+    const destination = adapter;
+    const runtime = runtimeRegistry.get(path);
+    if (runtime?.fileOperationActive) return false;
+    if (runtime) {
+      runtime.fileOperationActive = true;
+      await runtime.invalidateSaves();
+    }
+    const remove = async (): Promise<Result<boolean>> => {
+      if (expectedContents !== undefined) {
+        const current = await destination.readFile(path);
+        if (!current.ok) return current;
+        if (current.value !== expectedContents) return { ok: false, error: '文件已变化，请重新确认' };
+      }
+      if (destination !== adapter || mountWritesPaused) return { ok: false, error: '存储位置已切换' };
+      return destination.deleteFile(path, expectedContents === undefined ? undefined : { recursive: false });
+    };
+    const result = await remove();
+    if (!result.ok || result.value !== true) {
+      if (runtime) {
+        runtime.fileOperationActive = false;
+        if (runtime.dirty && destination === adapter) scheduleSaveForRuntime(runtime);
+      }
+      showToast(`删除失败：${result.ok ? '存储设备拒绝了操作' : result.error}`, 'error', 6000);
+      return false;
+    }
+    await removeOpenFile(path);
+    runtimeRegistry.delete(path);
+    graphRecovery(path).delete();
+    syncSpaceNavigation();
+    persistTabs();
+    await refreshFileTree();
+    return true;
+  };
+
+  const renameSpaceFile = async (oldPath: string, name: string) => {
+    if (blockForTextDraft('重命名文件')) return false;
+    const stem = name.trim().replace(/\.json$/i, '').trim();
+    if (!stem || /^\.|[<>:"/\\|?*\u0000-\u001f\u007f]|\.$/u.test(stem)) {
+      showToast('请输入有效的文件名', 'warning');
+      return false;
+    }
+    const normalizedName = stem + '.json';
+    const newPath = replacePathName(oldPath, normalizedName);
+    if (oldPath === newPath) return false;
+    const destination = adapter;
+    const renamed = await migrateOpenFile(oldPath, newPath, async () => {
+      if (isNewGraphPathReserved(newPath)) return { ok: false, error: '目标名称已存在' };
+      const existing = await destination.readFile(newPath);
+      if (!existing.ok) return existing;
+      if (existing.value !== null) return { ok: false, error: '目标名称已存在' };
+      if (destination !== adapter || mountWritesPaused) return { ok: false, error: '存储位置已切换' };
+      return destination.renameFile(oldPath, normalizedName);
+    });
+    if (renamed) await refreshFileTree();
+    return renamed;
+  };
+
+  const copySpaceFile = async (path: string) => {
+    const destination = adapter;
+    const content = runtimeRegistry.get(path)?.graph ?? await readGraphData(path);
+    if (!content) throw new Error('无法读取源空间');
+    const result = await destination.suggestCopyName(path);
+    if (!result.ok) throw new Error(result.error);
+    await writeNewGraph(destination, result.value, content);
+    await refreshFileTree();
+    return result.value;
+  };
+
   const sidebar = createSidebar(appShell, {
     onSelectFile: async (path) => {
       if (blockForTextDraft('切换文件')) return;
@@ -1260,37 +1275,9 @@ async function main() {
       await refreshFileTree();
       await openTab(path);
     },
-    onDeleteFile: async (path) => {
-      if (blockForTextDraft('删除文件')) return;
-      const runtime = runtimeRegistry.get(path);
-      if (runtime) await runtime.invalidateSaves();
-      const result = await adapter.deleteFile(path);
-      if (!result.ok || result.value !== true) {
-        showToast(`删除失败：${result.ok ? '存储设备拒绝了操作' : result.error}`, 'error', 6000);
-        return;
-      }
-      await removeOpenFile(path);
-      runtimeRegistry.delete(path);
-      createRecoveryStorage(path).delete();
-      renderAllTabs();
-      persistTabs();
-      await refreshFileTree();
-    },
-    onRenameFile: async (oldPath, newName) => {
-      if (blockForTextDraft('重命名文件')) return;
-      const normalizedName = newName.endsWith('.json') ? newName : newName + '.json';
-      const newPath = replacePathName(oldPath, normalizedName);
-      if (await migrateOpenFile(oldPath, newPath, () => adapter.renameFile(oldPath, normalizedName))) {
-        await refreshFileTree();
-      }
-    },
-    onCopyFile: async (path) => {
-      const content = await readGraphData(path);
-      const r = await adapter.suggestCopyName(path);
-      const newPath = r.ok ? r.value : path.replace(/\.json$/, '') + ' 2.json';
-      await writeGraphData(newPath, content || { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
-      await refreshFileTree();
-    },
+    onDeleteFile: path => { void deleteSpaceFile(path).catch(reportWorkbenchActionError); },
+    onRenameFile: (path, name) => { void renameSpaceFile(path, name).catch(reportWorkbenchActionError); },
+    onCopyFile: path => { void copySpaceFile(path).catch(reportWorkbenchActionError); },
     onNewFolder: async (_path) => {
       await adapter.createDirectory(_path);
       await refreshFileTree();
@@ -1312,6 +1299,13 @@ async function main() {
       if (blockForTextDraft('切换文件')) return;
       await openTab(vaultTabId(path));
     },
+    onEditVaultMarkdown: desktopApi?.writeFile ? path => {
+      if (blockForTextDraft('编辑原文')) return;
+      const resource = vaultResourceForPath(path);
+      if (resource?.kind !== 'markdown') return;
+      void openMarkdownSourceEditor(focusedPaneState(), { label: resource.title || resource.name, sourceRef: { path: resource.path, kind: 'markdown' } })
+        .catch(error => showToast(`打开原文失败：${error instanceof Error ? error.message : String(error)}`, 'error'));
+    } : undefined,
     onReferenceVaultFolder: path => { void referenceVaultPathIntoFocusedGraph(path, 'folder'); },
     onReferenceVaultResource: path => {
       const kind = vaultResourceForPath(path)?.kind;
@@ -1322,50 +1316,50 @@ async function main() {
     onApplyPreset: () => { settingsPanel.show(); },
     onResetPresets: () => { settingsPanel.show(); },
     onOpenFolder: () => {},
-  });
+  }, editorNavigation);
 
   // 侧边栏玻璃效果
   // createSidebar() 已经设置好折叠状态和对应宽度；这里只补充外壳，避免覆盖
   // is-collapsed 后造成“看起来展开、按钮却提示展开”的状态错位。
   sidebar.sidebar.classList.add('fg-glass');
-  if (isElectron) sidebar.sidebar.classList.add('fg-drag-region');
   Object.assign(sidebar.sidebar.style, {
     position: 'absolute',
-    left: `${SIDEBAR_LEFT}px`,
-    top: '6px',
-    bottom: 'calc(6px + env(safe-area-inset-bottom,0px))',
-    zIndex: String(Z_FLOATING_UI),
+    left: 'var(--fg-shell-inset-inline, 12px)',
+    top: 'calc(var(--fg-editor-shell-bottom, 50px) + 7px)',
+    height: 'auto',
+    zIndex: String(Z_FLOATING_UI + 1),
     overflow: 'hidden',
   });
 
-  const buildFileTree = (files: { name: string; kind: 'file' | 'directory'; children: any[] }[]): any[] => {
-    // 已有目录节点 → 已经是树状结构，直接返回
-    if (files.some(f => f.kind === 'directory')) return files;
-    // 扁平路径 → 构建嵌套树
-    const root: Record<string, any> = {};
-    for (const f of files) {
-      const parts = f.name.split('/');
-      let node = root;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!node[parts[i]]) node[parts[i]] = { _dir: true, _kids: {} };
-        node = node[parts[i]]._kids;
-      }
-      node[parts[parts.length - 1]] = f;
-    }
-    const convert = (obj: Record<string, any>): any[] =>
-      Object.entries(obj).sort(([a, va], [b, vb]) => {
-        const aDir = va._dir, bDir = vb._dir;
-        if (aDir !== bDir) return aDir ? -1 : 1;
-        return a.localeCompare(b);
-      }).map(([name, val]) => {
-        if (val._dir) return { name, kind: 'directory', children: convert(val._kids) };
-        return { name, kind: 'file', children: [] };
-      });
-    return convert(root);
-  };
-
   // 文件树扁平路径缓存（Shift+上下导航用）
   let _flatTreePaths: string[] = [];
+  let fileTreeRevision = 0;
+  let fileTreeAdapter: FileAdapter | null = null;
+
+  const buildFileTree = (paths: readonly string[]): FileEntry[] => {
+    const entries: FileEntry[] = [];
+    const directories = new Map<string, FileEntry[]>([['', entries]]);
+    for (const path of paths) {
+      const parts = path.split('/');
+      const fileName = parts.pop()!;
+      let prefix = '';
+      let parent = entries;
+      for (const part of parts) {
+        prefix = joinPath(prefix, part);
+        let children = directories.get(prefix);
+        if (!children) {
+          children = [];
+          directories.set(prefix, children);
+          parent.push({ name: part, kind: 'directory', children });
+        }
+        parent = children;
+      }
+      parent.push({ name: fileName, kind: 'file', children: [] });
+    }
+    for (const group of directories.values()) group.sort((a, b) =>
+      a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1);
+    return entries;
+  };
 
   const refreshVaultIndex = async (): Promise<VaultIndex | null> => {
     const ea = (window as any).electronAPI;
@@ -1396,32 +1390,26 @@ async function main() {
     sidebar.updateVaultIndex(vaultIndex);
     refreshOpenResourceReferences();
     syncVaultSpaceBreadcrumb();
+    updateOpenWorkbench(true);
     return vaultIndex;
   };
 
-  const refreshFileTree = async () => {
+  const refreshFileTree = async (invalidateCovers = false) => {
     reinitAdapter();
-    const r = await adapter.listFiles();
-    if (r.ok && r.value.length > 0) {
-      const visibleEntries = filterUserFacingGraphEntries(r.value);
-      _flatTreePaths = flatFilePaths(visibleEntries as any);
-      // 确保路径统一（activeTab 本身带 .json）
-      sidebar.updateFileTree(buildFileTree(visibleEntries), activeTab);
-      return;
-    }
-    // localStorage fallback
-    const lsFiles: { name: string; kind: 'file' | 'directory'; children: any[] }[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith('fg-data-')) {
-        const name = key.slice(8);
-        if (name !== 'demo') lsFiles.push({ name, kind: 'file', children: [] });
-      }
-    }
-    const visibleEntries = filterUserFacingGraphEntries(lsFiles);
-    _flatTreePaths = visibleEntries.map(f => f.name);
-    sidebar.updateFileTree(buildFileTree(visibleEntries), activeTab);
+    const destination = adapter;
+    const revision = ++fileTreeRevision;
+    const result = await destination.listFiles();
+    if (destination !== adapter || revision !== fileTreeRevision) return;
+    if (!result.ok && destination === fileTreeAdapter) return;
+    fileTreeAdapter = destination;
+    _flatTreePaths = result.ok ? userFacingGraphPaths(result.value) : [];
+    sidebar.updateFileTree(buildFileTree(_flatTreePaths), activeTab);
+    updateOpenWorkbench(invalidateCovers);
   };
+  window.addEventListener('storage', event => {
+    if ((adapterScope === 'storage' || adapterScope === 'harmony') && event.storageArea === localStorage
+      && (event.key === null || event.key.startsWith(GRAPH_STORAGE_PREFIX))) void refreshFileTree();
+  });
 
   // 共享的文件导入逻辑（FAB 按钮 + 设置面板"打开目录"共用）
   const triggerFileImport = () => {
@@ -1434,6 +1422,10 @@ async function main() {
       const files = input.files;
       input.remove();
       if (!files || files.length === 0) return;
+      if (Array.from(files).some(file => file.name.toLowerCase().endsWith(SPACE_BACKUP_EXTENSION))) {
+        showToast('请选择「工具 → 从备份恢复」打开空间备份', 'info', 5000);
+        return;
+      }
       try {
         try { await importFilesMobile(files); } catch { await importFilesHarmony(files); }
         fileSystemMountPath = 'graphs';
@@ -1462,16 +1454,17 @@ async function main() {
       if (!sn) continue;
       let displayUrl = n.mediaType ? (n.mediaUrl || '') : (n.note || '');
       if (displayUrl && /^[A-Z]:[\\/]/.test(displayUrl)) {
-        displayUrl = 'file:///' + displayUrl.replace(/\\/g, '/').replace(/^[A-Z]:/, (m: string) => m.toLowerCase());
+        displayUrl = toFileUrl(displayUrl);
       }
-      showMedia(mediaOverlayContainer, nodeId, n.label || nodeId, type, displayUrl, n.color || '#5B8FF9', () => {
+      showMedia(mediaOverlayContainer, nodeId, n.label || nodeId, type, displayUrl, mediaAccentForNode(n, getTheme(paneGraph.settings?.graphTheme || DEFAULT_GRAPH_THEME)), () => {
         const sp = px.viewport.toScreen(sn.x, sn.y);
         const rect = px.app.canvas.getBoundingClientRect();
         return { x: rect.left + sp.x, y: rect.top + sp.y };
       }, () => { px.viewport.pause = true; }, () => { px.viewport.pause = false; }, false, () => {
         manuallyOpenedMediaIds.delete(nodeId);
         draw();
-      });
+      }, 'reader', undefined, mediaTextEditorForPane(
+        allPaneOwners().find(owner => panePixi(owner) === px), n, n.mediaType ? 'mediaUrl' : 'note'));
       manuallyOpenedMediaIds.add(nodeId);
     }
   }
@@ -1505,7 +1498,7 @@ async function main() {
     for (const tabId of affectedTabs) await reloadVaultResourceViews(tabId);
   }
 
-  async function handleExternalGraphChange(graphName: string) {
+  async function handleExternalGraphChange(graphName: string, fromVite = false) {
     graphName = normalizeVaultPath(graphName);
     const graphPrefix = normalizeVaultPath(vaultIndex?.graphRootRelative || '');
     if (graphPrefix && graphName.startsWith(`${graphPrefix}/`)) graphName = graphName.slice(graphPrefix.length + 1);
@@ -1522,76 +1515,79 @@ async function main() {
       if (_extChangeLast.get(graphName) === now) _extChangeLast.delete(graphName);
     }, EXT_CHANGE_DEBOUNCE);
 
-    refreshFileTree();
+    void refreshFileTree(true);
 
     // strip .json 后缀，因为 activeTab 可能带后缀（来自文件系统）也可能不带
     const clean = (s: string) => s.replace(/\.json$/, '');
     const gnClean = clean(graphName);
 
     // 检查该图是否在任意窗格中被打开
-    const isMain = clean(activeTab) === gnClean;
-    const isPane1 = clean(pane1.activeTab) === gnClean;
-    const extraIdx = extraPanes.slice(1).findIndex(ep => clean(ep.activeTab) === gnClean);
     const targetRuntime = runtimeRegistry.values().find(runtime => clean(runtime.fileName) === gnClean) ?? null;
-    const primaryModeBeforeReload = isMain ? activeMode : null;
-    const paneModesBeforeReload = new Map<PaneState, string>();
-    if (targetRuntime) {
-      for (const owner of extraPanes) {
-        if (owner.runtime === targetRuntime) paneModesBeforeReload.set(owner, owner.activeMode);
-      }
-    }
-
-    if (!isMain && !isPane1 && extraIdx < 0 && !targetRuntime) {
+    if (!targetRuntime) {
       await refreshOpenSpaceReferences(graphName);
       return;
     }
 
-    if (targetRuntime?.dirty) {
-      targetRuntime.markExternalConflict();
-      await targetRuntime.invalidateSaves();
+    if (targetRuntime.fileOperationActive) return;
+    const hadLocalChanges = targetRuntime.dirty || targetRuntime.savePending || targetRuntime.externalConflict;
+    targetRuntime.markExternalConflict();
+    const oldSaves = targetRuntime.invalidateSaves();
+    const reloadGeneration = targetRuntime.saveGeneration;
+    const revision = targetRuntime.changeRevision;
+    await oldSaves;
+    const canApplyExternalVersion = () => targetRuntime.saveGeneration === reloadGeneration
+      && targetRuntime.changeRevision === revision
+      && !targetRuntime.textEditActive && !targetRuntime.fileOperationActive;
+    if (!canApplyExternalVersion()) return;
+    if (hadLocalChanges) {
       const useDisk = await confirmAction(
         `“${targetRuntime.fileName.replace(/\.json$/, '')}”在本地和磁盘上都已修改。`,
         { confirm: '使用磁盘版本', cancel: '保留本地版本' },
       );
       if (!useDisk) {
         showToast('已保留本地版本；自动保存已暂停，请手动保存后选择是否覆盖磁盘', 'warning', 6000);
-        renderAllTabs();
+        syncSpaceNavigation();
         return;
       }
     }
-
-    if (targetRuntime) {
-      targetRuntime.undoManager?.pushSnapshot?.(targetRuntime.graph);
+    if (!canApplyExternalVersion()) return;
+    let newData: GraphData | null = null;
+    try {
+      if (fromVite) {
+        const response = await fetch(`/api/graph/${encodeURIComponent(graphName)}`);
+        if (response.ok) newData = repairGraphCreatedOrders(await response.json());
+      } else {
+        newData = await readGraphData(targetRuntime.fileName, true);
+      }
+      if (newData) await hydrateGraphSpaceReferences(newData, graphName);
+    } catch { newData = null; }
+    if (!canApplyExternalVersion()) return;
+    if (!newData) {
+      showToast('无法读取外部版本，已保留本地内容', 'error', 5000);
+      return;
     }
-
-    // 设置冷却标记，阻止 reload 后的 auto-save 覆盖外部修改
-    externalChangeCooldown = true;
-    setTimeout(() => { externalChangeCooldown = false; }, EXTERNAL_COOLDOWN_MS);
+    targetRuntime.undoManager?.pushSnapshot?.(targetRuntime.graph);
+    const paneModesBeforeReload = new Map(extraPanes.filter(owner => owner.runtime === targetRuntime)
+      .map(owner => [owner, owner.activeMode]));
+    const finishExternalUpdate = () => {
+      targetRuntime.markSaved();
+      targetRuntime.clearExternalConflict();
+      graphRecovery(targetRuntime.fileName).clearUnsynced();
+      clearRuntimeDirty(targetRuntime);
+      runtimeRegistry.prune(targetRuntime);
+      syncSpaceNavigation();
+    };
 
     // ---- 主窗格：动画热更新 ----
-    if (isMain) {
-      primaryRuntime.cancelPendingSave();
+    if (primaryRuntime === targetRuntime) {
+      const primaryModeBeforeReload = activeMode;
+      targetRuntime.cancelPendingSave();
       saveTimeout = null;
 
       // 1) 保存旧状态快照
       const oldNodes = new Map<string, { x: number; y: number }>(
         graph.nodes.map(n => [n.id, { x: n.x, y: n.y }])
       );
-
-      // 2) 读取新数据
-      let newData: GraphData;
-      if (import.meta.hot) {
-        const resp = await fetch(`/api/graph/${graphName}`);
-        newData = repairGraphCreatedOrders(await resp.json());
-        if (!newData.settings) {
-          const cached = await createStorage(graphName).readData();
-          if (cached?.settings) newData.settings = cached.settings;
-        }
-      } else {
-        const saved = await readGraphData(graphName);
-        newData = saved || { nodes: [], edges: [], groups: [] };
-      }
-      await hydrateGraphSpaceReferences(newData, graphName);
 
       // 3) 计算差异
       const newIds = new Set((newData.nodes || []).map(n => n.id));
@@ -1643,8 +1639,8 @@ async function main() {
         // A content refresh must not steal the live pane's layout choice. The
         // disk setting is used when opening a graph, not while that graph is in use.
         layoutMode = primaryModeBeforeReload ?? ((s as any).layoutMode || layoutMode);
-        gridSnapEnabled = (s as any).gridSnap || gridSnapEnabled;
-        partialGridSnap = (s as any).partialGridSnap || partialGridSnap;
+        gridSnapEnabled = s.gridSnap ?? gridSnapEnabled;
+        partialGridSnap = s.partialGridSnap ?? partialGridSnap;
         nodeColorStyle = (s as any).nodeColorStyle || nodeColorStyle;
         fontFamily = (s as any).fontFamily || fontFamily;
         focusMode = s.focusMode ?? focusMode;
@@ -1681,9 +1677,7 @@ async function main() {
         simManager.setStaticMode(true);
         simManager.initStatic();
         activateSemanticLayoutForPane(pane0 as unknown as PaneState, false);
-        primaryRuntime.markSaved();
-        primaryRuntime.clearExternalConflict();
-        clearRuntimeDirty(primaryRuntime);
+        finishExternalUpdate();
         draw();
         await refreshOpenSpaceReferences(graphName);
         return;
@@ -1707,9 +1701,7 @@ async function main() {
           simManager.setStaticMode(true);
           simManager.initStatic();
         }
-        primaryRuntime.markSaved();
-        primaryRuntime.clearExternalConflict();
-        clearRuntimeDirty(primaryRuntime);
+        finishExternalUpdate();
         draw();
         await refreshOpenSpaceReferences(graphName);
         return;
@@ -1722,20 +1714,15 @@ async function main() {
       // 先保存目标（从 newData 中取，此时 graph.nodes 已 in-place 更新但尚未移动到中心）
       const addedTargets = new Map<string, { x: number; y: number }>();
       for (const n of addedNodes) {
-        addedTargets.set(n.id, { x: n.x, y: n.y });
-      }
-      // 再移到中心
-      for (const n of addedNodes) {
-        n.x = vcx; n.y = vcy; n.fx = vcx; n.fy = vcy;
-        if (sim) {
-          // 完全对齐 addNodeToSim 行为：先推入再设 fx/fy，避免 D3 初始化异常
-          const sn: any = { id: n.id, label: n.label, headingLevel: n.headingLevel ?? 6, tags: n.tags ?? [], x: vcx, y: vcy, _isNew: true };
-          const currentNodes = sim.nodes();
-          currentNodes.push(sn);
-          sim.nodes(currentNodes);
-          sim.alpha(0.05).alphaTarget(0.005).restart();
-          sn.fx = vcx; sn.fy = vcy;
+        if (!n.fixed) {
+          addedTargets.set(n.id, { x: n.x, y: n.y });
+          n.x = vcx; n.y = vcy; n.fx = vcx; n.fy = vcy;
         }
+        if (!sim) continue;
+        const sn = { ...n, _isNew: true, fx: n.x, fy: n.y };
+        const currentNodes = sim.nodes();
+        currentNodes.push(sn);
+        sim.nodes(currentNodes);
       }
       // 有新边时更新 link force
       const hasNewEdges = (newEdgesClean || []).length !== graph.edges.length;
@@ -1752,6 +1739,7 @@ async function main() {
           if (removedSet.has(sn.id)) (sn as any)._dying = performance.now();
         }
         setTimeout(() => {
+          if (primaryRuntime !== targetRuntime) return;
           const sim2 = simManager.getSim();
           if (sim2) {
             const alive = sim2.nodes().filter((sn: any) => !(sn as any)._dying);
@@ -1764,13 +1752,16 @@ async function main() {
       }
 
       // 10) 新节点入场动画：从视口中心弹飞到目标位置（addedTargets 在步骤 8 已保存）
-      if (addedNodes.length > 0) {
-        const addedIds = new Set(addedNodes.map(n => n.id));
+      if (addedTargets.size > 0) {
         startNodeAnimation({
           nodes: graph.nodes,
-          simNodes: simManager.getSim()?.nodes() || [],
-          getSource: n => addedIds.has(n.id) ? { x: vcx, y: vcy } : { x: n.x, y: n.y },
-          getTarget: n => addedTargets.get(n.id) || null,
+          simNodes: sim?.nodes() || [],
+          getSource: () => ({ x: vcx, y: vcy }),
+          getTarget: n => {
+            if (primaryRuntime !== targetRuntime || targetRuntime.saveGeneration !== reloadGeneration || simManager.getSim() !== sim) return null;
+            if (n.fixed || simManager.getDragNode() === n.id) addedTargets.delete(n.id);
+            return addedTargets.get(n.id) ?? null;
+          },
           duration: 800,
           easing: EASING.easeOut,
           onFrame: () => draw(),
@@ -1782,9 +1773,7 @@ async function main() {
       }
 
       // 外部版本已成为当前权威数据，不再保留本地 dirty 标记。
-      primaryRuntime.markSaved();
-      primaryRuntime.clearExternalConflict();
-      clearRuntimeDirty(primaryRuntime);
+      finishExternalUpdate();
 
       // 11) 最终渲染
       draw();
@@ -1793,13 +1782,8 @@ async function main() {
     }
 
     // ---- 非主窗格：原地更新共享 runtime，再刷新所有 owner 的 simulation ----
-    if (targetRuntime && (isPane1 || extraIdx >= 0)) {
-      const saved = await readGraphData(targetRuntime.fileName);
-      if (!saved) {
-        showToast('无法读取外部版本，已保留本地内容', 'error', 5000);
-        targetRuntime.markExternalConflict();
-        return;
-      }
+    {
+      const saved = newData;
       targetRuntime.graph.nodes.length = 0;
       targetRuntime.graph.nodes.push(...(saved.nodes || []));
       targetRuntime.graph.edges.length = 0;
@@ -1857,9 +1841,7 @@ async function main() {
           owner.layout.onGraphChanged();
         }
       }
-      targetRuntime.markSaved();
-      targetRuntime.clearExternalConflict();
-      clearRuntimeDirty(targetRuntime);
+      finishExternalUpdate();
       draw();
       await refreshOpenSpaceReferences(graphName);
     }
@@ -1907,9 +1889,15 @@ async function main() {
     pane0.localContextNavigator?.update(null, () => '');
     pane0.localContextProjection?.simManager?.getSim?.()?.stop?.();
     pane0.localContextProjection = null;
-    saveVaultViewportForPane(pane0 as unknown as PaneState, primaryRuntime?.fileName || activeTab);
+    const ownsLoad = beginPaneGraphLoad(pane0 as unknown as PaneState, fileName);
     loadingOverlay.style.display = 'flex';
     activeTab = fileName;
+    const isCurrent = () => {
+      if (!ownsLoad()) return false;
+      if (activeTab === fileName) return true;
+      loadingOverlay.style.display = 'none';
+      return false;
+    };
     updateGwGh();
     // 先停掉旧模拟（仅当不与其他窗格共享时，否则会影响另一窗格）
     if (simManager !== simManager1 && !extraSims.slice(1).some(es => es === simManager)) {
@@ -1940,7 +1928,7 @@ async function main() {
       );
       primaryRuntime.simManager = simManager;
       const saved = await readGraphData(fileName);
-      if (activeTab !== fileName) { loadingOverlay.style.display = 'none'; return; }
+      if (!isCurrent()) return;
       if (isBuiltin(fileName)) {
         // 首次从硬编码加载；后续从 localStorage 读取用户的修改
         if (saved && saved.nodes && saved.nodes.length > 0) {
@@ -1974,10 +1962,13 @@ async function main() {
         graph.settings = saved?.settings || { ...DEFAULT_SETTINGS };
       }
     }
+    if (!isCurrent()) return;
     graph.settings = { ...DEFAULT_SETTINGS, ...(graph.settings || {}) };
     await hydrateGraphResourceReferencePreviews(graph);
+    if (!isCurrent()) return;
     await hydrateGraphSpaceReferences(graph, fileName);
-    if (activeTab !== fileName) { loadingOverlay.style.display = 'none'; return; }
+    if (!isCurrent()) return;
+    const hasViewport = restorePaneOpeningViewport(pane0 as unknown as PaneState, fileName);
     applyPrimaryPaneSettings(graph.settings);
     sharedState.setFocusModeFn(() => $.focusMode);
     applyPaneCanvasBg(pixiContainer, graphTheme);
@@ -2008,31 +1999,26 @@ async function main() {
     if (savedMode === 'auto') simManager.initStatic();
     else simManager.initSim();
     // 恢复该图已保存的布局模式（必须在 initSim 之后，保证 sim 有正确的节点）
-    if (savedMode !== 'force') {
-      applyLayoutMode(savedMode);
-      if (savedMode === 'auto') {
-        setTimeout(() => {
-          if (activeTab === fileName && activeMode === 'auto'
-            && !restoreVaultViewportForPane(pane0 as unknown as PaneState, fileName)) {
-            fitPaneNodes(pane0, graph.nodes);
-          }
-        }, 520);
-      }
-    } else {
-      requestAnimationFrame(() => { restoreVaultViewportForPane(pane0 as unknown as PaneState, fileName); });
+    if (savedMode === 'auto') {
+      activateSemanticLayoutForPane(pane0, false);
+    } else if (savedMode !== 'force') {
+      applyLayoutMode(savedMode, false, PANE_LEFT);
     }
     // 格点吸附恢复（新格式 gridSnap 或旧格式 layoutMode='gridsnap'）
-    if (gridSnapEnabled) {
-      applyGridSnapLayout();
+    if (gridSnapEnabled) applyGridSnapLayout(pane0 as unknown as PaneState);
+    if (!hasViewport && savedMode === 'auto') {
+      syncVaultSpaceBreadcrumb();
+      fitPaneNodes(pane0, getSim()?.nodes() ?? [], 0);
     }
     updateInfoRef.current();
+    draw();
     loadingOverlay.style.display = 'none';
-    setTimeout(() => { draw(); restoreExpandedMedia(graph, pixi, simManager); }, 100);
+    setTimeout(() => { if (isCurrent()) restoreExpandedMedia(graph, pixi, simManager); }, 100);
   }
 
   // Pane 1 加载文件
   async function loadGraphDataPane1(fileName: string) {
-    saveVaultViewportForPane(pane1, pane1.runtime?.fileName || pane1.activeTab);
+    const isCurrent = beginPaneGraphLoad(pane1, fileName);
     exitStructureForPane(pane1);
     clearPaneStructureBoundaries(pane1);
     sharedState.hoverNodeId = null;
@@ -2043,10 +2029,9 @@ async function main() {
     pane1.localContextNavigator?.update(null, () => '');
     pane1.localContextProjection?.simManager?.getSim?.()?.stop?.();
     pane1.localContextProjection = null;
-    pane1.runtime.cancelPendingSave();
     if (pane1.activeTab !== fileName) {
-      const saved = await saveRuntimeNow(pane1.runtime, collectPaneSettings(pane1));
-      if (saved) pane1.dirtyTabs.delete(pane1.runtime.fileName);
+      await saveRuntimeNow(pane1.runtime, collectPaneSettings(pane1));
+      if (!isCurrent()) return;
     }
     pane1.activeTab = fileName;
     if (!pane1.openTabs.includes(fileName)) pane1.openTabs.push(fileName);
@@ -2055,12 +2040,14 @@ async function main() {
     if (pixi1) { clearBlobLayer(pixi1); for (const c of pixi1.nodeLayer.children.slice()) c.destroy({ children: true }); pixi1.nodeLayer.removeChildren(); for (const c of pixi1.edgeLayer.children.slice()) c.destroy({ children: true }); pixi1.edgeLayer.removeChildren(); }
     pane1NodeSprites.clear();
 
-    // 检查是否已有其他窗格持有同文件 → 共享 graph 引用 + simManager
-    const existing = findExistingForFile(fileName, pane1.runtime);
+    // 重新打开右窗格时复用仍在使用的运行时，保留未保存的内容和定时保存。
+    const existing = pane1.runtime.fileName === fileName ? pane1.runtime : findExistingForFile(fileName, pane1.runtime);
     if (existing) {
       prepareRuntimeForSharing(existing);
-      runtimeRegistry.release(pane1.runtime, pane1);
-      pane1.runtime = runtimeRegistry.acquire(fileName, pane1, () => existing);
+      if (existing !== pane1.runtime) {
+        runtimeRegistry.release(pane1.runtime, pane1);
+        pane1.runtime = runtimeRegistry.acquire(fileName, pane1, () => existing);
+      }
       simManager1 = pane1.simManager; extraSims[0] = pane1.simManager;
       pane1.graph.settings = { ...DEFAULT_SETTINGS, ...(pane1.graph.settings || {}) };
       applyPaneSettings(pane1, pane1.graph.settings);
@@ -2077,7 +2064,7 @@ async function main() {
       pane1.simManager = simManager1;
       extraSims[0] = simManager1;
       const saved = await readGraphData(fileName);
-      if (pane1.activeTab !== fileName) { if (pixi1) { loadingOverlay.style.display = 'none'; } return; }
+      if (!isCurrent() || pane1.activeTab !== fileName) return;
       if (isBuiltin(fileName)) {
         if (saved && saved.nodes && saved.nodes.length > 0) {
           pane1.graph.nodes = saved.nodes;
@@ -2106,12 +2093,15 @@ async function main() {
         pane1.graph.groups = [];
         pane1.graph.settings = saved?.settings;
       }
+      if (!isCurrent() || pane1.activeTab !== fileName) return;
       if (pane1.graph.settings) applyPaneSettings(pane1, pane1.graph.settings);
     }
     pane1.graph.settings = { ...DEFAULT_SETTINGS, ...(pane1.graph.settings || {}) };
     await hydrateGraphResourceReferencePreviews(pane1.graph);
+    if (!isCurrent() || pane1.activeTab !== fileName) return;
     await hydrateGraphSpaceReferences(pane1.graph, fileName);
-    if (pane1.activeTab !== fileName) return;
+    if (!isCurrent() || pane1.activeTab !== fileName) return;
+    const hasViewport = restorePaneOpeningViewport(pane1, fileName);
     applyPaneSettings(pane1, pane1.graph.settings);
     // 自动模式直接建立静态位置源；其他模式按需创建 D3 simulation。
     simManager1.setStaticMode(pane1.activeMode === 'auto');
@@ -2127,13 +2117,12 @@ async function main() {
     if (focusedPaneIndex === PANE_RIGHT) {
       applyUIToFocusedPane(pane1.graphTheme);
     }
+    if (!hasViewport && pane1.activeMode === 'auto') {
+      syncVaultSpaceBreadcrumb();
+      fitPaneNodes(pane1, simManager1.getSim()?.nodes() ?? [], 0);
+    }
     pixiDrawPane1();
-    requestAnimationFrame(() => {
-      if (!restoreVaultViewportForPane(pane1, fileName) && pane1.activeMode === 'auto') {
-        fitPaneNodes(pane1, pane1.graph.nodes);
-      }
-    });
-    setTimeout(() => restoreExpandedMedia(pane1.graph, pixi1, simManager1), 100);
+    setTimeout(() => { if (isCurrent()) restoreExpandedMedia(pane1.graph, pixi1, simManager1); }, 100);
   }
 
   // 聚焦窗格状态访问辅助（兼容多分屏）
@@ -2141,11 +2130,6 @@ async function main() {
   const focusedTabs = () => {
     const ep = focusedExtraPane();
     return ep ? ep : { openTabs, get activeTab() { return activeTab; }, set activeTab(v: string) { activeTab = v; }, graph, dirtyTabs, saveTimeout };
-  };
-  const focusedTabState = () => {
-    const ep = focusedExtraPane();
-    return ep ? { ot: ep.openTabs, at: ep.activeTab, g: ep.graph, dt: ep.dirtyTabs, st: ep.saveTimeout }
-      : { ot: openTabs, at: activeTab, g: graph, dt: dirtyTabs, st: saveTimeout };
   };
 
   /** 通用：加载图到指定窗格 */
@@ -2160,7 +2144,7 @@ async function main() {
     pane.localContextNavigator?.update(null, () => '');
     pane.localContextProjection?.simManager?.getSim?.()?.stop?.();
     pane.localContextProjection = null;
-    saveVaultViewportForPane(pane, pane.runtime?.fileName || pane.activeTab);
+    const isCurrent = beginPaneGraphLoad(pane, fileName);
     const extraIndex = extraPanes.indexOf(pane);
     pane.activeTab = fileName;
     if (!pane.openTabs.includes(fileName)) pane.openTabs.push(fileName);
@@ -2190,7 +2174,7 @@ async function main() {
       pane.simManager = newSM;
       if (extraIndex >= 0) extraSims[extraIndex] = newSM;
       const saved = await readGraphData(fileName);
-      if (pane.activeTab !== fileName) { loadingOverlay.style.display = 'none'; return; }
+      if (!isCurrent() || pane.activeTab !== fileName) return;
       if (isBuiltin(fileName)) {
         if (saved && saved.nodes && saved.nodes.length > 0) {
           pane.graph.nodes = saved.nodes;
@@ -2212,29 +2196,33 @@ async function main() {
         pane.graph.nodes = []; pane.graph.edges = []; pane.graph.groups = [];
         pane.graph.settings = saved?.settings;
       }
+      if (!isCurrent() || pane.activeTab !== fileName) return;
       pane.graph.settings = { ...DEFAULT_SETTINGS, ...(pane.graph.settings || {}) };
       applyPaneSettings(pane, pane.graph.settings);
     }
     pane.graph.settings = { ...DEFAULT_SETTINGS, ...(pane.graph.settings || {}) };
     await hydrateGraphResourceReferencePreviews(pane.graph);
+    if (!isCurrent() || pane.activeTab !== fileName) return;
     await hydrateGraphSpaceReferences(pane.graph, fileName);
-    if (pane.activeTab !== fileName) return;
+    if (!isCurrent() || pane.activeTab !== fileName) return;
+    const hasViewport = restorePaneOpeningViewport(pane, fileName);
     applyPaneSettings(pane, pane.graph.settings);
     // 自动模式直接建立静态位置源；其他模式按需创建 D3 simulation。
     pane.simManager?.setStaticMode(pane.activeMode === 'auto');
     if (pane.activeMode === 'auto') pane.simManager?.initStatic();
     else pane.simManager?.initSim();
     if (pane.activeMode === 'auto') activateSemanticLayoutForPane(pane, false);
+    else if (!existing && pane.activeMode !== 'force') applyLayoutMode(pane.activeMode, false, pane.index);
     // 画布背景 + 强调色（各自独立）
     applyPaneCanvasBg(pane.canvasContainer, pane.graphTheme);
     const ac = getAccentColorsForTheme(pane.graphTheme);
     pane.themeAccentColor = ac.accent; pane.themeAccentAltColor = ac.accentAlt;
-    requestAnimationFrame(() => {
-      if (!restoreVaultViewportForPane(pane, fileName) && pane.activeMode === 'auto') {
-        fitPaneNodes(pane, pane.graph.nodes);
-      }
-    });
-    setTimeout(() => restoreExpandedMedia(pane.graph, pane.pixi, pane.simManager), 100);
+    if (!hasViewport && pane.activeMode === 'auto') {
+      syncVaultSpaceBreadcrumb();
+      fitPaneNodes(pane, pane.simManager?.getSim()?.nodes() ?? [], 0);
+    }
+    draw();
+    setTimeout(() => { if (isCurrent()) restoreExpandedMedia(pane.graph, pane.pixi, pane.simManager); }, 100);
   }
 
   /** 从 settings 对象恢复窗格配置 */
@@ -2263,6 +2251,8 @@ async function main() {
     pane.selectedTooltip = (s as any).selectedTooltip ?? pane.selectedTooltip;
     pane.centerMode = (s as any).centerMode ?? pane.centerMode;
     pane.glowAppearance = s.glowAppearance ?? pane.glowAppearance;
+    pane.edgeColorGradient = s.edgeColorGradient ?? pane.edgeColorGradient;
+    pane.edgeWidthByLevel = s.edgeWidthByLevel ?? pane.edgeWidthByLevel;
     pane.fixedHollow = (s as any).fixedHollow ?? pane.fixedHollow;
     pane.cardBorderStyle = (s as any).cardBorderStyle || pane.cardBorderStyle;
   }
@@ -2272,14 +2262,10 @@ async function main() {
     applyPaneSettings(pane0 as unknown as PaneState, s);
     layoutMode = normalizeLayoutMode(s.layoutMode);
     starRotateMode = s.starRotateMode ?? starRotateMode;
-    edgeColorGradient = s.edgeColorGradient ?? edgeColorGradient;
-    edgeWidthByLevel = s.edgeWidthByLevel ?? edgeWidthByLevel;
-    document.documentElement.style.setProperty('--fg-font-family', fontFamily);
-    const styleId = 'fg-font-override';
-    let styleEl = document.getElementById(styleId);
-    if (!styleEl) { styleEl = document.createElement('style'); styleEl.id = styleId; document.head.appendChild(styleEl); }
-    styleEl.textContent = `body,button,input,select,textarea,details,summary,span,a,div,code{font-family:${fontFamily} !important} input[type="checkbox"]{accent-color:var(--fg-accent,#5B8FF9)}`;
-    setNodeFontFamily(fontFamily);
+    if (focusedPaneIndex === PANE_LEFT) {
+      document.documentElement.style.setProperty('--fg-font-family', fontFamily);
+      setNodeFontFamily(fontFamily);
+    }
   }
 
   /** 查找已持有 fileName 的文档运行时，不含调用方当前 runtime */
@@ -2292,132 +2278,44 @@ async function main() {
     return registered !== exclude ? registered : null;
   }
 
-  async function openTab(fileName: string) {
-    const ts = focusedTabState();
-    if (ts.at !== fileName) {
-      if (focusedPaneIndex === PANE_LEFT) {
-        const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
-        if (saved) dirtyTabs.delete(primaryRuntime.fileName);
-      } else {
-        const ep = extraPanes[focusedPaneIndex - 1];
-        if (ep) {
-          const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
-          if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
-        }
-      }
-      clearAllMedia(); manuallyOpenedMediaIds.clear(); hoveredMediaId = '';
+  const openTabRequests = new WeakMap<PaneState, symbol>();
+  async function openTab(fileName: string, pane = focusedPaneState()) {
+    if (focusedPaneState() === pane) commitAppearanceInput();
+    const request = Symbol();
+    openTabRequests.set(pane, request);
+    const destination = adapter;
+    const primary = pane.index === PANE_LEFT;
+    const runtime = paneRuntime(pane);
+    const isCurrent = () => openTabRequests.get(pane) === request && destination === adapter
+      && (primary || splitActive && extraPanes.includes(pane));
+    const syncSelection = () => sidebar.syncActiveFile(paneLoadedTab(focusedPaneState()));
+    if (runtime.fileName === fileName) {
+      syncSelection();
+      return;
     }
-    if (!ts.ot.includes(fileName)) ts.ot.push(fileName);
-    if (focusedPaneIndex === PANE_LEFT) {
-      activeTab = fileName; await loadGraphData(fileName);
-    } else {
-      const ep = extraPanes[focusedPaneIndex - 1];
-      if (ep) await loadGraphForPane(ep, fileName);
-    }
-    try { loadLayouts(); renderModeBar(); } catch {}
-    renderAllTabs();
-    persistTabs();
-    sidebar.syncActiveFile(fileName);
-    draw();
-  }
-
-  async function switchTab(fileName: string) {
-    const ts = focusedTabState();
-    if (fileName === ts.at) return;
-    if (focusedPaneIndex === PANE_LEFT) {
-      const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
-      if (saved) dirtyTabs.delete(primaryRuntime.fileName);
-    } else {
-      const ep = extraPanes[focusedPaneIndex - 1];
-      if (ep) {
-        const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
-        if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
-      }
+    const saved = await saveRuntimeNow(runtime, primary ? collectSettings() : collectPaneSettings(pane));
+    if (!isCurrent()) return;
+    if (!saved || runtime !== paneRuntime(pane)) {
+      syncSelection();
+      return;
     }
     clearAllMedia(); manuallyOpenedMediaIds.clear(); hoveredMediaId = '';
-    if (focusedPaneIndex === PANE_LEFT) {
-      activeTab = fileName; await loadGraphData(fileName);
-    } else {
-      const ep = extraPanes[focusedPaneIndex - 1];
-      if (ep) await loadGraphForPane(ep, fileName);
-    }
-    try { loadLayouts(); renderModeBar(); } catch {}
-    renderAllTabs();
-    persistTabs();
-    sidebar.syncActiveFile(fileName);
-    draw();
-  }
-
-  async function closeTab(fileName: string) {
-    clearAllMedia(); manuallyOpenedMediaIds.clear(); hoveredMediaId = '';
-    if (focusedPaneIndex > PANE_LEFT) {
-      const ep = extraPanes[focusedPaneIndex - 1];
-      if (!ep) return;
-      if (fileName === ep.activeTab) {
-        const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
-        if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
-      }
-      ep.openTabs = ep.openTabs.filter(t => t !== fileName);
-      if (ep.openTabs.length === 0) {
-        // 最后一个标签 → 关闭分屏（若为 pane1）或移除此窗格
-        if (focusedPaneIndex === PANE_RIGHT) splitActive = false;
-        removeSplitPane(focusedPaneIndex - 1);
-        return;
-      }
-      if (fileName === ep.activeTab) {
-        ep.activeTab = ep.openTabs[ep.openTabs.length - 1];
-        await loadGraphForPane(ep, ep.activeTab);
-      }
-    } else {
-      if (fileName === activeTab) {
-        const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
-        if (saved) dirtyTabs.delete(primaryRuntime.fileName);
-      }
-      openTabs = openTabs.filter(t => t !== fileName);
-      if (openTabs.length === 0) {
-        const newName = 'untitled_' + Date.now() + '.json';
-        await writeGraphData(newName, { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
-        openTabs = [newName]; activeTab = newName;
-        await loadGraphData(newName);
-      } else if (fileName === activeTab) {
-        activeTab = openTabs[openTabs.length - 1];
-        await loadGraphData(activeTab);
-      }
-    }
-    renderAllTabs();
-    persistTabs();
-  }
-
-  async function createNewTab() {
-    const name = await safePrompt('输入新页面名称:');
-    if (!name) return;
-    const fileName = name.endsWith('.json') ? name : name + '.json';
-    const ep = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1] : null;
-    if (ep && ep.openTabs.includes(fileName)) { await switchTab(fileName); return; }
-    if (!ep && openTabs.includes(fileName)) { await switchTab(fileName); return; }
-    // 保存当前标签数据（与 switchTab/openTab 一致）
-    if (ep) {
-      const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
-      if (saved) ep.dirtyTabs.delete(ep.runtime.fileName);
-    } else {
-      const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
-      if (saved) dirtyTabs.delete(primaryRuntime.fileName);
-    }
-    const presetSettings = Object.keys(presetDefaults).length > 0 ? { ...DEFAULT_SETTINGS, ...presetDefaults } : { ...DEFAULT_SETTINGS };
-    const empty: GraphData = { nodes: [], edges: [], groups: [], settings: presetSettings };
-    await writeGraphData(fileName, empty);
-    if (ep) {
-      ep.openTabs.push(fileName);
-      ep.activeTab = fileName;
-      await loadGraphForPane(ep, fileName);
-    } else {
-      openTabs.push(fileName);
-      activeTab = fileName;
+    if (primary) {
+      if (!openTabs.includes(fileName)) openTabs.push(fileName);
       await loadGraphData(fileName);
+    } else {
+      await loadGraphForPane(pane, fileName);
     }
-    renderAllTabs();
+    if (!isCurrent()) return;
+    if (focusedPaneState() === pane) {
+      syncFocusedGraphAppearance();
+      syncSearchControlsFromFocusedPane();
+    }
+    renderModeBar();
+    syncSpaceNavigation();
     persistTabs();
-    await refreshFileTree();
+    syncSelection();
+    draw();
   }
 
   // ===== PaneManager + 单例兼容层 =====
@@ -2454,7 +2352,7 @@ async function main() {
       focusMode = DEFAULT_SETTINGS.focusMode, centerMode = DEFAULT_SETTINGS.centerMode, starRotateMode = DEFAULT_SETTINGS.starRotateMode || false, glowAppearance = DEFAULT_SETTINGS.glowAppearance, selectedTooltip = DEFAULT_SETTINGS.selectedTooltip || false, categoryLayout = DEFAULT_SETTINGS.categoryLayout,
     layoutMode = DEFAULT_SETTINGS.layoutMode || 'auto', gridSnapEnabled = DEFAULT_SETTINGS.gridSnap || false, partialGridSnap = DEFAULT_SETTINGS.partialGridSnap || false, nodeColorStyle = (DEFAULT_SETTINGS.nodeColorStyle as 'uniform' | 'hierarchical' | 'spectrum' | 'spectrum-narrow') || 'spectrum-narrow', fixedHollow = true,
     edgeColorGradient = DEFAULT_SETTINGS.edgeColorGradient || false, edgeWidthByLevel = DEFAULT_SETTINGS.edgeWidthByLevel || false,
-    fontFamily = (DEFAULT_SETTINGS as any).fontFamily || '"SiYuan Songti", serif',
+    fontFamily = (DEFAULT_SETTINGS as any).fontFamily || DEFAULT_CANVAS_FONT,
     cardBorderStyle = (DEFAULT_SETTINGS as any).cardBorderStyle || 'straight';
   let gw = 800, gh = 600;
   const getViewportTransform = () => {
@@ -2820,9 +2718,6 @@ async function main() {
     draw();
     _starRaf = requestAnimationFrame(starFrame);
   }
-  // 外部文件变更冷却标记：MCP Server 写文件后阻止 auto-save 覆盖
-  let externalChangeCooldown = false;
-  const EXTERNAL_COOLDOWN_MS = 2000;
 
   const pane0Layout = new LayoutSlot();
   const pane0 = {
@@ -2942,6 +2837,7 @@ async function main() {
     gridSp: pane.gridSp, gridWidth: pane.gridWidth, ar: pane.ar, graphTheme: pane.graphTheme,
     focusMode: pane.focusMode, centerMode: pane.centerMode, selectedTooltip: pane.selectedTooltip,
     glowAppearance: pane.glowAppearance, categoryLayout: pane.categoryLayout,
+    edgeColorGradient: pane.edgeColorGradient, edgeWidthByLevel: pane.edgeWidthByLevel,
     layoutMode: pane.activeMode, gridSnap: pane.gridSnapEnabled, partialGridSnap: pane.partialGridSnap,
     nodeColorStyle: pane.nodeColorStyle, fontFamily: pane.fontFamily, fixedHollow: pane.fixedHollow,
     cardBorderStyle: pane.cardBorderStyle,
@@ -2954,49 +2850,55 @@ async function main() {
   };
 
   const clearRuntimeDirty = (runtime: GraphRuntime) => {
-    if (primaryRuntime === runtime) dirtyTabs.delete(runtime.fileName);
+    dirtyTabs.delete(runtime.fileName);
     for (const pane of extraPanes) {
-      if (pane.runtime === runtime) pane.dirtyTabs.delete(runtime.fileName);
+      pane.dirtyTabs.delete(runtime.fileName);
     }
   };
 
-  const persistRuntimeSnapshot = async (runtime: GraphRuntime, settings: GraphSettings): Promise<boolean> => {
+  const persistRuntimeSnapshot = async (runtime: GraphRuntime, settings: GraphSettings, allowConflictOverwrite = false): Promise<boolean> => {
+    const fileName = runtime.fileName;
+    const targetAdapter = adapter;
     const snapshot = serializeGraphSnapshot(runtime.graph, settings);
-    const result = await runtime.enqueueSave(snapshot, savedSnapshot => writeGraphSnapshot(runtime.fileName, savedSnapshot));
-    if (result.saved && result.current && runtime.markSaved(result.revision)) {
+    const generation = runtime.saveGeneration;
+    const result = await runtime.enqueueSave(snapshot, savedSnapshot => writeGraphSnapshot(fileName, savedSnapshot, targetAdapter), allowConflictOverwrite);
+    const saved = result.saved && result.current && generation === runtime.saveGeneration && runtime.markSaved(result.revision);
+    if (saved) {
       runtime.graph.settings = { ...(runtime.graph.settings || {}), ...settings };
       runtime.clearExternalConflict();
       clearRuntimeDirty(runtime);
-      runtimeRegistry.prune(runtime);
-      void refreshOpenSpaceReferences(runtime.fileName);
+      void refreshOpenSpaceReferences(fileName);
     }
-    renderAllTabs();
-    return result.saved && result.current;
+    runtimeRegistry.prune(runtime);
+    syncSpaceNavigation();
+    return saved;
   };
 
-  const scheduleSaveForRuntime = (runtime: GraphRuntime) => {
-    if (externalChangeCooldown) return;
+  const scheduleSaveForRuntime = (runtime: GraphRuntime, settings?: GraphSettings) => {
+    if (isVaultLocationTabId(runtime.fileName)) return;
     syncFocusedCommands();
     if (runtime === primaryRuntime) {
       pane0.layout.onGraphChanged();
-      dirtyTabs.add(activeTab);
+      dirtyTabs.add(runtime.fileName);
     }
     for (const owner of extraPanes) {
       if (owner.runtime !== runtime) continue;
       owner.layout.onGraphChanged();
-      owner.dirtyTabs.add(owner.activeTab);
+      owner.dirtyTabs.add(runtime.fileName);
     }
     runtime.cancelPendingSave();
     runtime.markDirty();
+    const snapshotSettings = settings ?? collectRuntimeSettings(runtime);
+    runtime.graph.settings = { ...(runtime.graph.settings || {}), ...snapshotSettings };
     if (runtime.externalConflict || runtime.fileOperationActive) return;
     runtime.saveTimeout = setTimeout(async () => {
       runtime.saveTimeout = null;
-      await persistRuntimeSnapshot(runtime, collectRuntimeSettings(runtime));
+      await persistRuntimeSnapshot(runtime, snapshotSettings);
     }, 300);
     if (runtime === primaryRuntime) saveTimeout = runtime.saveTimeout;
   };
 
-  const scheduleSaveForPane = (pane: PaneState) => scheduleSaveForRuntime(pane.runtime);
+  const scheduleSaveForPane = (pane: PaneState) => scheduleSaveForRuntime(pane.runtime, collectPaneSettings(pane));
 
   const reinitializeRuntimeViews = (runtime: GraphRuntime) => {
     const initialized = new Set<any>();
@@ -3176,38 +3078,65 @@ async function main() {
     const focusedOwner = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1] : null;
     scheduleSaveForRuntime(focusedOwner?.runtime ?? primaryRuntime);
   };
-  (window as any).__triggerSave = () => scheduleSave();
-  (window as any).__graphNodes = graph.nodes;
 
   const saveRuntimeNow = async (
     runtime: GraphRuntime,
     settings?: GraphSettings,
-    allowConflictOverwrite = false,
+    forFileOperation = false,
+    manual = false,
   ): Promise<boolean> => {
+    if (runtime.fileOperationActive && !forFileOperation) return false;
+    if (!runtime.dirty && !runtime.externalConflict && !runtime.savePending && !forFileOperation && !manual) return true;
+    const operationGeneration = runtime.saveGeneration;
+    const fileName = runtime.fileName;
+    const snapshotSettings = settings ?? collectRuntimeSettings(runtime);
     runtime.cancelPendingSave();
-    if (runtime.externalConflict && !allowConflictOverwrite) {
+    const needsOverwrite = runtime.externalConflict;
+    if (needsOverwrite) {
+      const revision = runtime.changeRevision;
       const overwrite = await confirmAction(
-        `“${runtime.fileName.replace(/\.json$/, '')}”已被外部修改，是否用本地内容覆盖磁盘版本？`,
+        `“${fileName.replace(/\.json$/, '')}”已被外部修改，是否用本地内容覆盖磁盘版本？`,
         { confirm: '覆盖磁盘', cancel: '暂不保存' },
       );
       if (!overwrite) return false;
-      await runtime.invalidateSaves();
-      runtime.clearExternalConflict();
+      if (runtime.saveGeneration !== operationGeneration || runtime.changeRevision !== revision
+        || runtime.fileName !== fileName || (runtime.fileOperationActive && !forFileOperation)) {
+        showToast('确认保存期间文件发生变化，请重新保存', 'warning', 4000);
+        return false;
+      }
+      const oldSaves = runtime.invalidateSaves();
+      const overwriteGeneration = runtime.saveGeneration;
+      await oldSaves;
+      if (runtime.saveGeneration !== overwriteGeneration || runtime.changeRevision !== revision
+        || runtime.fileName !== fileName || (runtime.fileOperationActive && !forFileOperation)) {
+        showToast('确认保存期间文件发生变化，请重新保存', 'warning', 4000);
+        return false;
+      }
     }
-    return persistRuntimeSnapshot(runtime, settings ?? collectRuntimeSettings(runtime));
+    return persistRuntimeSnapshot(runtime, snapshotSettings, needsOverwrite);
   };
 
-  const saveNow = async () => {
-    if (focusedPaneIndex > PANE_LEFT) {
-      const ep = extraPanes[focusedPaneIndex - 1];
-      if (!ep) return;
-      const saved = await saveRuntimeNow(ep.runtime, collectPaneSettings(ep));
-      if (saved) ep.dirtyTabs.delete(ep.activeTab);
+  const saveNow = async (): Promise<void> => {
+    const ep = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1] : null;
+    if (ep) scheduleSaveForPane(ep);
+    else scheduleSaveForRuntime(primaryRuntime, collectSettings());
+  };
+
+  const saveFocusedGraphWithFeedback = async (): Promise<void> => {
+    const ep = focusedPaneIndex > PANE_LEFT ? extraPanes[focusedPaneIndex - 1] : null;
+    const runtime = ep?.runtime ?? primaryRuntime;
+    const fileName = runtime.fileName;
+    if (isVaultLocationTabId(fileName)) {
+      showToast('此视图为只读，无需保存', 'info');
       return;
     }
-    const saved = await saveRuntimeNow(primaryRuntime, collectSettings());
-    if (saved) dirtyTabs.delete(activeTab);
-    renderAllTabs();
+    if (runtime.fileOperationActive) {
+      showToast('文件正在移动、重命名或删除，请稍后保存', 'warning');
+      return;
+    }
+    if (await saveRuntimeNow(runtime, ep ? collectPaneSettings(ep) : collectSettings(), false, true)) {
+      showToast(`已保存“${fileName.replace(/\.json$/, '')}”`, 'success');
+    }
   };
 
   let splitActive = false;
@@ -3217,43 +3146,14 @@ async function main() {
   dualPane.paneContainers[PANE_LEFT].style.left = '0';
   for (const d of dualPane.dividers) d.style.display = 'none';
 
-  const renderAllTabs = () => {
-    const groups: { tabs: string[]; active: string; dirty?: Set<string> }[] = [];
-    // 始终包含左窗格
-    groups.push({ tabs: openTabs, active: activeTab, dirty: dirtyTabs });
-    // 分屏激活时追加右窗格及额外窗格
-    if (splitActive) {
-      groups.push({ tabs: pane1.openTabs, active: pane1.activeTab, dirty: pane1.dirtyTabs });
-      for (let i = 1; i < extraPanes.length; i++) {
-        const ep = extraPanes[i];
-        if (ep.openTabs.length > 0) {
-          groups.push({ tabs: ep.openTabs, active: ep.activeTab, dirty: ep.dirtyTabs });
-        }
-      }
-    }
-    renderTabs(groups);
+  const syncSpaceNavigation = () => {
+    syncSplitControls();
     syncVaultSpaceBreadcrumb();
-  };
-
-  const isFixedNode = (id: string) => { const n = graph.nodes.find(gn => gn.id === id); return n?.fixed || false; };
-  const fixNode = (id: string) => {
-    const n = graph.nodes.find(gn => gn.id === id);
-    if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; scheduleSave(); }
-    // 同步到模拟副本（否则样式不会变），restart 刷新 charge 缓存
-    const sim = getSim();
-    if (sim) { const sn = sim.nodes().find((sn: any) => sn.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); }
-    draw();
-  };
-  const fixNodes = (ids: string[]) => { for (const id of ids) fixNode(id); draw(); };
-  const unfixNodes = (ids: string[]) => {
-    const sim = getSim();
-    for (const id of ids) {
-      const n = graph.nodes.find(gn => gn.id === id);
-      if (n) { n.fixed = false; n.fx = null; n.fy = null; }
-      if (sim) { const sn = sim.nodes().find((sn: any) => sn.id === id); if (sn) { sn.fixed = false; sn.fx = null; sn.fy = null; } }
+    const owner = focusedPaneIndex === PANE_LEFT ? null : extraPanes[focusedPaneIndex - 1];
+    const fileName = owner?.activeTab ?? activeTab;
+    if (fileName && fileName === (owner?.runtime ?? primaryRuntime).fileName && !isBuiltin(fileName) && !isVaultLocationTabId(fileName)) {
+      workbenchHistory.visit(fileName);
     }
-    if (sim) { sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); }
-    scheduleSave(); draw();
   };
 
   // --- 模拟管理器 ---
@@ -3310,7 +3210,9 @@ async function main() {
     } : null);
   };
   const vaultViewportSaveTimers = new WeakMap<object, ReturnType<typeof setTimeout>>();
+  const paneGraphLoads = new WeakMap<PaneState, symbol>();
   const panePixi = (pane: PaneState) => pane.index === PANE_LEFT ? pixi : pane.pixi;
+  const paneBoxSelection = new WeakMap<PaneState, () => CanvasBoxSelection>();
   const paneLoadedTab = (pane: PaneState) => pane.index === PANE_LEFT
     ? (primaryRuntime?.fileName || activeTab)
     : (pane.runtime?.fileName || pane.activeTab);
@@ -3325,11 +3227,14 @@ async function main() {
     });
   };
   const scheduleVaultViewportSave = (pane: PaneState) => {
+    const tabId = paneLoadedTab(pane);
+    if (!isVaultLocationTabId(tabId)) return;
+    const loading = paneGraphLoads.get(pane);
     const prior = vaultViewportSaveTimers.get(pane);
     if (prior) clearTimeout(prior);
     const timer = setTimeout(() => {
       vaultViewportSaveTimers.delete(pane);
-      saveVaultViewportForPane(pane);
+      if (paneGraphLoads.get(pane) === loading && paneLoadedTab(pane) === tabId) saveVaultViewportForPane(pane, tabId);
     }, 160);
     vaultViewportSaveTimers.set(pane, timer);
   };
@@ -3342,9 +3247,55 @@ async function main() {
     return true;
   };
 
-  // 配置同步：singletons ↔ PaneState
-  const configKeys = ['linkDist','labelSize','charge','linkStr','collideR','centerS','groupBound','heatingTime','alphaTarget','editPanelOpacity','useRAFL','nodeExpand','lineExpand','showGLabels','glMin','glMax','gridVis','gridMode','axisVis','axisTicks','gridSp','gridWidth','ar','graphTheme','focusMode','selectedTooltip','glowAppearance','layoutMode','gridSnapEnabled','partialGridSnap','nodeColorStyle','fixedHollow','fontFamily','cardBorderStyle','gw','gh'] as const;
+  function beginPaneGraphLoad(pane: PaneState, nextFile: string) {
+    const token = Symbol();
+    paneGraphLoads.set(pane, token);
+    const pendingSave = vaultViewportSaveTimers.get(pane);
+    if (pendingSave) clearTimeout(pendingSave);
+    vaultViewportSaveTimers.delete(pane);
+    saveVaultViewportForPane(pane);
 
+    if (paneLoadedTab(pane) !== nextFile) {
+      if (pane.searchDebounceTimer) clearTimeout(pane.searchDebounceTimer);
+      pane.searchDebounceTimer = null;
+      pane.search = '';
+      pane.searchMatchIndex = -1;
+      pane.lastSearchTerm = '';
+    }
+    pane.currentAnimationCancel?.();
+    pane.currentAnimationCancel = null;
+    pane.selNode = null;
+    pane.selEdge = null;
+    pane.selGroup = null;
+    pane.semanticLensState = null;
+    const viewport = panePixi(pane)?.viewport;
+    viewport?.plugins.remove('animate');
+    viewport?.plugins.reset();
+    if (pane.index === PANE_LEFT) {
+      savedFixedNodes = [];
+      savedGroupModes = [];
+      if (_starRaf !== null) cancelAnimationFrame(_starRaf);
+      _starRaf = null;
+      _wasd.vx = _wasd.vy = 0;
+      _skipDraw = false;
+    } else {
+      pane.savedFixedNodes = [];
+      pane.savedGroupModes = [];
+    }
+    return () => paneGraphLoads.get(pane) === token;
+  }
+
+  function restorePaneOpeningViewport(pane: PaneState, tabId: string): boolean {
+    if (restoreVaultViewportForPane(pane, tabId)) return true;
+    const viewport = panePixi(pane)?.viewport;
+    if (viewport) {
+      viewport.setZoom(1, false);
+      viewport.moveCenter(0, 0);
+    }
+    return false;
+  }
+
+  // 配置同步：singletons ↔ PaneState
   function saveConfigTo(to: PaneState) {
     const all: any = { linkDist, labelSize, charge, linkStr, collideR, centerS, groupBound, heatingTime, alphaTarget, editPanelOpacity, useRAFL, nodeExpand, lineExpand, showGLabels, glMin, glMax, gridVis, gridMode, axisVis, axisTicks, gridSp, gridWidth, ar, graphTheme, focusMode, centerMode, selectedTooltip, glowAppearance, layoutMode: activeMode, gridSnapEnabled, partialGridSnap, nodeColorStyle, fixedHollow, fontFamily, cardBorderStyle, gw, gh };
     for (const k of Object.keys(all)) (to as any)[k] = all[k];
@@ -3369,31 +3320,44 @@ async function main() {
     fontFamily = from.fontFamily; cardBorderStyle = from.cardBorderStyle || 'straight'; gw = from.gw; gh = from.gh;
     activeMode = from.activeMode; treeMode = from.treeMode;
     categoryMode = from.categoryMode; fullCatMode = from.fullCatMode;
-    applyUIToFocusedPane(graphTheme);
   }
 
   // pane0 配置备份（切到 pane1 时暂存 singletons）
   const pane0Config: Record<string, any> = {};
 
   let syncSearchControlsFromFocusedPane: () => void = () => {};
+  let refreshOpenViewMenu = () => {};
+  function commitAppearanceInput() {
+    const control = document.activeElement;
+    if (control instanceof HTMLInputElement && control.type === 'number' && setDiv.contains(control)) control.blur();
+  }
+
+  function syncFocusedGraphAppearance() {
+    const pane = focusedPaneState();
+    applyUIToFocusedPane(pane.graphTheme);
+    document.documentElement.style.setProperty('--fg-font-family', pane.fontFamily);
+    setNodeFontFamily(pane.fontFamily);
+    updateOpacity(pane.editPanelOpacity);
+    settingsUI.updateInfo();
+  }
+
   function switchFocusedPane(toIndex: number) {
     if (focusedPaneIndex === toIndex || toIndex >= extraPanes.length + 1) return;
+    commitAppearanceInput();
     focusedPaneIndex = toIndex;
     const targetMode = toIndex === PANE_LEFT ? activeMode : extraPanes[toIndex - 1]?.activeMode;
     if (targetMode && ['cardgrid', 'category', 'fullcat'].includes(targetMode)) boxSelectMode = false;
-    // UI 主题跟随聚焦窗格
-    const targetTheme = toIndex === PANE_LEFT ? graphTheme : (extraPanes[toIndex - 1]?.graphTheme ?? graphTheme);
-    applyUIToFocusedPane(targetTheme);
+    syncFocusedGraphAppearance();
     // 文件树同步到聚焦窗格的活动文件
     const targetFile = toIndex === PANE_LEFT ? activeTab
       : toIndex === PANE_RIGHT ? pane1.activeTab
       : (extraPanes[toIndex - 1]?.activeTab ?? BUILTIN_NAMES[0]);
     sidebar.syncActiveFile(targetFile);
     syncVaultSpaceBreadcrumb();
-    settingsUI.updateInfo();
-    renderAllTabs();
+    syncSpaceNavigation();
     syncFocusedCommands();
     syncSearchControlsFromFocusedPane();
+    refreshOpenViewMenu();
     draw();
   }
   // pane 点击自动聚焦
@@ -3423,8 +3387,10 @@ async function main() {
     return parseInt(t.nodeDefaultColor.replace('#', ''), 16);
   };
 
+  const canvasEmptyStates = new WeakMap<HTMLElement, ReturnType<typeof createCanvasEmptyState>>();
 function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeSprite>, st: PaneState) {
     if (st.textViewActive) {
+      canvasEmptyStates.get(st.canvasContainer)?.update(false, false);
       clearPaneStructureBoundaries(st);
       return;
     }
@@ -3456,6 +3422,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const graphNodeById = new Map<string, any>(graph.nodes.map((node: any) => [node.id, node]));
     const theme = getTheme(st.graphTheme);
     const lblColor = parseInt(theme.labelColor.replace('#', ''), 16);
+    const surfaceColor = parseInt(theme.uiPanelBackground.replace('#', ''), 16);
     const defColor = parseInt(theme.nodeDefaultColor.replace('#', ''), 16);
     const isDarkTheme = ((c: string) => {
       const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(c);
@@ -3530,40 +3497,34 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     try {
 
-    // 空状态提示（图标 + 引导按钮）
-    if (nodes.length === 0 && st.readyToDraw) {
-      if (!(pixi.nodeLayer as any)._emptyGroup) {
-        const group = new Container({ label: 'empty-state' });
-
-        const hintText = new Text({
-          text: '右键区域或点击按钮创建第一个节点',
-          resolution: 3,
-          style: { fontSize: 12, fill: 0x666666, fontFamily: st.fontFamily || 'system-ui, -apple-system, sans-serif', align: 'center' } as any,
-        });
-        hintText.anchor.set(0.5);
-        hintText.position.set(0, 54);
-        group.addChild(hintText);
-
-        group.position.set(0, 0);
-        (pixi.nodeLayer as any)._emptyGroup = group;
-        pixi.nodeLayer.addChild(group);
-      }
-      (pixi.nodeLayer as any)._emptyGroup.visible = true;
-    } else if ((pixi.nodeLayer as any)._emptyGroup) {
-      const grp = (pixi.nodeLayer as any)._emptyGroup;
-      grp.destroy({ children: true });
-      (pixi.nodeLayer as any)._emptyGroup = null;
+    let emptyState = canvasEmptyStates.get(st.canvasContainer);
+    if (!emptyState && nodes.length === 0) {
+      emptyState = createCanvasEmptyState(st.canvasContainer, () => {
+        switchFocusedPane(st.index);
+        createNodeInFocusedPane();
+      }, () => {
+        switchFocusedPane(st.index);
+        void showWorkbench();
+      });
+      canvasEmptyStates.set(st.canvasContainer, emptyState);
     }
+    emptyState?.update(nodes.length === 0,
+      graph.settings?.sourceMode === 'vault-readonly' || !!st.structureView || !!st.localContextProjection);
     const accentHex = '#' + st.themeAccentColor.toString(16).padStart(6, '0');
-    const defaultNodeColor = (lv: number) =>
-      '#' + getHeadingColor(lv || 6, accentHex, isDarkTheme).toString(16).padStart(6, '0');
+    const defaultNodeColor = (lv?: number) => {
+      const level = Math.max(1, Math.min(6, Number.isFinite(lv) && lv !== 0 ? Math.round(lv!) : 6));
+      return theme.headingColors?.[level - 1]
+        ?? '#' + getHeadingColor(lv || 6, accentHex, isDarkTheme).toString(16).padStart(6, '0');
+    };
     const resolveNodeColor = (n: any) => {
-      if (n.color && n.color !== '#000000') return n.color;
+      const visualNode = graphNodeById.get(n.id) ?? n;
+      const explicitColor = getExplicitGraphColor(visualNode, 'node');
+      if (explicitColor) return explicitColor;
       switch (st.nodeColorStyle) {
         case 'uniform': return theme.nodeDefaultColor;
-        case 'spectrum': return '#' + getSpectrumColor(n.headingLevel || 6, isDarkTheme, accentHex).toString(16).padStart(6, '0');
-        case 'spectrum-narrow': return '#' + getNarrowSpectrumColor(n.headingLevel || 6, isDarkTheme, accentHex).toString(16).padStart(6, '0');
-        default: return defaultNodeColor(n.headingLevel || 6);
+        case 'spectrum': return '#' + getSpectrumColor(visualNode.headingLevel || 6, isDarkTheme, accentHex).toString(16).padStart(6, '0');
+        case 'spectrum-narrow': return '#' + getNarrowSpectrumColor(visualNode.headingLevel || 6, isDarkTheme, accentHex).toString(16).padStart(6, '0');
+        default: return defaultNodeColor(visualNode.headingLevel || 6);
       }
     };
 
@@ -3575,7 +3536,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     // A hit inside a collapsed structure should illuminate its visible shell as
     // well; otherwise “only show” can correctly find a note yet display nothing.
     for (const result of graphSearchResults) {
-      const sourceNode = graph.nodes.find((node: any) => node.id === result.nodeId);
+      const sourceNode = graphNodeById.get(result.nodeId);
       if (sourceNode?.structureParentId && structureProjection.hiddenNodeIds.has(result.nodeId)) {
         searchMatchIds.add(sourceNode.structureParentId);
       }
@@ -3596,7 +3557,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const semanticScene = (graph as any)._semanticScene;
     const semanticRegions = semanticScene?.regions;
     const semanticLens = semanticScene?.lens ?? st.semanticLensState;
-    if (st.activeMode === 'auto' && Array.isArray(semanticRegions)) {
+    const showTextHints = !!st.localContext
+      || (graph.settings?.semanticCardDensity ?? DEFAULT_SEMANTIC_CARD_DENSITY) !== 'nodes';
+    if (st.activeMode === 'auto' && showTextHints && Array.isArray(semanticRegions)) {
       renderSemanticScene(pixi.semanticLayer, semanticRegions, {
         nodes,
         echoes: Array.isArray(semanticScene?.echoes) ? semanticScene.echoes : [],
@@ -3614,9 +3577,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
     // 有子节点的集合（用于折叠省略号判断）
     const hasChildrenSet = new Set<string>();
-    structureProjection.edges.forEach((e: any) => {
-      hasChildrenSet.add(typeof e.source === 'object' ? e.source.id : e.source);
-    });
+    for (const edge of structureProjection.edges) {
+      if (edge._dyingAt || edge._structureMembership) continue;
+      const source = typeof edge.source === 'object' ? edge.source?.id : edge.source;
+      const target = typeof edge.target === 'object' ? edge.target?.id : edge.target;
+      const from = graphNodeById.get(source), to = graphNodeById.get(target);
+      if (source !== target && from && to && (to.headingLevel || 6) >= (from.headingLevel || 6)) hasChildrenSet.add(source);
+    }
 
     // 每帧重新检测鼠标悬停（节点可能移出鼠标）
     sharedState.reevaluateHover?.();
@@ -3677,11 +3644,28 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     for (const n of nodes) {
       if ((n as any)._collapseAnim || (n as any)._expandAnim) animatingIds.add(n.id);
     }
-    for (const aid of animatingIds) hiddenNodes.delete(aid);
+    for (const aid of animatingIds) {
+      if (!structureProjection.hiddenNodeIds.has(aid) && (!showOnlyMode || searchMatchIds.has(aid))) hiddenNodes.delete(aid);
+    }
 
+    // Dragged nodes snap on release. Fixed anchors follow their snapped coordinates.
+    if (st.gridSnapEnabled || st.partialGridSnap) {
+      for (const n of nodes) {
+        if (n.id === st.draggingNode?.id || !st.gridSnapEnabled && !n.fixed) continue;
+        const [sx, sy] = snapPosToGrid(n.x, n.y, st.gridSp);
+        n.x = sx; n.y = sy;
+        if (n.fx != null) n.fx = sx;
+        if (n.fy != null) n.fy = sy;
+      }
+    }
+
+    const now = performance.now();
     // --- 光晕层 ---
     if (st.glowAppearance) {
-      updateBlobFilters();
+      const darkCanvas = isThemeDark(theme);
+      const blur = darkCanvas ? darkNodeGlow : lightNodeGlow;
+      if (pixi.blobLayer.filters?.[0] !== blur) pixi.blobLayer.filters = [blur];
+      const minimumGlowSpread = (darkCanvas ? 11 : 13) / Math.max(0.45, pixi.viewport.scale.x);
       pixi.blobLayer.visible = true;
       let bg = pixi.blobLayerGfx;
       if (!bg || bg.destroyed) {
@@ -3693,17 +3677,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       for (const n of nodes) {
         if (hiddenNodes.has(n.id) || expandedBoundaryIds.has(n.id)) continue;
         if (st.activeMode === 'auto' && (n as any)._semanticCard?.form !== 'node') continue;
-        const levelR = [22, 19, 16, 13, 10, 7][(n.headingLevel || 6) - 1] || 9;
-        const nr = (n.radiusMode === 'custom' || (!n.radiusMode && n.radius)) ? (n.radius || 9) : levelR;
+        const nr = getNodeVisualRadius(n);
         const colorStr = resolveNodeColor(n);
-        const color = parseInt(colorStr.replace('#', ''), 16);
+        const color = parseInt((darkCanvas ? colorStr : darken(colorStr, 0.18)).replace('#', ''), 16);
         // 光晕跟随节点视觉动画同步过渡，使用与 pixi-nodes.ts applyNodeVisual 相同的公式
         const ca = (n as any)._collapseAnim;
         const ea = (n as any)._expandAnim;
+        const baseGlowAlpha = (n.headingLevel || 6) <= 2 ? 0.18 : 0.13;
         let glowScale: number;
         let glowAlpha: number;
         if (ca) {
-          const t = Math.min(1, Math.max(0, (performance.now() - ca.startTime) / ANIM_DURATION));
+          const t = Math.min(1, Math.max(0, (now - ca.startTime) / ANIM_DURATION));
           const scaleT = Math.min(1, t / 0.65);
           if (scaleT < 0.15) {
             glowScale = 1 + (scaleT / 0.15) * 0.12;
@@ -3712,17 +3696,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
             glowScale = 1.12 * (1 - ts * ts * ts);
             glowScale = Math.max(0.01, glowScale);
           }
-          glowAlpha = 0.5 * Math.max(0, 1 - scaleT * scaleT);
+          glowAlpha = baseGlowAlpha * Math.max(0, 1 - scaleT * scaleT);
         } else if (ea) {
-          const t = Math.min(1, Math.max(0, (performance.now() - ea.startTime) / ANIM_DURATION));
+          const t = Math.min(1, Math.max(0, (now - ea.startTime) / ANIM_DURATION));
           glowScale = Math.max(0.01, 1 - Math.pow(1 - t, 3));
-          glowAlpha = 0.5 * Math.min(1, t);
+          glowAlpha = baseGlowAlpha * t;
         } else {
           glowScale = 1;
-          glowAlpha = 0.5;
+          glowAlpha = baseGlowAlpha;
         }
-        const r = nr * 1.8 * glowScale;
-        if (glowAlpha > 0.01) bg.circle(n.x, n.y, r).fill({ color, alpha: glowAlpha });
+        const r = (nr + Math.max(nr * 0.8, minimumGlowSpread)) * glowScale;
+        const alpha = darkCanvas ? glowAlpha : Math.min(0.58, glowAlpha * 1.7);
+        if (alpha > 0.01) bg.circle(n.x, n.y, r).fill({ color, alpha });
       }
     } else {
       const bg = pixi.blobLayerGfx;
@@ -3730,23 +3715,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       pixi.blobLayer.visible = false;
     }
 
-    // --- 格点吸附：每帧将节点位置吸附到网格（拖拽中的节点跳过，由释放时吸附）---
-    if (st.gridSnapEnabled || st.partialGridSnap) {
-      const dragId = st.draggingNode?.id ?? null;
-      for (const n of nodes) {
-        if (n.id === dragId) continue;
-        // 部分格点：仅固定节点吸附；全格点：所有节点吸附
-        if (st.partialGridSnap && !n.fixed) continue;
-        const [sx, sy] = snapPosToGrid(n.x, n.y);
-        n.x = sx; n.y = sy;
-        if (n.fx != null) n.fx = sx;
-        if (n.fy != null) n.fy = sy;
-      }
-    }
-
     // 同步折叠状态：graph node → sim node（确保 applyNodeVisual 读到正确值）
     for (const n of nodes) {
-      const gn = graph.nodes.find((gn: any) => gn.id === n.id);
+      const gn = graphNodeById.get(n.id);
       if (gn) n.collapsed = gn.collapsed || false;
     }
 
@@ -3761,15 +3732,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
 
     // --- 节点 ---
-    const now = performance.now();
     // 构建所有节点的显色映射（含隐藏节点，供连线渐变色用）
     const nodeColorMap = new Map<string, number>();
     for (const n of nodes) {
       const colorStr = resolveNodeColor(n);
       nodeColorMap.set(n.id, parseInt(colorStr.replace('#', ''), 16));
     }
-    const finishedCollapsing = new Set<string>();
-
     for (const n of nodes) {
       if (hiddenNodes.has(n.id) || expandedBoundaryIds.has(n.id)) continue;
       const id = n.id;
@@ -3792,8 +3760,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         expandProgress = Math.min(1, Math.max(0, elapsed / ANIM_DURATION));
       }
 
-      const levelR = [22, 19, 16, 13, 10, 7][(n.headingLevel || 6) - 1] || 9;
-      const nodeRadius = (n.radiusMode === 'custom' || (!n.radiusMode && n.radius)) ? (n.radius || 9) : levelR;
+      const nodeRadius = getConfiguredNodeRadius(n);
       const baseNodeLabelSize = Math.max(12, Math.min(28, Math.round(nodeRadius * 0.8 + 7)));
       const cardViewScale = cardController?.getNodeViewScale(id) ?? 1;
       const nodeLabelSize = isCardMode
@@ -3843,16 +3810,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       const pieColors: number[] | undefined = pieStrColors?.map(c => parseInt(c.replace('#', ''), 16));
       const nodeLabelSize2 = nodeLabelSize;
 
-      // 展开节点预缩：防止新 sprite 在 applyNodeVisual 缩小前闪现一帧
-      if (expandProgress >= 0) sprite.container.scale.set(0.01);
-
       applyNodeVisual(sprite, baseColor, lblColor, nodeLabelSize2, {
+        fontFamily: st.fontFamily,
         selected: n.id === st.selNode,
         boxSelected: boxSelIds.has(id),
         searchMatch: searchMatchIds.has(id),
         fixed: n.fixed || false,
         fixedHollow: st.fixedHollow,
-        collapsed: n.collapsed || false,
+        collapsed: !!graphNodeForVisual?.collapsed,
         hasChildren: hasChildrenSet.has(id),
         inFocus: (!focusActive || focusNeighborIds.has(id)) && (!showOnlyMode || searchMatchIds.has(id)),
         isNew: (n as any)._isNew === true,
@@ -3865,6 +3830,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         groupEdgeOnly: gEdgeOnly,
         pieColors,
         mediaType: graphNodeForVisual?.mediaType || n.mediaType || undefined,
+        surfaceColor,
         vaultResourceKind: graphNodeForVisual?.sourceRef?.kind || n.sourceRef?.kind || (n as any).vaultRole || undefined,
         resourceReferenceKind: graphNodeForVisual?.resourceRef?.kind || n.resourceRef?.kind || undefined,
         resourceReferenceStatus: graphNodeForVisual?._resourceReferenceStatus || n._resourceReferenceStatus || undefined,
@@ -3884,100 +3850,48 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       });
       if ((n as any)._isNew) (n as any)._isNew = false;
 
-      // 折叠动画完成：标记隐藏，后续 cleanup 会从 sim 移除
-      if (collapseProgress >= 1) {
-        hiddenNodes.add(id);
-      }
-      // 展开动画完成：清除动画状态
-      if (expandProgress >= 1) {
-        delete (n as any)._expandAnim;
-      }
     }
 
-    // --- 展开/折叠动画完成后的处理 ---
-    for (const n of nodes) {
-      const ca = (n as any)._collapseAnim;
-      if (ca && (performance.now() - ca.startTime) >= (ca.duration || 300)) {
-        finishedCollapsing.add(n.id);
-      }
-    }
-    if (finishedCollapsing.size > 0) {
-      const sim = getSim();
-      if (sim) {
-        // 保存位置到 graph nodes
-        for (const n of nodes) {
-          if (finishedCollapsing.has(n.id)) {
-            const gn = graphNodeById.get(n.id);
-            if (gn) { gn.x = n.x; gn.y = n.y; }
-          }
-        }
-        const filteredNodes = sim.nodes().filter((n: any) => !finishedCollapsing.has(n.id));
-        const simNodeIds = new Set(filteredNodes.map((n: any) => n.id));
-        // 先重建 link force（排除已移除节点的边），再 setNodes（触发所有 force 的 initialize）
-        const validEdges = graph.edges
-          .filter((e: any) =>
-            (e.lineStyle || 'solid') === 'solid' && !e._conflict && !e._dyingAt &&
-            simNodeIds.has(typeof e.source === 'object' ? e.source.id : e.source) &&
-            simNodeIds.has(typeof e.target === 'object' ? e.target.id : e.target)
-          )
-          .map((e: any) => ({ ...e, source: typeof e.source === 'object' ? (e.source as any).id ?? e.source : e.source, target: typeof e.target === 'object' ? (e.target as any).id ?? e.target : e.target }));
-        if (validEdges.length > 0) {
-          sim.force("link", d3.forceLink(validEdges).id((d: any) => d.id).distance(st.linkDist).strength(st.linkStr));
-        }
-        // 先替换 link force，再 setNodes 触发 initialize
-        sim.nodes(filteredNodes);
-        // 节点移除后力场不对称，让 alpha 自然衰减防止残余力推飞节点
-        if (sim.alpha() > 0.002) sim.alphaTarget(0);
-      }
-    }
-
-    // 边、集合、网格
-    // 折叠边索引（边线隐藏用；动画中或等级更高的目标节点的边保留）
-    const collapsedNodeIds = new Set<string>(graph.nodes.filter((node: any) => node?.collapsed).map((node: any) => node.id));
-    const collapsedEdgeIndices = new Set<number>();
-    if (collapsedNodeIds.size > 0) {
-      const simNodesById = new Map<string, any>(nodes.map((n: any) => [n.id, n]));
-      graph.edges.forEach((e: any, idx: number) => {
-        const src = typeof e.source === 'object' ? e.source.id : e.source;
-        if (!collapsedNodeIds.has(src)) return;
-        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-        const srcLevel = graphNodeById.get(src)?.headingLevel || 6;
-        const tgtLevel = graphNodeById.get(tgt)?.headingLevel || 6;
-        // 等级保护：目标节点等级更高 → 保留边线
-        if (tgtLevel < srcLevel) return;
-        // 动画保护：源或目标正在折叠动画中 → 保留边线，跟随动画
-        const srcSim = simNodesById.get(src);
-        const tgtSim = simNodesById.get(tgt);
-        if ((srcSim && (srcSim as any)._collapseAnim) || (tgtSim && (tgtSim as any)._collapseAnim)) return;
-        collapsedEdgeIndices.add(idx);
-      });
-    }
-    const cardModeActiveForEdges = st.activeMode === 'cardgrid' || st.activeMode === 'category' || st.activeMode === 'fullcat';
-    const cardHiddenEdgeIndices = cardModeActiveForEdges
-      ? new Set(st.layout.hiddenEdgeIndices(structureProjection.edges))
-      : null;
-
-    // 折叠/展开中连线透明度渐变（值 = alpha 乘数，1=正常，0=全透明）
-    const collapseEdgeFade = new Map<number, number>();
-    const simNodesById2 = new Map<string, any>(nodes.map((n: any) => [n.id, n]));
-    const calcAP = (anim: any) => anim ? Math.min(1, Math.max(0, (performance.now() - anim.startTime) / ANIM_DURATION)) : -1;
-    graph.edges.forEach((e: any, idx: number) => {
-      const sId = typeof e.source === 'object' ? e.source.id : e.source;
-      const tId = typeof e.target === 'object' ? e.target.id : e.target;
-      const sSn = simNodesById2.get(sId);
-      const tSn = simNodesById2.get(tId);
-      const sCol = sSn?._collapseAnim ? (1 - calcAP(sSn._collapseAnim)) : sSn?._expandAnim ? calcAP(sSn._expandAnim) : 1;
-      const tCol = tSn?._collapseAnim ? (1 - calcAP(tSn._collapseAnim)) : tSn?._expandAnim ? calcAP(tSn._expandAnim) : 1;
-      const mult = Math.min(sCol, tCol);
-      if (mult < 1) collapseEdgeFade.set(idx, mult);
-    });
-
+    // 以实际绘制的连线索引计算折叠、分组隐藏与动画透明度。
+    const cardHiddenEdgeIndices = isCardMode ? new Set(st.layout.hiddenEdgeIndices(structureProjection.edges)) : null;
     const renderEdgesWithIndexes = structureProjection.edges.flatMap((edge: any, projectionIndex: number) =>
-      edge._structureMembership && !cardModeActiveForEdges ? [] : [{ edge, projectionIndex }],
+      edge._structureMembership && !isCardMode ? [] : [{ edge, projectionIndex }],
     );
     const renderEdges = renderEdgesWithIndexes.map(item => item.edge);
     const edgeGraph = { ...graph, edges: renderEdges };
+    const collapsedEdgeIndices = new Set<number>();
+    const collapseEdgeFade = new Map<number, number>();
+    const nodeAnimationById = new Map<string, any>(
+      nodes.filter((node: any) => animatingIds.has(node.id)).map((node: any) => [node.id, node]),
+    );
+    const edgeEndpointAlpha = (node: any) => {
+      const animation = node?._collapseAnim ?? node?._expandAnim;
+      if (!animation) return 1;
+      const progress = Math.min(1, Math.max(0, (now - animation.startTime) / ANIM_DURATION));
+      return node._collapseAnim ? 1 - progress : progress;
+    };
+    renderEdgesWithIndexes.forEach(({ edge, projectionIndex }, renderIndex) => {
+      const source = typeof edge.source === 'object' ? edge.source?.id : edge.source;
+      const target = typeof edge.target === 'object' ? edge.target?.id : edge.target;
+      const sourceNode = graphNodeById.get(source);
+      const targetNode = graphNodeById.get(target);
+      const sourceAnim = nodeAnimationById.get(source), targetAnim = nodeAnimationById.get(target);
+      const foldedBranch = !edge._structureMembership && source !== target && sourceNode?.collapsed
+        && (targetNode?.headingLevel || 6) >= (sourceNode.headingLevel || 6)
+        && !sourceAnim?._collapseAnim && !targetAnim?._collapseAnim;
+      if (cardHiddenEdgeIndices?.has(projectionIndex) || foldedBranch) {
+        collapsedEdgeIndices.add(renderIndex);
+        return;
+      }
+      const alpha = Math.min(edgeEndpointAlpha(sourceAnim), edgeEndpointAlpha(targetAnim));
+      if (alpha < 1) collapseEdgeFade.set(renderIndex, alpha);
+    });
     const hasProjectedEdges = renderEdges.some((edge: any) => edge._originalIndex !== undefined);
+    const boxEdges = paneBoxSelection.get(st.index === PANE_LEFT ? pane0 as unknown as PaneState : st)?.().edges;
+    const boxSelectedEdgeIndices = boxEdges && new Set(renderEdges.flatMap((edge, index) => {
+      const original = edge._originalIndex === undefined ? edge : graph.edges[edge._originalIndex];
+      return boxEdges.has(original) ? [index] : [];
+    }));
     const renderFocusEdgeIndices = focusActive
       ? new Set(renderEdgesWithIndexes.flatMap((item, renderIndex) => focusEdgeIndices.has(item.projectionIndex) ? [renderIndex] : []))
       : undefined;
@@ -3990,19 +3904,21 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       hiddenNodes,
       focusNeighborIds: focusActive ? focusNeighborIds : undefined,
       focusEdgeIndices: renderFocusEdgeIndices,
-      collapsedEdgeIndices: cardHiddenEdgeIndices && cardHiddenEdgeIndices.size > 0
-        ? cardHiddenEdgeIndices
-        : !hasProjectedEdges && collapsedEdgeIndices.size > 0 ? collapsedEdgeIndices : undefined,
-      collapseEdgeFade: !hasProjectedEdges && collapseEdgeFade.size > 0 ? collapseEdgeFade : undefined,
+      collapsedEdgeIndices: collapsedEdgeIndices.size > 0 ? collapsedEdgeIndices : undefined,
+      collapseEdgeFade: collapseEdgeFade.size > 0 ? collapseEdgeFade : undefined,
       selectedEdgeIndex: hasProjectedEdges ? null : st.selEdge,
-      boxSelectedEdgeIndices: hasProjectedEdges ? undefined : sharedState.boxSelectedEdgeIndices ?? undefined,
-      nodeColorMap: (edgeColorGradient || edgeWidthByLevel) ? nodeColorMap : undefined,
-      edgeColorGradient,
-      edgeWidthByLevel,
+      boxSelectedEdgeIndices: boxSelectedEdgeIndices ?? undefined,
+      nodeColorMap: (st.edgeColorGradient || st.edgeWidthByLevel) ? nodeColorMap : undefined,
+      edgeColorGradient: st.edgeColorGradient,
+      edgeWidthByLevel: st.edgeWidthByLevel,
       semanticMode: st.activeMode === 'auto',
+      darkTheme: isDarkTheme,
+      semanticColors: theme.edgeColors,
+      labelColor: theme.labelColor,
+      fontFamily: st.fontFamily,
       treeMode: st.activeMode === 'tree',
       semanticZoom: pixi.viewport.scale.x,
-      semanticFocusNodeId: st.localContext?.currentId || st.selNode || sharedState.focusHoverNodeId || null,
+      semanticFocusNodeId: st.localContext?.currentId || st.selNode || null,
       semanticLabelBudget: semanticLens?.edgeLabelBudget,
     });
     // 连线模式 / 右键拖拽连线：从源节点到光标的实时贝塞尔预览线
@@ -4027,9 +3943,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const cpY = midY - (previewX - srcNode.x) * 0.15;
         lg.moveTo(srcNode.x, srcNode.y)
           .quadraticCurveTo(cpX, cpY, previewX, previewY)
-          .stroke({ color: 0x5B8FF9, width: 2, alpha: 0.5 });
+          .stroke({ color: st.themeAccentColor, width: 2, alpha: 0.5 });
         // 端点头
-        lg.circle(previewX, previewY, 3).fill({ color: 0x5B8FF9, alpha: 0.6 });
+        lg.circle(previewX, previewY, 3).fill({ color: st.themeAccentColor, alpha: 0.6 });
         // 虚线引导
         const dashLen = 4, gapLen = 4;
         const dx = previewX - srcNode.x, dy = previewY - srcNode.y;
@@ -4122,6 +4038,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const ch = pixi.app.canvas.clientHeight;
     updateGrid(pixi.gridLayer, cw, ch, {
       gridVis: st.gridVis, gridMode: st.gridMode, axisVis: st.axisVis, axisTicks: st.axisTicks, gridSp: st.gridSp, gridWidth: st.gridWidth,
+      color: parseInt((theme.gridColor ?? '#888888').slice(1), 16),
       nodes,
       transform: getViewportTransform(),
       dragX: st.draggingNode?.x ?? null,
@@ -4137,36 +4054,19 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     parts.push(focusedPaneIndex === PANE_LEFT ? '[左]' : '[右]');
     statsEl.textContent = parts.join(' | ');
 
-    // 选中节点 tooltip（仅当启用且未在悬停其他节点时）
-    if (st.selectedTooltip && st.selNode && !sharedState.hoverNodeId) {
-      const sn = nodes.find((n: any) => n.id === st.selNode); // sim nodes：当前位置
-      const gn = graph.nodes.find((n: any) => n.id === st.selNode); // graph node：元数据
-      if (gn?.note?.trim() && sn) {
-        const sp2 = pixi.viewport.toScreen(sn.x, sn.y);
-        const cRect = pixi.app.canvas.getBoundingClientRect();
-        const aRect = appShell.getBoundingClientRect();
-        const nr = gn.radius || ([22,19,16,13,10,7][(gn.headingLevel || 6) - 1] || 9);
-        selTooltip.textContent = gn.note.trim();
-        selTooltip.style.display = 'block';
-        selTooltip.style.left = (cRect.left - aRect.left + sp2.x + nr + 8) + 'px';
-        selTooltip.style.top = (cRect.top - aRect.top + sp2.y - nr) + 'px';
-      } else {
-        selTooltip.style.display = 'none';
-      }
-    } else if (!sharedState.hoverNodeId) {
-      selTooltip.style.display = 'none';
+    // 选中节点的内容预览让位于悬停预览。
+    if (st.index === focusedPaneIndex) {
+      if (st.selectedTooltip && st.selNode && !sharedState.hoverNodeId && !inlineNodeTitle.isActive()) {
+        const sn = nodes.find((n: any) => n.id === st.selNode);
+        const gn = graph.nodes.find((n: any) => n.id === st.selNode);
+        if (gn?.note?.trim() && sn) {
+          const point = pixi.viewport.toScreen(sn.x, sn.y);
+          const canvas = pixi.app.canvas.getBoundingClientRect();
+          const radius = sn._semanticCard?.form === 'card' ? sn._semanticCard.width / 2 : getNodeVisualRadius(sn);
+          selectedNotePreview.show(gn.label ?? '', gn.note, canvas.left + point.x, canvas.top + point.y, radius * pixi.viewport.scale.x, canvas);
+        } else selectedNotePreview.hide();
+      } else selectedNotePreview.hide();
     }
-    // 折叠/展开动画自保持：保持 sim 微动以驱动持续渲染
-    let hasActiveAnim = false;
-    for (const n of nodes) {
-      if ((n as any)._collapseAnim || (n as any)._expandAnim) { hasActiveAnim = true; break; }
-    }
-    if (hasActiveAnim) {
-      const s = getSim();
-      // 最低 alpha 维持 tick，不产生有感的力学偏移
-      if (s && s.alpha() < 0.01) s.alpha(0.01).restart();
-    }
-
     // 节点固定动画自保持：即使模拟停止也继续渲染直到过渡完成
     let hasFixedAnim = false;
     for (const [, sprite] of nodeSprites) {
@@ -4174,7 +4074,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     if (hasFixedAnim && ((renderPane as any)._lastAnimFrame !== frameCount)) {
       (renderPane as any)._lastAnimFrame = frameCount;
-      requestAnimationFrame(() => renderPane(px, graph, simManager, sp, st));
+      requestAnimationFrame(() => sharedState.directDraw?.());
     }
     } catch (e) { console.error('pixiDraw error:', e); }
   
@@ -4197,6 +4097,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (pane0St.textViewActive) return;
     // 刷新动态属性（引用型直接赋，不改对象结构）
     const s = pane0St;
+    s.canvasContainer = pixiContainer;
     s.graph = graph; s.selNode = selNode; s.selEdge = selEdge; s.selGroup = selGroup;
     s.linkDist = linkDist; s.labelSize = labelSize; s.charge = charge; s.linkStr = linkStr;
     s.collideR = collideR; s.centerS = centerS; s.groupBound = groupBound;
@@ -4213,6 +4114,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     s.layoutMode = layoutMode; s.gridSnapEnabled = gridSnapEnabled;
     s.partialGridSnap = partialGridSnap; s.nodeColorStyle = nodeColorStyle;
     s.fixedHollow = fixedHollow; s.fontFamily = fontFamily;
+    s.edgeColorGradient = edgeColorGradient; s.edgeWidthByLevel = edgeWidthByLevel;
     s.cardBorderStyle = cardBorderStyle;
     s.draggingNode = draggingNode; s.wasDragged = wasDragged;
     s.search = search; s.sField = sField; s.sDisplayMode = sDisplayMode; s.sMatchMode = sMatchMode;
@@ -4297,7 +4199,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const vp = pixi.viewport;
         const t = vp ? { k: vp.scale.x, x: vp.x, y: vp.y } : { k: 1, x: 0, y: 0 };
         updateSemanticBodiesForViewport(nodeSprites.values(), t.k);
-        updateGrid(pixi.gridLayer, cw, ch, { gridVis: $.gridVis, gridMode: $.gridMode, axisVis: $.axisVis, axisTicks: $.axisTicks, gridSp: $.gridSp, gridWidth: $.gridWidth, nodes, transform: t, dragX: $.draggingNode?.x ?? null, dragY: $.draggingNode?.y ?? null });
+        updateGrid(pixi.gridLayer, cw, ch, { gridVis: $.gridVis, gridMode: $.gridMode, axisVis: $.axisVis, axisTicks: $.axisTicks, gridSp: $.gridSp, gridWidth: $.gridWidth, color: parseInt((getTheme($.graphTheme).gridColor ?? '#888888').slice(1), 16), nodes, transform: t, dragX: $.draggingNode?.x ?? null, dragY: $.draggingNode?.y ?? null });
       }
       for (let i = 0; i < extraPanes.length; i++) {
         const px = extraPixis[i]; const pi = extraPanes[i];
@@ -4307,7 +4209,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const vp = px.viewport;
         const t = vp ? { k: vp.scale.x, x: vp.x, y: vp.y } : { k: 1, x: 0, y: 0 };
         updateSemanticBodiesForViewport(extraSprites[i]?.values() || [], t.k);
-        updateGrid(px.gridLayer, cw, ch, { gridVis: pi.gridVis, gridMode: pi.gridMode, axisVis: pi.axisVis, axisTicks: pi.axisTicks, gridSp: pi.gridSp, gridWidth: pi.gridWidth, nodes, transform: t, dragX: pi.draggingNode?.x ?? null, dragY: pi.draggingNode?.y ?? null });
+        updateGrid(px.gridLayer, cw, ch, { gridVis: pi.gridVis, gridMode: pi.gridMode, axisVis: pi.axisVis, axisTicks: pi.axisTicks, gridSp: pi.gridSp, gridWidth: pi.gridWidth, color: parseInt((getTheme(pi.graphTheme).gridColor ?? '#888888').slice(1), 16), nodes, transform: t, dragX: pi.draggingNode?.x ?? null, dragY: pi.draggingNode?.y ?? null });
       }
       renderPixiFrames();
     });
@@ -4344,6 +4246,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   let _syncGraphToOtherPanes_impl: ((render?: boolean) => void) | undefined;
   let deleteNodesForPane: (pane: PaneState, ids: string[]) => boolean = () => false;
   let deleteEdgesForPane: (pane: PaneState, projectedIndexes: number[]) => boolean = () => false;
+  let deleteGroupForPane: (pane: PaneState, id: string) => boolean = () => false;
   const focusedPaneState = () => resolveFocusedPaneState();
   const originalEdgeIndexForPane = (pane: PaneState, projectedIndex: number | null): number | null =>
     getPaneOriginalEdgeIndex(pane.structureView, projectedIndex);
@@ -4365,32 +4268,21 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     clearLinkMode: () => finishLinkMode(),
     saveUndo,
     getBoxSelectMode: () => boxSelectMode, setBoxSelectMode: v => { boxSelectMode = v; syncFocusedCommands(); },
-    getSaveData: () => saveNow,
     getInitSim: () => {
       const pane = focusedPaneState();
       const manager = pane.structureView ? (pane.index === PANE_LEFT ? simManager : pane.simManager) : scopedPaneSimulationManager(pane);
       return manager.initSim.bind(manager);
     },
-    getUpdateInfo: () => updateInfoRef.current,
-    getUpdateSelects: () => updateSelectsRef.current,
+    deleteNode: (id: string) => deleteNodesForPane(focusedPaneState(), [id]),
+    deleteEdge: (originalIndex: number) => {
+      const pane = focusedPaneState();
+      const projectedIndex = projectedEdgeIndexForPane(pane, originalIndex);
+      return projectedIndex !== null && deleteEdgesForPane(pane, [projectedIndex]);
+    },
+    deleteGroup: (id: string) => deleteGroupForPane(focusedPaneState(), id),
     draw,
     triggerSave: () => scheduleSave(),
     getSimulation: () => focusedPaneState().structureView ? null : scopedPaneSimulationManager(focusedPaneState())?.getSim() ?? null,
-    reinitializeGraph: () => reinitializeRuntimeViews(focusedExtraPane()?.runtime ?? primaryRuntime),
-    markNodesDying: (ids: string[]) => {
-      const focusedPane = focusedPaneState();
-      const sim = scopedPaneSimulationManager(focusedPane)?.getSim();
-      for (const id of ids) {
-        const simNode = sim?.nodes().find((node: any) => node.id === id);
-        if (simNode) simNode._dying = true;
-      }
-      setTimeout(() => {
-        if (!sim) return;
-        sim.nodes(sim.nodes().filter((node: any) => !node._dying));
-        sim.alpha(0.05).restart();
-        draw();
-      }, 250);
-    },
     updateLinkForce: () => {
       const focusedPane = focusedPaneState();
       const simulation = scopedPaneSimulationManager(focusedPane)?.getSim();
@@ -4408,27 +4300,19 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     },
     syncGraphToOtherPanes: () => _syncGraphToOtherPanes_impl?.(),
     scheduleNameRender: () => scheduleNameRender(),
-    onToast: (msg: string, type?: 'info' | 'error' | 'success' | 'warning') => showToast(msg, type),
     canMutate: () => paneRuntimeGraph(focusedPaneState()).settings?.sourceMode !== 'vault-readonly',
+    reportImportError: message => showToast(message, 'info', 3500),
+    openNodeAttachment: node => openVaultNodeContent(focusedPaneState(), node, true),
+    revealSelection: occluder => revealEditedSelection(occluder),
   }, () => editPanelOpacity);
   const { fillNode, fillEdge, fillGroup, clearEd, updateOpacity, saveCurrent } = editCtx;
-  // Keep the legacy inspector implementation untouched while routing its node/edge
-  // delete buttons through the same runtime-level guards as every other UI path.
-  editCtx.editPanel.addEventListener('click', event => {
-    const button = (event.target as HTMLElement).closest('button');
-    if (!button || button.textContent?.trim() !== '删除') return;
-    const section = button.parentElement?.firstElementChild?.textContent?.trim();
-    const pane = focusedPaneState();
-    if (section === '节点' && pane.selNode) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      deleteNodesForPane(pane, [pane.selNode]);
-    } else if (section === '边' && pane.selEdge !== null) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      deleteEdgesForPane(pane, [pane.selEdge]);
+
+  const setFocusedEdgeAppearance = (key: 'edgeColorGradient' | 'edgeWidthByLevel', value: boolean) => {
+    const runtime = paneRuntime(focusedPaneState());
+    for (const owner of allPaneOwners()) {
+      if (paneRuntime(owner) === runtime) owner[key] = value;
     }
-  }, { capture: true });
+  };
 
   // --- 设置面板 ---
   const settingsUI = buildSettings(setDiv, {
@@ -4442,7 +4326,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getHeatingTime: () => $.heatingTime, setHeatingTime: v => { $.heatingTime = v; },
     getAlphaTarget: () => $.alphaTarget, setAlphaTarget: v => { $.alphaTarget = v; },
     getEditPanelOpacity: () => $.editPanelOpacity, setEditPanelOpacity: v => { $.editPanelOpacity = v; updateOpacity(v); },
-    getUseRAFL: () => $.useRAFL, setUseRAFL: v => { $.useRAFL = v; },
     getNodeExpand: () => $.nodeExpand, setNodeExpand: v => { $.nodeExpand = v; },
     getLineExpand: () => $.lineExpand, setLineExpand: v => { $.lineExpand = v; },
     getShowGLabels: () => $.showGLabels, setShowGLabels: v => { $.showGLabels = v; },
@@ -4453,14 +4336,15 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getAxisVis: () => $.axisVis, setAxisVis: v => { $.axisVis = v; },
     getAxisTicks: () => $.axisTicks, setAxisTicks: v => { $.axisTicks = v; },
     getGridSp: () => $.gridSp, setGridSp: v => { $.gridSp = v; },
-    getAr: () => $.ar, setAr: v => { $.ar = v; if ($.pixi) { $.pixi.app.renderer.resize($.pixi.app.canvas.clientWidth, Math.max(300, $.pixi.app.canvas.clientWidth * $.ar)); $.simManager.updateCenter(); } draw(); },
-    getSimulation: () => $.simManager?.getSim() ?? null,
-    getGw: () => $.gw, getGh: () => $.gh,
     draw, getInitSim: () => $.simManager?.initSim?.bind($.simManager),
     getSaveData: () => saveNow,
-    get graph() { return $.graph; },
     getGraphTheme: () => $.graphTheme,
-    setGraphTheme: v => { $.graphTheme = v; applyPaneCanvasBg(focusedPaneState().canvasContainer, v); applyUIToFocusedPane(v); saveNow(); _syncGraphToOtherPanes_impl?.(); draw(); },
+    setGraphTheme: v => {
+      $.graphTheme = v;
+      applyPaneCanvasBg(focusedPaneState().canvasContainer, v);
+      applyUIToFocusedPane(v);
+      _syncGraphToOtherPanes_impl?.(false);
+    },
     getDefaultValues: () => {
       const preset = presetDefaults as Record<string, number | boolean | string>;
       return {
@@ -4474,10 +4358,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         defaultHeatingTime: (preset.heatingTime as number) ?? DEFAULT_SETTINGS.heatingTime,
         defaultAlphaTarget: (preset.alphaTarget as number) ?? DEFAULT_SETTINGS.alphaTarget,
         defaultEditPanelOpacity: (preset.editPanelOpacity as number) ?? DEFAULT_SETTINGS.editPanelOpacity,
-        defaultUseRAFL: (preset.useRAFL as boolean) ?? DEFAULT_SETTINGS.useRAFL,
         defaultFocusMode: (preset.focusMode as boolean) ?? DEFAULT_SETTINGS.focusMode,
+        defaultCenterMode: (preset.centerMode as boolean) ?? DEFAULT_SETTINGS.centerMode ?? false,
         defaultSelectedTooltip: (preset.selectedTooltip as boolean) ?? false,
         defaultGlowAppearance: (preset.glowAppearance as boolean) ?? DEFAULT_SETTINGS.glowAppearance,
+        defaultEdgeColorGradient: (preset.edgeColorGradient as boolean) ?? DEFAULT_SETTINGS.edgeColorGradient ?? false,
+        defaultEdgeWidthByLevel: (preset.edgeWidthByLevel as boolean) ?? DEFAULT_SETTINGS.edgeWidthByLevel ?? false,
         defaultGridWidth: (preset.gridWidth as number) ?? DEFAULT_SETTINGS.gridWidth,
         defaultNodeExpand: (preset.nodeExpand as number) ?? DEFAULT_SETTINGS.nodeExpand,
         defaultLineExpand: (preset.lineExpand as number) ?? DEFAULT_SETTINGS.lineExpand,
@@ -4489,21 +4375,26 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         defaultAxisVis: (preset.axisVis as boolean) ?? DEFAULT_SETTINGS.axisVis,
         defaultAxisTicks: (preset.axisTicks as boolean) ?? DEFAULT_SETTINGS.axisTicks,
         defaultGridSpacing: (preset.gridSp as number) ?? DEFAULT_SETTINGS.gridSp,
-        defaultAr: (preset.ar as number) ?? DEFAULT_SETTINGS.ar,
         defaultGraphTheme: (preset.graphTheme as string) ?? DEFAULT_SETTINGS.graphTheme,
         defaultCardBorderStyle: (preset.cardBorderStyle as string) ?? DEFAULT_SETTINGS.cardBorderStyle,
+        defaultNodeColorStyle: (preset.nodeColorStyle as string) ?? DEFAULT_SETTINGS.nodeColorStyle,
+        defaultFontFamily: (preset.fontFamily as string) ?? DEFAULT_SETTINGS.fontFamily,
       };
     },
     getFocusMode: () => $.focusMode, setFocusMode: v => { $.focusMode = v; },
     getCenterMode: () => $.centerMode, setCenterMode: v => { $.centerMode = v; },
     getSelectedTooltip: () => $.selectedTooltip, setSelectedTooltip: v => { $.selectedTooltip = v; },
-    getGlowAppearance: () => $.glowAppearance, setGlowAppearance: v => { $.glowAppearance = v; draw(); },
-    getEdgeColorGradient: () => edgeColorGradient, setEdgeColorGradient: v => { edgeColorGradient = v; draw(); },
-    getEdgeWidthByLevel: () => edgeWidthByLevel, setEdgeWidthByLevel: v => { edgeWidthByLevel = v; draw(); },
+    getGlowAppearance: () => $.glowAppearance, setGlowAppearance: v => { $.glowAppearance = v; },
+    getEdgeColorGradient: () => $.edgeColorGradient, setEdgeColorGradient: v => setFocusedEdgeAppearance('edgeColorGradient', v),
+    getEdgeWidthByLevel: () => $.edgeWidthByLevel, setEdgeWidthByLevel: v => setFocusedEdgeAppearance('edgeWidthByLevel', v),
     getGridWidth: () => $.gridWidth, setGridWidth: v => { $.gridWidth = v; },
-    getNodeColorStyle: () => $.nodeColorStyle, setNodeColorStyle: v => { $.nodeColorStyle = v; scheduleSave(); draw(); },
-    getFontFamily: () => $.fontFamily, setFontFamily: v => { $.fontFamily = v; document.documentElement.style.setProperty('--fg-font-family', v); setNodeFontFamily(v); scheduleSave(); draw(); },
-    getCardBorderStyle: () => cardBorderStyle, setCardBorderStyle: v => { cardBorderStyle = v as 'straight' | 'rounded'; draw(); scheduleSave(); },
+    getNodeColorStyle: () => $.nodeColorStyle, setNodeColorStyle: v => { $.nodeColorStyle = v; },
+    getFontFamily: () => $.fontFamily, setFontFamily: v => {
+      $.fontFamily = v;
+      document.documentElement.style.setProperty('--fg-font-family', v);
+      setNodeFontFamily(v);
+    },
+    getCardBorderStyle: () => $.cardBorderStyle, setCardBorderStyle: v => { $.cardBorderStyle = v as 'straight' | 'rounded'; },
     scope: 'current',
   });
   // 图区自定义保留在底部（滑块/复选框直接修改当前图）
@@ -4515,8 +4406,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const saveSettingPresets = () => localStorage.setItem(SETTING_PRESETS_KEY, JSON.stringify(settingPresets));
 
   const getFocusedSettingValues = (): Partial<GraphSettings> => {
-    const isExtra = focusedPaneIndex === PANE_RIGHT;
-    const src = isExtra ? pane1 : { linkDist, labelSize, charge, linkStr, collideR, centerS, groupBound, heatingTime, alphaTarget, editPanelOpacity, useRAFL, nodeExpand, lineExpand, showGLabels, glMin, glMax, gridVis, gridMode, axisVis, axisTicks, gridSp, gridWidth, ar, graphTheme, focusMode, centerMode, selectedTooltip, glowAppearance, activeMode, gridSnapEnabled, partialGridSnap, nodeColorStyle, fontFamily };
+    const src = focusedPaneState();
     return {
       linkDist: src.linkDist, labelSize: src.labelSize, charge: src.charge, linkStr: src.linkStr,
       collideR: src.collideR, centerS: src.centerS, groupBound: src.groupBound,
@@ -4526,7 +4416,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       gridVis: src.gridVis, gridMode: src.gridMode, axisVis: src.axisVis,
       axisTicks: src.axisTicks, gridSp: src.gridSp, gridWidth: src.gridWidth,
       ar: src.ar, graphTheme: src.graphTheme, focusMode: src.focusMode,
-      centerMode: src.centerMode, selectedTooltip: src.selectedTooltip, glowAppearance: src.glowAppearance, edgeColorGradient, edgeWidthByLevel,
+      centerMode: src.centerMode, selectedTooltip: src.selectedTooltip, glowAppearance: src.glowAppearance,
+      edgeColorGradient: src.edgeColorGradient, edgeWidthByLevel: src.edgeWidthByLevel,
       layoutMode: src.activeMode, gridSnap: src.gridSnapEnabled, partialGridSnap: src.partialGridSnap,
       nodeColorStyle: src.nodeColorStyle, fontFamily: src.fontFamily,
       cardBorderStyle: (src as any).cardBorderStyle,
@@ -4534,101 +4425,42 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   };
 
   const applySettingValues = (vals: Partial<GraphSettings>) => {
-    const isExtra = focusedPaneIndex === PANE_RIGHT;
+    const pane = focusedPaneState();
+    const directKeys = new Set([
+      'linkDist', 'labelSize', 'charge', 'linkStr', 'collideR', 'centerS',
+      'groupBound', 'heatingTime', 'alphaTarget', 'editPanelOpacity', 'useRAFL',
+      'nodeExpand', 'lineExpand', 'showGLabels', 'glMin', 'glMax', 'gridVis',
+      'gridMode', 'axisVis', 'axisTicks', 'gridSp', 'gridWidth', 'ar', 'focusMode',
+      'centerMode', 'selectedTooltip', 'glowAppearance', 'nodeColorStyle',
+      'partialGridSnap', 'categoryLayout', 'cardBorderStyle',
+    ]);
     for (const [k, v] of Object.entries(vals)) {
-      if (k === 'linkDist') { if (isExtra) pane1.linkDist = v as number; else linkDist = v as number; }
-      else if (k === 'labelSize') { if (isExtra) pane1.labelSize = v as number; else labelSize = v as number; }
-      else if (k === 'charge') { if (isExtra) pane1.charge = v as number; else charge = v as number; }
-      else if (k === 'linkStr') { if (isExtra) pane1.linkStr = v as number; else linkStr = v as number; }
-      else if (k === 'collideR') { if (isExtra) pane1.collideR = v as number; else collideR = v as number; }
-      else if (k === 'centerS') { if (isExtra) pane1.centerS = v as number; else centerS = v as number; }
-      else if (k === 'groupBound') { if (isExtra) pane1.groupBound = v as number; else groupBound = v as number; }
-      else if (k === 'heatingTime') { if (isExtra) pane1.heatingTime = v as number; else heatingTime = v as number; }
-      else if (k === 'alphaTarget') { if (isExtra) pane1.alphaTarget = v as number; else alphaTarget = v as number; }
-      else if (k === 'editPanelOpacity') { const vn = v as number; if (isExtra) pane1.editPanelOpacity = vn; else editPanelOpacity = vn; updateOpacity(vn); }
-      else if (k === 'useRAFL') { if (isExtra) pane1.useRAFL = v as boolean; else useRAFL = v as boolean; }
-      else if (k === 'nodeExpand') { if (isExtra) pane1.nodeExpand = v as number; else nodeExpand = v as number; }
-      else if (k === 'lineExpand') { if (isExtra) pane1.lineExpand = v as number; else lineExpand = v as number; }
-      else if (k === 'showGLabels') { if (isExtra) pane1.showGLabels = v as boolean; else showGLabels = v as boolean; }
-      else if (k === 'glMin') { if (isExtra) pane1.glMin = v as number; else glMin = v as number; }
-      else if (k === 'glMax') { if (isExtra) pane1.glMax = v as number; else glMax = v as number; }
-      else if (k === 'gridVis') { if (isExtra) pane1.gridVis = v as boolean; else gridVis = v as boolean; }
-      else if (k === 'gridMode') { if (isExtra) pane1.gridMode = v as 'line' | 'dot'; else gridMode = v as 'line' | 'dot'; }
-      else if (k === 'axisVis') { if (isExtra) pane1.axisVis = v as boolean; else axisVis = v as boolean; }
-      else if (k === 'axisTicks') { if (isExtra) pane1.axisTicks = v as boolean; else axisTicks = v as boolean; }
-      else if (k === 'gridSp') { if (isExtra) pane1.gridSp = v as number; else gridSp = v as number; }
-      else if (k === 'gridWidth') { if (isExtra) pane1.gridWidth = v as number; else gridWidth = v as number; }
-      else if (k === 'ar') { const vn = v as number; if (isExtra) pane1.ar = vn; else ar = vn; }
-      else if (k === 'graphTheme') { const vs = v as string; if (isExtra) { pane1.graphTheme = vs; applyPaneCanvasBg(pane1Container, vs); } else { graphTheme = vs; applyPaneCanvasBg(pixiContainer, vs); } applyUIToFocusedPane(vs); }
-      else if (k === 'focusMode') { if (isExtra) pane1.focusMode = v as boolean; else focusMode = v as boolean; }
-      else if (k === 'centerMode') { if (isExtra) pane1.centerMode = v as boolean; else centerMode = v as boolean; }
-      else if (k === 'selectedTooltip') { if (isExtra) pane1.selectedTooltip = v as boolean; else selectedTooltip = v as boolean; }
-      else if (k === 'glowAppearance') { if (isExtra) pane1.glowAppearance = v as boolean; else glowAppearance = v as boolean; }
-      else if (k === 'edgeColorGradient') edgeColorGradient = v as boolean;
-      else if (k === 'edgeWidthByLevel') edgeWidthByLevel = v as boolean;
-      else if (k === 'nodeColorStyle') { if (isExtra) pane1.nodeColorStyle = v as 'uniform' | 'hierarchical' | 'spectrum' | 'spectrum-narrow'; else nodeColorStyle = v as 'uniform' | 'hierarchical' | 'spectrum' | 'spectrum-narrow'; }
-      else if (k === 'partialGridSnap') { if (isExtra) pane1.partialGridSnap = v as boolean; else partialGridSnap = v as boolean; }
-      else if (k === 'gridSnap') { if (isExtra) pane1.gridSnapEnabled = v as boolean; else gridSnapEnabled = v as boolean; }
-      else if (k === 'fontFamily') { const vs = v as string; if (isExtra) pane1.fontFamily = vs; else fontFamily = vs; document.documentElement.style.setProperty('--fg-font-family', vs); setNodeFontFamily(vs); }
-      else if (k === 'categoryLayout') { if (isExtra) pane1.categoryLayout = v as boolean; else categoryLayout = v as boolean; }
-      else if (k === 'cardBorderStyle') { const vs = v as string; if (isExtra) pane1.cardBorderStyle = vs as 'straight' | 'rounded'; else cardBorderStyle = vs as 'straight' | 'rounded'; }
-      else if (k === 'layoutMode') { const vs = normalizeLayoutMode(v as string); if (isExtra) pane1.activeMode = vs; else activeMode = vs; loadLayouts(); renderModeBar(); }
+      if (directKeys.has(k)) {
+        (pane as any)[k] = v;
+        if (k === 'editPanelOpacity') updateOpacity(v as number);
+      }
+      else if (k === 'graphTheme') {
+        pane.graphTheme = v as string;
+        applyPaneCanvasBg(pane.canvasContainer, pane.graphTheme);
+        applyUIToFocusedPane(pane.graphTheme);
+      }
+      else if (k === 'edgeColorGradient' || k === 'edgeWidthByLevel') setFocusedEdgeAppearance(k, v as boolean);
+      else if (k === 'gridSnap') pane.gridSnapEnabled = v as boolean;
+      else if (k === 'fontFamily') {
+        pane.fontFamily = v as string;
+        document.documentElement.style.setProperty('--fg-font-family', pane.fontFamily);
+        setNodeFontFamily(pane.fontFamily);
+      }
+      else if (k === 'layoutMode') {
+        pane.activeMode = normalizeLayoutMode(v as string);
+        renderModeBar();
+      }
     }
   };
 
   // 预设编辑面板（独立于图区自定义，读写 presetDefaults）
   const presetSetDiv = document.createElement('div');
   presetSetDiv.style.cssText = 'padding:4px 0;';
-  // 节点默认色（预设）
-  const presetColorRow = document.createElement('div');
-  presetColorRow.className = 'fg-setting-row fg-setting-select-row fg-quick-setting-row';
-  presetColorRow.style.cssText = `display:flex;align-items:center;gap:8px;margin-top:6px;font-size:${V('--fg-font-sm','0.84em')};`;
-  const presetColorLabel = document.createElement('span');
-  presetColorLabel.className = 'fg-setting-label';
-  presetColorLabel.textContent = '默认配色';
-  presetColorLabel.style.cssText = `color:${V('--fg-text-muted','#999')}`;
-  presetColorRow.appendChild(presetColorLabel);
-  const presetColorSelect = document.createElement('select');
-  presetColorSelect.className = 'fg-setting-select';
-  presetColorSelect.style.cssText = `font-size:${V('--fg-font-sm','0.84em')};padding:1px 4px;border:1px solid ${V('--fg-input-border','#ccc')};border-radius:3px;background:${V('--fg-surface','#2a2a2a')};color:${V('--fg-text','#d0d0d0')};`;
-  ['uniform','hierarchical','spectrum','spectrum-narrow'].forEach(v => {
-    const opt = document.createElement('option');
-    opt.value = v;
-    opt.textContent = v === 'uniform' ? '统一' : v === 'hierarchical' ? '分级' : v === 'spectrum-narrow' ? '分级窄' : '多彩分级';
-    presetColorSelect.appendChild(opt);
-  });
-  presetColorSelect.value = (presetDefaults.nodeColorStyle as string) || (DEFAULT_SETTINGS.nodeColorStyle as string);
-  presetColorSelect.onchange = () => {
-    presetDefaults.nodeColorStyle = presetColorSelect.value;
-    localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults));
-  };
-  presetColorRow.appendChild(presetColorSelect);
-  presetSetDiv.appendChild(presetColorRow);
-
-  // 字体（预设）
-  const presetFontRow = document.createElement('div');
-  presetFontRow.className = 'fg-setting-row fg-setting-select-row fg-quick-setting-row';
-  presetFontRow.style.cssText = `display:flex;align-items:center;gap:8px;margin-top:4px;font-size:${V('--fg-font-sm','0.84em')};`;
-  const presetFontLabel = document.createElement('span');
-  presetFontLabel.className = 'fg-setting-label';
-  presetFontLabel.textContent = '默认字体';
-  presetFontLabel.style.cssText = `color:${V('--fg-text-muted','#999')}`;
-  presetFontRow.appendChild(presetFontLabel);
-  const presetFontSelect = document.createElement('select');
-  presetFontSelect.className = 'fg-setting-select';
-  presetFontSelect.style.cssText = `font-size:${V('--fg-font-sm','0.84em')};padding:1px 4px;border:1px solid ${V('--fg-input-border','#ccc')};border-radius:3px;background:${V('--fg-surface','#2a2a2a')};color:${V('--fg-text','#d0d0d0')};`;
-  [['system-ui, -apple-system, sans-serif', '系统默认'], ['"SiYuan Songti", serif', '思源宋体']].forEach(([val, label]) => {
-    const opt = document.createElement('option');
-    opt.value = val; opt.textContent = label;
-    presetFontSelect.appendChild(opt);
-  });
-  presetFontSelect.value = (presetDefaults.fontFamily as string) || DEFAULT_SETTINGS.fontFamily || '"SiYuan Songti", serif';
-  presetFontSelect.onchange = () => {
-    presetDefaults.fontFamily = presetFontSelect.value;
-    localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults));
-  };
-  presetFontRow.appendChild(presetFontSelect);
-  presetSetDiv.appendChild(presetFontRow);
   const presetSettingsUI = buildSettings(presetSetDiv, {
     getLinkDist: () => (presetDefaults.linkDist as number) ?? DEFAULT_SETTINGS.linkDist,
     setLinkDist: v => { presetDefaults.linkDist = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
@@ -4650,8 +4482,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     setAlphaTarget: v => { presetDefaults.alphaTarget = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
     getEditPanelOpacity: () => (presetDefaults.editPanelOpacity as number) ?? DEFAULT_SETTINGS.editPanelOpacity,
     setEditPanelOpacity: v => { presetDefaults.editPanelOpacity = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
-    getUseRAFL: () => (presetDefaults.useRAFL as boolean) ?? DEFAULT_SETTINGS.useRAFL,
-    setUseRAFL: v => { presetDefaults.useRAFL = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
     getNodeExpand: () => (presetDefaults.nodeExpand as number) ?? DEFAULT_SETTINGS.nodeExpand,
     setNodeExpand: v => { presetDefaults.nodeExpand = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
     getLineExpand: () => (presetDefaults.lineExpand as number) ?? DEFAULT_SETTINGS.lineExpand,
@@ -4672,11 +4502,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     setAxisTicks: v => { presetDefaults.axisTicks = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
     getGridSp: () => (presetDefaults.gridSp as number) ?? DEFAULT_SETTINGS.gridSp,
     setGridSp: v => { presetDefaults.gridSp = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
-    getAr: () => (presetDefaults.ar as number) ?? DEFAULT_SETTINGS.ar,
-    setAr: v => { presetDefaults.ar = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
-    getSimulation: getSim, getGw: () => gw, getGh: () => gh,
     draw: () => {}, getInitSim: () => () => {}, getSaveData: () => async () => {},
-    graph, setGraphTheme: v => { presetDefaults.graphTheme = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    setGraphTheme: v => { presetDefaults.graphTheme = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
     getGraphTheme: () => (presetDefaults.graphTheme as string) ?? DEFAULT_SETTINGS.graphTheme,
     getDefaultValues: () => ({
       defaultLinkDistance: DEFAULT_SETTINGS.linkDist,
@@ -4689,10 +4516,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       defaultHeatingTime: DEFAULT_SETTINGS.heatingTime,
       defaultAlphaTarget: DEFAULT_SETTINGS.alphaTarget,
       defaultEditPanelOpacity: DEFAULT_SETTINGS.editPanelOpacity,
-      defaultUseRAFL: DEFAULT_SETTINGS.useRAFL,
       defaultFocusMode: DEFAULT_SETTINGS.focusMode,
+      defaultCenterMode: DEFAULT_SETTINGS.centerMode ?? false,
       defaultSelectedTooltip: (DEFAULT_SETTINGS as any).selectedTooltip ?? false,
       defaultGlowAppearance: DEFAULT_SETTINGS.glowAppearance,
+      defaultEdgeColorGradient: DEFAULT_SETTINGS.edgeColorGradient ?? false,
+      defaultEdgeWidthByLevel: DEFAULT_SETTINGS.edgeWidthByLevel ?? false,
       defaultGridWidth: DEFAULT_SETTINGS.gridWidth,
       defaultNodeExpand: DEFAULT_SETTINGS.nodeExpand,
       defaultLineExpand: DEFAULT_SETTINGS.lineExpand,
@@ -4704,8 +4533,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       defaultAxisVis: DEFAULT_SETTINGS.axisVis,
       defaultAxisTicks: DEFAULT_SETTINGS.axisTicks,
       defaultGridSpacing: DEFAULT_SETTINGS.gridSp,
-      defaultAr: DEFAULT_SETTINGS.ar,
       defaultGraphTheme: DEFAULT_SETTINGS.graphTheme,
+      defaultCardBorderStyle: DEFAULT_SETTINGS.cardBorderStyle ?? 'straight',
+      defaultNodeColorStyle: DEFAULT_SETTINGS.nodeColorStyle ?? 'hierarchical',
+      defaultFontFamily: DEFAULT_SETTINGS.fontFamily ?? DEFAULT_CANVAS_FONT,
     }),
     getFocusMode: () => (presetDefaults.focusMode as boolean) ?? DEFAULT_SETTINGS.focusMode,
     setFocusMode: v => { presetDefaults.focusMode = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
@@ -4719,20 +4550,83 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getEdgeWidthByLevel: () => (presetDefaults.edgeWidthByLevel as boolean) ?? false, setEdgeWidthByLevel: v => { presetDefaults.edgeWidthByLevel = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
     getGridWidth: () => (presetDefaults.gridWidth as number) ?? DEFAULT_SETTINGS.gridWidth,
     setGridWidth: v => { presetDefaults.gridWidth = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getNodeColorStyle: () => (presetDefaults.nodeColorStyle as string) ?? DEFAULT_SETTINGS.nodeColorStyle,
+    setNodeColorStyle: v => { presetDefaults.nodeColorStyle = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getFontFamily: () => (presetDefaults.fontFamily as string) ?? DEFAULT_SETTINGS.fontFamily,
+    setFontFamily: v => { presetDefaults.fontFamily = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getCardBorderStyle: () => (presetDefaults.cardBorderStyle as string) ?? DEFAULT_SETTINGS.cardBorderStyle,
+    setCardBorderStyle: v => { presetDefaults.cardBorderStyle = v === 'rounded' ? 'rounded' : 'straight'; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
     scope: 'defaults',
   });
 
-  const mountPresetQuickSettings = () => {
-    const advanced = presetSetDiv.querySelector('.fg-settings-advanced');
-    if (advanced) {
-      presetSetDiv.insertBefore(presetColorRow, advanced);
-      presetSetDiv.insertBefore(presetFontRow, advanced);
-      return;
+  const saveBeforeWorkspaceSwitch = async () => {
+    if (markdownSourceEditor?.hasDraft() || hasActiveTextDraft()) {
+      showToast('请先保存正在编辑的内容，再打开其他资料库', 'warning', 4500);
+      return false;
     }
-    presetSetDiv.appendChild(presetColorRow);
-    presetSetDiv.appendChild(presetFontRow);
+    const saved = await flushAllGraphs();
+    if (!saved) showToast('仍有图未保存，已保留当前资料库', 'warning', 5000);
+    return saved;
   };
-  mountPresetQuickSettings();
+
+  const reloadMountedWorkspace = () => {
+    // Keep this renderer's recovery scope on the old mount through beforeunload.
+    mountWritesPaused = true;
+    window.location.reload();
+  };
+
+  const openWorkspaceFolder = async () => {
+    if (workspacePickerActive || mountWritesPaused) return;
+    workspacePickerActive = true;
+    try {
+      if (safIsAvailable()) {
+        // Android commits the selected URI before JS receives the result.
+        if (!await saveBeforeWorkspaceSwitch()) return;
+        mountWritesPaused = true;
+        let selected = false;
+        try {
+          const dir = await safPickDirectory();
+          if (!dir) return;
+          selected = true;
+          reloadMountedWorkspace();
+        } finally {
+          if (!selected) mountWritesPaused = false;
+        }
+        return;
+      }
+      const ea = (window as any).electronAPI;
+      if (ea?.openFolder) {
+        const folderPath = await ea.openFolder();
+        if (!folderPath || folderPath === fileSystemMountPath || !await saveBeforeWorkspaceSwitch()) return;
+        const written = await ea.configWrite({ folderPath, graphFolderRelative: null });
+        if (!written?.ok) throw new Error(written?.error || '无法保存新资料库的位置');
+        reloadMountedWorkspace();
+        return;
+      }
+      if (typeof (window as any).showDirectoryPicker === 'function') {
+        let handle: FileSystemDirectoryHandle;
+        try {
+          // Select during user activation without changing the active FSA handle.
+          handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') return;
+          throw error;
+        }
+        const id = await findSavedFolderId(handle) ?? crypto.randomUUID();
+        if (mountedStorageScope === `fsa:${id}` || !await saveBeforeWorkspaceSwitch()) return;
+        if (!await saveFolderHandle(handle, id)) throw new Error('浏览器无法保存资料库位置');
+        reloadMountedWorkspace();
+        return;
+      }
+      triggerFileImport();
+    } finally {
+      workspacePickerActive = false;
+    }
+  };
+
+  function reportWorkbenchActionError(error: unknown) {
+    showToast(error instanceof Error ? error.message : '操作失败，请重试', 'error', 5000);
+  }
 
   const settingsPanel = createSettingsPanel(document.body, presetSetDiv, {
     onSavePreset: async (name) => {
@@ -4755,11 +4649,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (p) { applySettingValues(p.values); }
       }
       settingsUI.updateInfo(); presetSettingsUI.updateInfo();
-      // rebuild() 清空了 presetSetDiv，重挂载当前默认值的快捷控件
-      mountPresetQuickSettings();
-      const isExtra = focusedPaneIndex === PANE_RIGHT;
-      const sm = isExtra ? simManager1 : simManager;
-      scheduleSave(); sm.initSim(); draw();
+      scheduleSave(); focusedPaneState().simManager.initSim(); draw();
     },
     onDeletePreset: (name) => {
       settingPresets = settingPresets.filter(p => p.name !== name);
@@ -4782,68 +4672,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         graphTheme: DEFAULT_SETTINGS.graphTheme, focusMode: DEFAULT_SETTINGS.focusMode,
         glowAppearance: DEFAULT_SETTINGS.glowAppearance,
         nodeColorStyle: DEFAULT_SETTINGS.nodeColorStyle,
-        fontFamily: DEFAULT_SETTINGS.fontFamily || '"SiYuan Songti", serif',
+        fontFamily: DEFAULT_SETTINGS.fontFamily || DEFAULT_CANVAS_FONT,
         edgeColorGradient: DEFAULT_SETTINGS.edgeColorGradient,
         edgeWidthByLevel: DEFAULT_SETTINGS.edgeWidthByLevel,
       };
       localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults));
       applySettingValues(presetDefaults);
       settingsUI.updateInfo(); presetSettingsUI.updateInfo();
-      // rebuild() 清空了 presetSetDiv，重挂载当前默认值的快捷控件
-      mountPresetQuickSettings();
-      const isExtra = focusedPaneIndex === PANE_RIGHT;
-      const sm = isExtra ? simManager1 : simManager;
-      scheduleSave(); sm.initSim(); draw();
+      scheduleSave(); focusedPaneState().simManager.initSim(); draw();
     },
     getPresets: () => settingPresets,
-    onOpenFolder: async () => {
-      // 1. Android SAF 原生目录选择器（Obsidian 式）
-      const cap = (window as any).Capacitor;
-      if (cap?.Plugins?.SafPlugin) {
-        try {
-          const dir = await safPickDirectory();
-          if (dir) {
-            fileSystemMountPath = dir.name;
-            await refreshFileTree();
-            showToast(`已打开: ${dir.name}`, 'success');
-            return;
-          }
-          showToast('未选中目录', 'warning');
-          return;
-        } catch (e: any) {
-          showToast('SAF 失败: ' + (e.message || '未知'), 'error');
-          return;
-        }
-      }
-      // 2. 桌面 Electron
-      const ea = (window as any).electronAPI;
-      if (ea?.openFolder) {
-        const folderPath = await ea.openFolder();
-        if (folderPath) {
-          fileSystemMountPath = folderPath;
-          configuredGraphFolderRelative = null;
-          const index = await refreshVaultIndex();
-          await ea.configWrite({
-            folderPath,
-            graphFolderRelative: index?.isObsidianVault ? index.graphRootRelative : null,
-          });
-          await refreshFileTree();
-          return;
-        }
-      }
-      // 3. Web File System Access API (showDirectoryPicker)
-      try {
-        const h = await openFolder();
-        if (h) {
-          await saveFolderHandle(h);
-          fileSystemMountPath = h.name;
-          await refreshFileTree();
-          return;
-        }
-      } catch {}
-      // 4. 兜底：同步创建 input 并 click
-      triggerFileImport();
-    },
+    onOpenFolder: () => { void openWorkspaceFolder().catch(reportWorkbenchActionError); },
     getFolderPath: () => fileSystemMountPath || '（未选择）',
     getGraphFolderPath: () => vaultIndex?.isObsidianVault
       ? `./${vaultIndex.graphRootRelative || 'NodeSpace'}`
@@ -4864,11 +4703,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         showToast(scanned?.error || '图文件夹无效', 'error', 5000);
         return;
       }
-      const saved = await flushAllGraphs();
-      if (!saved) {
-        showToast('仍有图未保存，已取消切换', 'error', 5000);
-        return;
-      }
+      if (!await saveBeforeWorkspaceSwitch()) return;
       if (!(await ea.exists(scanned.graphRootPath))) {
         const created = await ea.mkdir(scanned.graphRootPath);
         if (created?.error) {
@@ -4876,9 +4711,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           return;
         }
       }
-      await ea.configWrite({ folderPath: fileSystemMountPath, graphFolderRelative: scanned.graphRootRelative });
-      showToast(`图文件夹已改为 ./${scanned.graphRootRelative}，正在重新载入`, 'success', 1800);
-      setTimeout(() => window.location.reload(), 220);
+      const written = await ea.configWrite({ folderPath: fileSystemMountPath, graphFolderRelative: scanned.graphRootRelative });
+      if (!written?.ok) {
+        showToast(written?.error || '无法保存图文件夹的位置', 'error', 5000);
+        return;
+      }
+      reloadMountedWorkspace();
     },
     getFileImporter: undefined, // 所有平台统一用 onOpenFolder → 同步 input.click()
     getAutoUpdate: () => localStorage.getItem('fg-auto-update') === 'true',
@@ -4931,7 +4769,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         graph.nodes = []; graph.edges = []; graph.groups = [];
         clearEd(); simManager?.initSim(); draw();
       }
-      renderAllTabs();
+      syncSpaceNavigation();
       settingsPanel.hide();
     },
     onResetDemo: async () => {
@@ -4989,81 +4827,15 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   shortcutsDetails.appendChild(shortcutsDiv);
   settingsPanel.panel.appendChild(shortcutsDetails);
 
-  // 节点默认色：统一 / 分级
-  const colorStyleRow = document.createElement('div');
-  colorStyleRow.className = 'fg-setting-row fg-setting-select-row fg-quick-setting-row';
-  colorStyleRow.style.cssText = `display:flex;align-items:center;gap:8px;margin-top:6px;font-size:${V('--fg-font-sm','0.84em')};`;
-  const colorStyleLabel = document.createElement('span');
-  colorStyleLabel.className = 'fg-setting-label';
-  colorStyleLabel.textContent = '节点配色';
-  colorStyleLabel.style.cssText = `color:${V('--fg-text-muted','#999')}`;
-  colorStyleRow.appendChild(colorStyleLabel);
-  const colorStyleSelect = document.createElement('select');
-  colorStyleSelect.className = 'fg-setting-select';
-  colorStyleSelect.style.cssText = `font-size:${V('--fg-font-sm','0.84em')};padding:1px 4px;border:1px solid ${V('--fg-input-border','#ccc')};border-radius:3px;background:${V('--fg-surface','#2a2a2a')};color:${V('--fg-text','#d0d0d0')};`;
-  ['uniform','hierarchical','spectrum','spectrum-narrow'].forEach(v => {
-    const opt = document.createElement('option');
-    opt.value = v;
-    opt.textContent = v === 'uniform' ? '统一' : v === 'hierarchical' ? '分级' : v === 'spectrum-narrow' ? '分级窄' : '多彩分级';
-    colorStyleSelect.appendChild(opt);
-  });
-  colorStyleSelect.value = nodeColorStyle;
-  colorStyleSelect.onchange = () => {
-    nodeColorStyle = colorStyleSelect.value as 'uniform' | 'hierarchical' | 'spectrum' | 'spectrum-narrow';
-    scheduleSave(); draw();
-  };
-  colorStyleRow.appendChild(colorStyleSelect);
-  setDiv.appendChild(colorStyleRow);
-
-  // 字体选择
-  fontFamily = (DEFAULT_SETTINGS as any).fontFamily || '"SiYuan Songti", serif';
-  const fontStyleRow = document.createElement('div');
-  fontStyleRow.className = 'fg-setting-row fg-setting-select-row fg-quick-setting-row';
-  fontStyleRow.style.cssText = `display:flex;align-items:center;gap:8px;margin-top:4px;font-size:${V('--fg-font-sm','0.84em')};`;
-  const fontStyleLabel = document.createElement('span');
-  fontStyleLabel.className = 'fg-setting-label';
-  fontStyleLabel.textContent = '字体';
-  fontStyleLabel.style.cssText = `color:${V('--fg-text-muted','#999')}`;
-  fontStyleRow.appendChild(fontStyleLabel);
-  const fontStyleSelect = document.createElement('select');
-  fontStyleSelect.className = 'fg-setting-select';
-  fontStyleSelect.style.cssText = `font-size:${V('--fg-font-sm','0.84em')};padding:1px 4px;border:1px solid ${V('--fg-input-border','#ccc')};border-radius:3px;background:${V('--fg-surface','#2a2a2a')};color:${V('--fg-text','#d0d0d0')};`;
-  const fontOpts: [string, string][] = [
-    ['system-ui, -apple-system, sans-serif', '系统默认'],
-    ['"SiYuan Songti", serif', '思源宋体'],
-  ];
-  fontOpts.forEach(([val, label]) => {
-    const opt = document.createElement('option');
-    opt.value = val; opt.textContent = label;
-    fontStyleSelect.appendChild(opt);
-  });
-  fontStyleSelect.value = fontFamily;
-  fontStyleSelect.onchange = () => {
-    fontFamily = fontStyleSelect.value;
-    document.documentElement.style.setProperty('--fg-font-family', fontFamily);
-    // 覆盖浏览器对表单元素的 font-family 重置
-    const styleId = 'fg-font-override';
-    let styleEl = document.getElementById(styleId);
-    if (!styleEl) { styleEl = document.createElement('style'); styleEl.id = styleId; document.head.appendChild(styleEl); }
-    styleEl.textContent = `body,button,input,select,textarea,details,summary,span,a,div,code{font-family:${fontFamily} !important} input[type="checkbox"]{accent-color:var(--fg-accent,#5B8FF9)}`;
-    setNodeFontFamily(fontFamily);
-    (DEFAULT_SETTINGS as any).fontFamily = fontFamily;
-    scheduleSave(); draw();
-  };
-  fontStyleRow.appendChild(fontStyleSelect);
-  setDiv.appendChild(fontStyleRow);
-  const currentAdvancedSettings = setDiv.querySelector('.fg-settings-advanced');
-  if (currentAdvancedSettings) {
-    setDiv.insertBefore(colorStyleRow, currentAdvancedSettings);
-    setDiv.insertBefore(fontStyleRow, currentAdvancedSettings);
-  }
-
   updateInfoRef.current = settingsUI.updateInfo;
   updateSelectsRef.current = () => {};
 
   // --- 搜索事件 ---
   let lastSearchTerm = '';
   let searchMatchIndex = -1;
+  let searchPreviewing = false;
+  let searchComposing = false;
+  const searchAnimations = new WeakSet<object>();
   const focusedSearchState = () => {
     const pane = focusedPaneState();
     return pane.index === PANE_LEFT
@@ -5092,42 +4864,102 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const state = focusedSearchState();
     return searchGraph(scopedPaneGraph(state.pane), state.query, state.field, state.mode);
   };
+  type SearchState = ReturnType<typeof focusedSearchState>;
+  const matchesSearch = (a: SearchState, b: SearchState) => a.pane === b.pane && a.query === b.query
+    && a.field === b.field && a.mode === b.mode;
+  let previousSearchRender: { state: SearchState; graph: GraphData } | null = null;
+  let renderSearchViewport = () => {};
+  searchResults.addEventListener('scroll', () => renderSearchViewport(), { passive: true });
+  if (typeof ResizeObserver !== 'undefined') {
+    const searchResize = new ResizeObserver(() => renderSearchViewport());
+    searchResize.observe(searchResults);
+  }
   const renderSearchResults = () => {
     const state = focusedSearchState();
+    const searchGraphAtRender = scopedPaneGraph(state.pane);
     const results = currentSearchResults();
-    searchResults.innerHTML = '';
     const hasQuery = !!state.query.trim();
-    searchStatus.style.display = hasQuery ? '' : 'none';
+    searchStatus.hidden = !hasQuery || searchRow.hidden;
     searchStatus.style.color = results.length > 0 ? V('--fg-text-muted', '#999') : V('--fg-danger', '#e03030');
-    searchStatus.textContent = hasQuery ? (results.length > 0 ? `${Math.min(state.index + 1, results.length)}/${results.length}` : '无结果') : '';
+    searchStatus.textContent = hasQuery ? (results.length > 0
+      ? state.index >= 0 ? `${Math.min(state.index + 1, results.length)}/${results.length}` : `${results.length} 条结果`
+      : '无结果') : '';
     searchPrevBtn.disabled = searchNextBtn.disabled = results.length === 0;
     searchClearBtn.disabled = !hasQuery;
-    for (const [index, result] of results.slice(0, 8).entries()) {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'fg-search-result' + (index === state.index ? ' is-current' : '');
-      item.setAttribute('role', 'option');
-      item.setAttribute('aria-selected', String(index === state.index));
-      const title = document.createElement('strong');
-      title.textContent = result.label;
-      const context = document.createElement('span');
-      context.textContent = result.context;
-      item.append(title, context);
-      item.onpointerdown = event => event.preventDefault();
-      item.onclick = () => focusSearchResult(index, false);
-      searchResults.appendChild(item);
+    searchPrevBtn.hidden = searchNextBtn.hidden = results.length < 2;
+    searchClearBtn.hidden = !hasQuery;
+    searchResults.hidden = !hasQuery || results.length === 0 || searchRow.hidden || !controlsDetails.open;
+    searchInput.setAttribute('aria-expanded', String(!searchResults.hidden));
+    if (searchResults.hidden) {
+      renderSearchViewport = () => {};
+      if (!hasQuery || results.length === 0) previousSearchRender = null;
+      searchResultTrack.replaceChildren();
+      searchInput.removeAttribute('aria-activedescendant');
+      return;
     }
-    searchResults.hidden = !hasQuery || results.length === 0 || document.activeElement !== searchInput;
+    searchResultTrack.style.height = `${results.length * searchResultRowHeight}px`;
+    if (!previousSearchRender || !matchesSearch(previousSearchRender.state, state) || previousSearchRender.graph !== searchGraphAtRender) {
+      searchResults.scrollTop = 0;
+    }
+    previousSearchRender = { state, graph: searchGraphAtRender };
+    const active = state.index >= 0 && state.index < results.length;
+    if (active) {
+      const top = state.index * searchResultRowHeight;
+      const bottom = top + searchResultRowHeight - searchResults.clientHeight;
+      searchResults.scrollTop = Math.min(Math.max(searchResults.scrollTop, bottom), top);
+    }
+    let renderedStart = -1, renderedEnd = -1;
+    renderSearchViewport = () => {
+      const { start, end } = searchResultViewport(results.length, searchResults.scrollTop, searchResults.clientHeight, searchResultRowHeight);
+      if (renderedStart === start && renderedEnd === end) return;
+      renderedStart = start;
+      renderedEnd = end;
+      const rows: HTMLButtonElement[] = [];
+      for (let index = start; index < end; index++) {
+        const result = results[index];
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'fg-search-result' + (index === state.index ? ' is-current' : '');
+        item.style.top = `${index * searchResultRowHeight}px`;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', String(index === state.index));
+        item.id = `ns-search-result-${index}`;
+        item.setAttribute('tabindex', '-1');
+        item.setAttribute('aria-posinset', String(index + 1));
+        item.setAttribute('aria-setsize', String(results.length));
+        const title = document.createElement('strong');
+        title.textContent = result.label;
+        item.appendChild(title);
+        if (result.context && result.context !== result.label) {
+          const detail = document.createElement('span');
+          detail.textContent = result.context;
+          item.appendChild(detail);
+        }
+        item.onpointerdown = event => event.preventDefault();
+        item.onclick = () => {
+          if (matchesSearch(state, focusedSearchState()) && scopedPaneGraph(state.pane) === searchGraphAtRender) {
+            focusSearchResult(index, false, result.nodeId);
+          }
+        };
+        rows.push(item);
+      }
+      searchResultTrack.replaceChildren(...rows);
+      if (active && state.index >= start && state.index < end) {
+        searchInput.setAttribute('aria-activedescendant', `ns-search-result-${state.index}`);
+      } else searchInput.removeAttribute('aria-activedescendant');
+    };
+    renderSearchViewport();
   };
-  const focusSearchResult = (requestedIndex: number, wrap = true) => {
+  const focusSearchResult = (requestedIndex: number, wrap = true, expectedNodeId?: string) => {
     const state = focusedSearchState();
     const results = currentSearchResults();
     if (results.length === 0) { renderSearchResults(); draw(); return; }
     const index = wrap
       ? (requestedIndex % results.length + results.length) % results.length
       : Math.max(0, Math.min(results.length - 1, requestedIndex));
-    mutateFocusedSearch({ index, last: state.query });
     const result = results[index];
+    if (expectedNodeId !== undefined && result.nodeId !== expectedNodeId) return;
+    mutateFocusedSearch({ index, last: state.query });
     const sourceGraph = scopedPaneGraph(state.pane);
     const sourceNode = sourceGraph.nodes.find((node: any) => node.id === result.nodeId);
     const sim = scopedPaneSimulationManager(state.pane)?.getSim();
@@ -5137,16 +4969,44 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       : typeof sourceNode?.structureParentId === 'string' ? sourceNode.structureParentId : result.nodeId;
     const node = nodes.find((candidate: any) => candidate.id === visibleId);
     const px = state.pane.index === PANE_LEFT ? pixi : state.pane.pixi;
-    if (node && px) {
-      const cw = px.app.canvas.clientWidth;
-      const ch = px.app.canvas.clientHeight;
-      px.viewport.animate({ position: { x: cw / 2 - node.x * px.viewport.scale.x, y: ch / 2 - node.y * px.viewport.scale.y }, time: SEARCH_MOVE_DURATION, ease: EASING.easeInOut });
+    if (node && px && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+      const graphAtFocus = paneRuntimeGraph(state.pane);
+      searchPreviewing = false;
+      controlsDetails.open = false;
+      searchInput.blur();
       withFocusedPane(() => fillNode(visibleId));
+      if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) px.viewport.moveCenter(node.x, node.y);
+      else {
+        px.viewport.animate({ position: { x: node.x, y: node.y }, time: SEARCH_MOVE_DURATION, ease: EASING.easeInOut, removeOnInterrupt: true,
+          callbackOnComplete: () => {
+            if (focusedPaneState() === state.pane && paneRuntimeGraph(state.pane) === graphAtFocus && state.pane.selNode === visibleId)
+              editCtx.revealSelection();
+          } });
+        const animation = px.viewport.plugins.get('animate');
+        if (animation) searchAnimations.add(animation);
+      }
     }
     renderSearchResults();
     draw();
   };
+  const nextSearchIndex = (direction: number) => {
+    const count = currentSearchResults().length, index = focusedSearchState().index;
+    return count === 0 ? -1 : index < 0 ? direction < 0 ? count - 1 : 0 : (index + direction + count) % count;
+  };
+  const selectToolSearch = (kind: 'node' | 'group') => {
+    const isNode = kind === 'node';
+    searchRow.hidden = !isNode;
+    groupSearchPanel.hidden = isNode;
+    searchFiltersButton.hidden = !isNode;
+    nodeSearchButton.setAttribute('aria-pressed', String(isNode));
+    groupSearchButton.setAttribute('aria-pressed', String(!isNode));
+    renderSearchResults();
+  };
+  nodeSearchButton.onclick = () => { selectToolSearch('node'); searchInput.focus(); };
+  groupSearchButton.onclick = () => { selectToolSearch('group'); groupInput.focus(); };
+  controlsDetails.addEventListener('toggle', () => renderSearchResults());
   syncSearchControlsFromFocusedPane = () => {
+    searchPreviewing = false; searchComposing = false;
     const state = focusedSearchState();
     searchInput.value = state.query;
     fieldSelect.value = state.field;
@@ -5154,28 +5014,40 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     modeSelect.value = state.display;
     renderSearchResults();
   };
-  fieldSelect.addEventListener('change', () => { mutateFocusedSearch({ field: fieldSelect.value as SearchField, index: -1 }); renderSearchResults(); draw(); });
-  matchModeSelect.addEventListener('change', () => { mutateFocusedSearch({ mode: matchModeSelect.value as SearchMatchMode, index: -1 }); renderSearchResults(); draw(); });
+  fieldSelect.addEventListener('change', () => { searchPreviewing = false; mutateFocusedSearch({ field: fieldSelect.value as SearchField, index: -1 }); renderSearchResults(); draw(); });
+  matchModeSelect.addEventListener('change', () => { searchPreviewing = false; mutateFocusedSearch({ mode: matchModeSelect.value as SearchMatchMode, index: -1 }); renderSearchResults(); draw(); });
   modeSelect.addEventListener('change', () => { mutateFocusedSearch({ display: modeSelect.value as 'highlight' | 'show' }); draw(); });
-  searchInput.addEventListener('input', () => {
+  const updateSearchInput = () => {
+    if (searchComposing) return;
+    searchPreviewing = false;
     mutateFocusedSearch({ query: searchInput.value, index: -1, last: searchInput.value });
     const pane = focusedPaneState();
     if (pane.searchDebounceTimer) clearTimeout(pane.searchDebounceTimer);
     pane.searchDebounceTimer = setTimeout(() => { pane.searchDebounceTimer = null; renderSearchResults(); draw(); }, 80);
-  });
-  searchInput.addEventListener('focus', renderSearchResults);
-  searchInput.addEventListener('blur', () => setTimeout(() => { searchResults.hidden = true; }, 120));
-  searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); focusSearchResult(focusedSearchState().index + (e.shiftKey ? -1 : 1)); }
-    else if (e.key === 'Escape') {
+  };
+  searchInput.addEventListener('input', updateSearchInput);
+  searchInput.addEventListener('compositionstart', () => { searchComposing = true; });
+  searchInput.addEventListener('compositionend', () => { searchComposing = false; updateSearchInput(); });
+  searchInput.addEventListener('focus', () => { clearEd(); renderSearchResults(); });
+  const onSearchKeyDown = (e: KeyboardEvent) => {
+    if (searchComposing || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      mutateFocusedSearch({ index: nextSearchIndex(e.key === 'ArrowDown' ? 1 : -1) });
+      searchPreviewing = true; renderSearchResults();
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); focusSearchResult(e.shiftKey ? nextSearchIndex(-1) : searchPreviewing ? focusedSearchState().index : nextSearchIndex(1));
+    }
+    else if (e.key === 'Escape' && searchInput.value) {
       e.preventDefault();
       mutateFocusedSearch({ query: '', index: -1, last: '' });
       searchInput.value = '';
       renderSearchResults(); draw();
     }
-  });
-  searchPrevBtn.onclick = () => focusSearchResult(focusedSearchState().index - 1);
-  searchNextBtn.onclick = () => focusSearchResult(focusedSearchState().index + 1);
+  };
+  searchInput.addEventListener('keydown', onSearchKeyDown);
+  searchPrevBtn.onclick = () => focusSearchResult(nextSearchIndex(-1));
+  searchNextBtn.onclick = () => focusSearchResult(nextSearchIndex(1));
   searchClearBtn.onclick = () => {
     mutateFocusedSearch({ query: '', index: -1, last: '' });
     searchInput.value = '';
@@ -5186,20 +5058,25 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if ((event.target as HTMLElement)?.closest('.ns-md-editor')) return;
     event.preventDefault();
     controlsDetails.open = true;
+    selectToolSearch('node');
     requestAnimationFrame(() => { syncSearchControlsFromFocusedPane(); searchInput.focus(); searchInput.select(); });
   });
   // --- 聚焦窗格状态切换（用于布局/操作等需要访问 singleton 的函数）---
-  const withFocusedPane = <T>(fn: () => T): T => {
-    if (focusedPaneIndex === PANE_LEFT) return fn();
-    const targetPane = extraPanes[focusedPaneIndex - 1];
-    const targetSim = extraSims[focusedPaneIndex - 1] ?? targetPane?.simManager;
+  const withFocusedPane = <T>(fn: () => T, paneIndex = focusedPaneIndex): T => {
+    if (paneIndex === PANE_LEFT) return fn();
+    const targetPane = extraPanes[paneIndex - 1];
+    const targetSim = extraSims[paneIndex - 1] ?? targetPane?.simManager;
     if (!targetPane || !targetSim) return fn();
     // 只交换数据层（graph/sim/config），不交换渲染层（pixi/nodeSprites 保持原样给 pane0Draw）
     saveConfigTo(pane0Config as any);
     const savedGraph = graph, savedSim = simManager, savedUndo = undoManager;
+    const savedPrimaryPins = savedFixedNodes, savedPrimaryGroups = savedGroupModes;
+    const savedPrimaryAnimation = currentAnimationCancel;
     const savedTree = treeMode, savedCat = categoryMode, savedFull = fullCatMode, savedActive = activeMode;
     const savedSelNode = selNode, savedSelEdge = selEdge, savedSelGroup = selGroup;
     graph = targetPane.graph; simManager = targetSim; undoManager = targetPane.undoManager;
+    savedFixedNodes = targetPane.savedFixedNodes; savedGroupModes = targetPane.savedGroupModes;
+    currentAnimationCancel = targetPane.currentAnimationCancel;
     loadConfigFrom(targetPane);
     treeMode = targetPane.treeMode; categoryMode = targetPane.categoryMode; fullCatMode = targetPane.fullCatMode; activeMode = targetPane.activeMode;
     selNode = targetPane.selNode; selEdge = targetPane.selEdge; selGroup = targetPane.selGroup;
@@ -5209,7 +5086,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       saveConfigTo(targetPane);
       targetPane.treeMode = treeMode; targetPane.categoryMode = categoryMode; targetPane.fullCatMode = fullCatMode; targetPane.activeMode = activeMode;
       targetPane.selNode = selNode; targetPane.selEdge = selEdge; targetPane.selGroup = selGroup;
+      targetPane.savedFixedNodes = savedFixedNodes; targetPane.savedGroupModes = savedGroupModes;
+      targetPane.currentAnimationCancel = currentAnimationCancel;
       graph = savedGraph; simManager = savedSim; undoManager = savedUndo;
+      savedFixedNodes = savedPrimaryPins; savedGroupModes = savedPrimaryGroups;
+      currentAnimationCancel = savedPrimaryAnimation;
       loadConfigFrom(pane0Config as any);
       treeMode = savedTree; categoryMode = savedCat; fullCatMode = savedFull; activeMode = savedActive;
       selNode = savedSelNode; selEdge = savedSelEdge; selGroup = savedSelGroup;
@@ -5220,28 +5101,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const addBtn = document.createElement('button');
   addBtn.className = 'fg-action fg-action-primary';
   addBtn.textContent = '新建节点'; addBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  // 节点消失动画：标记 _dying，250ms 后真正删除
-  function markNodesDying(ids: string[]) {
-    const sim = getSim();
-    if (sim) {
-      for (const sn of sim.nodes()) {
-        if (ids.includes(sn.id)) sn._dying = performance.now();
-      }
-    }
-    // 250ms 后清理死节点
-    setTimeout(() => {
-      const sim2 = getSim();
-      if (sim2) {
-        const alive = sim2.nodes().filter((n: any) => !n._dying);
-        sim2.nodes(alive);
-      }
-      draw();
-    }, 250);
-  };
-
+  const temporaryNodeAnchors = new WeakSet<object>();
   // 增量添加节点到模拟（避免重启导致画面跳变）
   const addNodeToSim = (node: any) => {
-    const sim = getSim();
+    // Static views share the document's nodes. The caller already inserted the
+    // node; appending a simulation copy would duplicate persisted graph data.
+    if (simManager.isStaticMode()) {
+      simManager.initStatic();
+      return;
+    }
+    const manager = simManager;
+    const sim = manager.getSim();
     if (sim) {
       const sn: any = { id: node.id, label: node.label, headingLevel: node.headingLevel ?? 6, tags: node.tags ?? [], x: node.x, y: node.y, _isNew: true };
       const currentNodes = sim.nodes();
@@ -5249,13 +5119,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       sim.nodes(currentNodes);
       sim.alpha(0.05).alphaTarget(0.005).restart();
       sn.fx = sn.x; sn.fy = sn.y;
+      temporaryNodeAnchors.add(sn);
       // 1.5s 硬固定 → 弹簧过渡释放（避免被固定节点的电荷力瞬间弹飞）
       setTimeout(() => {
         const anchorX = sn.x, anchorY = sn.y;
         let spring = 0.25;
         const relax = () => {
+          if (manager.getSim() !== sim || !sim.nodes().includes(sn)) return;
+          if (!temporaryNodeAnchors.has(sn) || sn.fixed || node.fixed || manager.getDragNode() === sn.id) {
+            temporaryNodeAnchors.delete(sn);
+            sim.alphaTarget(0);
+            return;
+          }
           spring *= 0.88;
-          if (spring < 0.015) { sn.fx = null; sn.fy = null; sim.alphaTarget(0); return; }
+          if (spring < 0.015) {
+            temporaryNodeAnchors.delete(sn);
+            sn.fx = null; sn.fy = null; sim.alphaTarget(0);
+            return;
+          }
           sn.fx = sn.x + (anchorX - sn.x) * spring;
           sn.fy = sn.y + (anchorY - sn.y) * spring;
           requestAnimationFrame(relax);
@@ -5265,227 +5146,105 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
   };
 
-  // 辅助：获取节点等级（数字越小等级越高，默认 6 最低）
-  const getNodeLevel = (nodeId: string): number => {
-    const gn = graph.nodes.find((n: any) => n.id === nodeId);
-    return gn?.headingLevel || 6;
+  const hierarchyAnimations = new WeakMap<ReturnType<typeof createSimManager>, () => void>();
+
+  const hierarchyViewsForRuntime = (runtime: GraphRuntime) => {
+    const views = new Map<ReturnType<typeof createSimManager>, GraphData>();
+    for (const pane of allPaneOwners()) {
+      if ((pane.index === PANE_LEFT ? primaryRuntime : pane.runtime) !== runtime) continue;
+      const base = pane.index === PANE_LEFT ? simManager : pane.simManager;
+      if (base) views.set(base, runtime.graph);
+      const scopedSim = scopedPaneSimulationManager(pane);
+      if (scopedSim && scopedSim !== base) views.set(scopedSim, scopedPaneGraph(pane));
+    }
+    return views;
   };
 
-  // BFS 遍历后代，遇到等级更高的节点（headingLevel 更小）时停止向下遍历
-  const bfsDescendants = (rootId: string): Map<string, { depth: number; parentId: string | null }> => {
-    const info = new Map<string, { depth: number; parentId: string | null }>();
-    const queue: Array<{ id: string; depth: number; parentId: string | null }> = [
-      { id: rootId, depth: 0, parentId: null },
-    ];
-    const curLevel = (nodeId: string) => getNodeLevel(nodeId);
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      if (info.has(cur.id)) continue;
-      info.set(cur.id, { depth: cur.depth, parentId: cur.parentId });
-      const parentLevel = curLevel(cur.id);
-      for (const e of graph.edges) {
-        const src = typeof e.source === 'object' ? e.source.id : e.source;
-        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-        if (src === cur.id && !info.has(tgt)) {
-          const tgtLevel = curLevel(tgt);
-          if (tgtLevel < parentLevel) continue;
-          queue.push({ id: tgt, depth: cur.depth + 1, parentId: cur.id });
+  const animateHierarchyChange = (
+    runtime: GraphRuntime,
+    manager: ReturnType<typeof createSimManager>,
+    view: GraphData,
+    previousHidden: ReadonlySet<string>,
+  ) => {
+    const simulation = manager.getSim();
+    if (!simulation) return;
+    hierarchyAnimations.get(manager)?.();
+    const hidden = getCollapsedHierarchyHiddenNodeIds(view);
+    const animate = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const disappearing = simulation.nodes().filter((node: any) => !previousHidden.has(node.id) && hidden.has(node.id));
+    if (!manager.isStaticMode() && view === runtime.graph && disappearing.length) {
+      const positions = new Map<string, { x: number; y: number }>(disappearing.map((node: any) => [node.id, node]));
+      for (const node of view.nodes) {
+        const position = positions.get(node.id);
+        if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+          node.x = position.x;
+          node.y = position.y;
         }
       }
     }
-    return info;
-  };
-  /** BFS 变体：遇到 collapsed 节点停止向下遍历（用于"展开一级"动画） */
-  const bfsVisibleDescendants = (rootId: string): Map<string, { depth: number; parentId: string | null }> => {
-    const info = new Map<string, { depth: number; parentId: string | null }>();
-    const queue: Array<{ id: string; depth: number; parentId: string | null }> = [
-      { id: rootId, depth: 0, parentId: null },
-    ];
-    const curLevel = (nodeId: string) => getNodeLevel(nodeId);
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      if (info.has(cur.id)) continue;
-      info.set(cur.id, { depth: cur.depth, parentId: cur.parentId });
-      if (cur.id !== rootId) {
-        const curGn = graph.nodes.find((n: any) => n.id === cur.id);
-        if (curGn?.collapsed) continue;
-      }
-      const parentLevel = curLevel(cur.id);
-      for (const e of graph.edges) {
-        const src = typeof e.source === 'object' ? e.source.id : e.source;
-        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-        if (src === cur.id && !info.has(tgt)) {
-          const tgtLevel = curLevel(tgt);
-          if (tgtLevel < parentLevel) continue;
-          queue.push({ id: tgt, depth: cur.depth + 1, parentId: cur.id });
-        }
+    const retained = new Set<string>(animate ? disappearing.map((node: any) => node.id) : []);
+    manager.refreshHierarchyNodes(hidden, retained);
+
+    const startTime = performance.now();
+    const animated: Array<{
+      node: any;
+      key: '_collapseAnim' | '_expandAnim';
+      marker: { startTime: number; duration: number };
+    }> = [];
+    if (animate) {
+      for (const node of simulation.nodes()) {
+        const key = retained.has(node.id) ? '_collapseAnim' : previousHidden.has(node.id) && !hidden.has(node.id) ? '_expandAnim' : null;
+        if (!key) continue;
+        // Static simulations may reference persisted nodes; keep animation fields out of undo snapshots.
+        const marker = { startTime, duration: ANIM_DURATION };
+        Object.defineProperty(node, key, { value: marker, configurable: true });
+        animated.push({ node, key, marker });
       }
     }
-    return info;
-  };
+    if (!animated.length) return;
 
-  const animateCollapse = (rootId: string) => {
-    const sim = getSim();
-    if (!sim) return;
-
-    const rootGn = graph.nodes.find((n: any) => n.id === rootId);
-    if (!rootGn?.collapsed) return;
-
-    const descInfo = bfsDescendants(rootId);
-
-    let maxDepth = 0;
-    for (const [, info] of descInfo) { if (info.depth > maxDepth) maxDepth = info.depth; }
-    if (maxDepth === 0) { draw(); return; }
-
-    const now = performance.now();
-    const simNodes = sim.nodes();
-    const nodeMap = new Map<string, any>(simNodes.map((n: any) => [n.id, n]));
-
-    for (const [id, info] of descInfo) {
-      if (id === rootId) continue;
-      const sn = nodeMap.get(id);
-      if (!sn) continue;
-
-      if ((sn as any)._expandAnim) delete (sn as any)._expandAnim;
-      if ((sn as any)._collapseAnim) continue;
-
-      (sn as any)._collapseAnim = {
-        startTime: now + (maxDepth - info.depth) * ANIM_DURATION,
-        duration: ANIM_DURATION,
-        depth: info.depth,
-      };
-    }
-
-    // 固定所有不被折叠的 sim 节点，避免被残余力牵扯移动
-    const animatingNodeIds = new Set<string>();
-    for (const [id] of descInfo) { if (id !== rootId) animatingNodeIds.add(id); }
-    const pinnedNodes: any[] = [];
-    for (const sn of simNodes) {
-      if (!animatingNodeIds.has(sn.id) && sn.fx == null) {
-        sn.fx = sn.x; sn.fy = sn.y;
-        pinnedNodes.push(sn);
+    const clear = () => {
+      hierarchyAnimations.delete(manager);
+      for (const { node, key, marker } of animated) {
+        if (node[key] === marker) delete node[key];
       }
-    }
-    // 动画结束后一次性解除所有固定，刷新电荷缓存
-    const totalAnimMs = maxDepth * ANIM_DURATION + 400;
-    setTimeout(() => {
-      for (const pn of pinnedNodes) { pn.fx = null; pn.fy = null; }
-      const s2 = getSim();
-      if (s2) { s2.nodes(s2.nodes()); s2.alphaTarget(0); }
-    }, totalAnimMs);
-
-    sim.alpha(0.05).alphaTarget(0.01).restart();
-    draw();
+    };
+    hierarchyAnimations.set(manager, clear);
+    const frame = (now: number) => {
+      if (hierarchyAnimations.get(manager) !== clear) return;
+      const active = hierarchyViewsForRuntime(runtime).get(manager) === view;
+      if (!active || manager.getSim() !== simulation || now - startTime >= ANIM_DURATION) {
+        clear();
+        if (active && manager.getSim() === simulation) manager.refreshHierarchyNodes(getCollapsedHierarchyHiddenNodeIds(view));
+      } else requestAnimationFrame(frame);
+      if (active) draw();
+    };
+    requestAnimationFrame(frame);
   };
 
-  const animateExpand = (rootId: string) => {
-    const sim = getSim();
-    if (!sim) return;
+  const applyHierarchyFoldForPane = (
+    pane: PaneState,
+    runtime: GraphRuntime,
+    view: GraphData,
+    nodeId: string,
+    action: HierarchyFoldAction,
+  ) => {
+    if (!canMutateCanvasPane(pane) || paneRuntimeGraph(pane) !== runtime.graph
+      || scopedPaneGraph(pane) !== view || pane.localContextProjection) return;
+    const ids = new Set(getHierarchyFoldActions(view, nodeId).get(action));
+    const nodes = runtime.graph.nodes.filter(node => ids.has(node.id) && !isStructureNode(node));
+    if (!nodes.length) return;
 
-    // 边界：根节点已展开 → 跳过
-    const rootGn = graph.nodes.find((n: any) => n.id === rootId);
-    if (rootGn?.collapsed) return;
-
-    const descInfo = bfsVisibleDescendants(rootId);
-
-    const now = performance.now();
-    const simNodes = sim.nodes();
-    const nodeMap = new Map<string, any>(simNodes.map((n: any) => [n.id, n]));
-    let addedCount = 0;
-
-    // 固定所有不被展开的 sim 节点，避免新增节点瞬间改变力平衡
-    const expandNodeIds = new Set<string>([...descInfo.keys()].filter(k => k !== rootId && !nodeMap.has(k)));
-    const pinnedNodes2: any[] = [];
-    for (const sn of simNodes) {
-      if (!expandNodeIds.has(sn.id) && sn.fx == null) {
-        sn.fx = sn.x; sn.fy = sn.y;
-        pinnedNodes2.push(sn);
-      }
+    const views = [...hierarchyViewsForRuntime(runtime)].map(([manager, model]) => ({
+      manager, model, previousHidden: getCollapsedHierarchyHiddenNodeIds(model),
+    }));
+    runtime.undoManager.pushSnapshot(runtime.graph);
+    const collapsed = action === 'collapse' || action === 'collapseAll';
+    for (const node of nodes) node.collapsed = collapsed;
+    for (const { manager, model, previousHidden } of views) {
+      animateHierarchyChange(runtime, manager, model, previousHidden);
     }
-
-    // 按深度排序，确保父节点先处理（子节点可以引用刚添加的父节点位置）
-    const sortedDescendants = [...descInfo.entries()]
-      .filter(([id]) => id !== rootId && !nodeMap.has(id))
-      .sort((a, b) => a[1].depth - b[1].depth);
-
-    for (const [id, info] of sortedDescendants) {
-      // 已在 sim 中且正在折叠 → 取消折叠动画，转为展开
-      const existing = nodeMap.get(id);
-      if (existing && (existing as any)._collapseAnim) {
-        delete (existing as any)._collapseAnim;
-        (existing as any)._expandAnim = {
-          startTime: now + info.depth * ANIM_DURATION,
-          duration: ANIM_DURATION,
-          depth: info.depth,
-        };
-        continue;
-      }
-      if (nodeMap.has(id)) continue;
-
-      const gn = graph.nodes.find((n: any) => n.id === id);
-      if (!gn) continue;
-
-      // 放射状均分圆周角
-      const depthNodes = sortedDescendants.filter(([_, info2]) => info2.depth === info.depth);
-      const idxAtDepth = depthNodes.findIndex(([sId]) => sId === id);
-      const angle = (2 * Math.PI * idxAtDepth) / depthNodes.length;
-      const spreadR = 60 + info.depth * 50;
-      const parentSn = info.parentId ? nodeMap.get(info.parentId) : nodeMap.get(rootId);
-      const px = parentSn ? parentSn.x : (gn.x || 0);
-      const py = parentSn ? parentSn.y : (gn.y || 0);
-      const posX = px + Math.cos(angle) * spreadR;
-      const posY = py + Math.sin(angle) * spreadR;
-
-      const sn: any = {
-        id: gn.id,
-        label: gn.label,
-        headingLevel: gn.headingLevel ?? 6,
-        tags: gn.tags ?? [],
-        x: posX, y: posY,
-        _expandAnim: {
-          startTime: now + info.depth * ANIM_DURATION,
-          duration: ANIM_DURATION,
-          depth: info.depth,
-        },
-      };
-      for (const k of ['radius', 'radiusMode', 'color', 'fixed', 'fx', 'fy', 'mediaType', 'mediaUrl', 'hyperlink', 'note', 'collapsed']) {
-        if ((gn as any).hasOwnProperty(k)) (sn as any)[k] = (gn as any)[k];
-      }
-
-      const currentNodes = sim.nodes();
-      currentNodes.push(sn);
-      sim.nodes(currentNodes);
-      nodeMap.set(id, sn);
-      addedCount++;
-    }
-
-    // 重建 link force：用 sim 中所有节点的 ID 过滤，避免 D3 构造时找折叠节点抛错
-    {
-      const simNodeIds = new Set((sim.nodes() as any[]).map((n: any) => n.id));
-      const validEdges = graph.edges
-        .filter((e: any) =>
-          (e.lineStyle || 'solid') === 'solid' && !e._conflict && !e._dyingAt &&
-          simNodeIds.has(typeof e.source === 'object' ? e.source.id : e.source) &&
-          simNodeIds.has(typeof e.target === 'object' ? e.target.id : e.target)
-        )
-        .map((e: any) => ({ ...e, source: typeof e.source === 'object' ? (e.source as any).id ?? e.source : e.source, target: typeof e.target === 'object' ? (e.target as any).id ?? e.target : e.target }));
-      if (validEdges.length > 0) {
-        const focusedPane = focusedPaneState();
-        sim.force("link", d3.forceLink(validEdges).id((d: any) => d.id).distance(focusedPane.linkDist).strength(focusedPane.linkStr));
-      }
-    }
-    // 重新 setNodes 触发新 link force 的 initialize（解析 edge source/target → node 引用）
-    sim.nodes(sim.nodes());
-    sim.alpha(0.3).alphaTarget(0.01).restart();
-    // 动画结束后一次性解除所有固定，刷新电荷缓存
-    let maxExpandDepth = 0;
-    for (const [, info] of descInfo) { if (info.depth > maxExpandDepth) maxExpandDepth = info.depth; }
-    const expandTotalMs = maxExpandDepth * ANIM_DURATION + 400;
-    setTimeout(() => {
-      for (const pn of pinnedNodes2) { pn.fx = null; pn.fy = null; }
-      const s = getSim();
-      if (s) { s.nodes(s.nodes()); s.alphaTarget(0); }
-    }, expandTotalMs);
+    scheduleSaveForRuntime(runtime);
     draw();
   };
 
@@ -5513,7 +5272,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     fillNode(nodeId);
   };
 
-  const createChildNodeForPane = (parentId: string, targetPane = focusedExtraPane()): string | null => {
+  const createChildNodeForPane = (parentId: string, targetPane = focusedExtraPane(), placement?: { x: number; y: number; dashed?: boolean }): string | null => {
     if (focusedInteractionBlocked('新建子节点')) return null;
     const targetGraph = targetPane?.graph ?? graph;
     if (targetGraph.settings?.sourceMode === 'vault-readonly') {
@@ -5526,15 +5285,15 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const simParent = targetSimManager?.getSim()?.nodes().find((node: any) => node.id === parentId);
     const px = simParent?.x ?? parent.x ?? 200;
     const py = simParent?.y ?? parent.y ?? 200;
-    const childId = 'n_' + Date.now();
+    const childId = createNodeId(targetGraph.nodes);
     const childLevel = Math.min(6, (parent.headingLevel || 6) + 1);
     const child = {
       id: childId,
       label: '子节点',
       headingLevel: childLevel,
       tags: [],
-      x: px + 60,
-      y: py + 40,
+      x: placement?.x ?? px + 60,
+      y: placement?.y ?? py + 40,
       _isNew: true,
     };
     assignCreatedOrder(child, targetGraph.nodes);
@@ -5546,7 +5305,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       label: '',
       color: '#BFBFBF',
       arrow: targetPane?.defArrow ?? defArrow,
-      lineStyle: 'solid',
+      lineStyle: placement?.dashed ? 'dash-2' : 'solid',
       _createdAt: performance.now(),
     });
     selectAndEditFocusedNode(childId, targetPane);
@@ -5554,6 +5313,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (targetPane) scheduleSaveForPane(targetPane); else scheduleSave();
     syncFocusedCommands();
     draw();
+    beginNodeTitleEditForPane(targetPane ?? pane0 as unknown as PaneState, childId, true);
     return childId;
   };
 
@@ -5614,7 +5374,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     };
   };
 
-  const createNodeInFocusedPane = () => {
+  const createNodeInFocusedPane = (initialLabel?: string) => {
     if (focusedInteractionBlocked('新建节点')) return;
     const targetPane = focusedExtraPane();
     const targetGraph = targetPane?.graph ?? graph;
@@ -5624,7 +5384,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     if (targetPane) {
       const center = targetPane.pixi?.viewport?.center ?? { x: targetPane.gw / 2, y: targetPane.gh / 2 };
-      const newNode = { id: 'n_' + Date.now(), label: '新记录', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
+      const newNode = { id: createNodeId(targetGraph.nodes), label: initialLabel?.trim() || '新记录', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
       assignCreatedOrder(newNode, targetPane.graph.nodes);
       targetPane.undoManager.pushSnapshot(targetPane.graph);
       targetPane.graph.nodes.push(newNode);
@@ -5633,11 +5393,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       scheduleSaveForPane(targetPane);
       syncFocusedCommands();
       draw();
+      if (!initialLabel) beginNodeTitleEditForPane(targetPane, newNode.id, true);
       return;
     }
 
     const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
-    const newNode = { id: 'n_' + Date.now(), label: '新记录', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
+    const newNode = { id: createNodeId(graph.nodes), label: initialLabel?.trim() || '新记录', headingLevel: 6, tags: [], x: center.x, y: center.y, _isNew: true };
     assignCreatedOrder(newNode, graph.nodes);
     saveUndo();
     graph.nodes.push(newNode);
@@ -5645,8 +5406,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     scheduleSave();
     addNodeToSim(newNode);
     draw();
+    if (!initialLabel) beginNodeTitleEditForPane(pane0 as unknown as PaneState, newNode.id, true);
   };
-  addBtn.onclick = createNodeInFocusedPane;
+  addBtn.onclick = () => createNodeInFocusedPane();
   addBtn.textContent = '+ 记录';
   addBtn.title = '记下一段内容';
   addBtn.dataset.mobileDuplicate = 'true';
@@ -5659,12 +5421,289 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const allPaneOwners = (): PaneState[] => [pane0 as unknown as PaneState, ...extraPanes];
   const paneRuntimeGraph = (pane: PaneState): GraphData => pane.index === PANE_LEFT ? graph : pane.runtime.graph;
+  const mediaTextEditorForPane = (pane: PaneState | undefined, node: any, field: 'note' | 'mediaUrl') => {
+    if (!pane || !canMutateCanvasPane(pane) || !paneRuntimeGraph(pane).nodes.includes(node)) return null;
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    return createMediaTextEditor({
+      getGraph: () => paneRuntimeGraph(pane), node, field,
+      canMutate: () => canMutateCanvasPane(pane),
+      saveUndo: destination => runtime.undoManager.pushSnapshot(destination),
+      onChange: () => {
+        for (const owner of allPaneOwners()) {
+          if ((owner.index === PANE_LEFT ? primaryRuntime : owner.runtime) !== runtime) continue;
+          const simulated = scopedPaneSimulationManager(owner)?.getSim()?.nodes()?.find((candidate: any) => candidate.id === node.id);
+          if (simulated && simulated !== node) simulated[field] = node[field];
+        }
+        scheduleSaveForRuntime(runtime);
+        if (focusedPaneState() === pane && pane.selNode === node.id) fillNode(node.id);
+        syncFocusedCommands(); rafDraw();
+      },
+    });
+  };
+  const canMutateCanvasPane = (pane: PaneState): boolean => {
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    if (!allPaneOwners().includes(pane) || !appShell.isConnected || !panePixi(pane)
+      || pane.index !== PANE_LEFT && (!splitActive || pane.canvasContainer.style.display === 'none')) return false;
+    return paneRuntimeGraph(pane).settings?.sourceMode !== 'vault-readonly'
+      && !pane.textViewActive && !runtime.textEditActive && runtime.canInteract(pane);
+  };
+  const createPaneNodeTextChange = (pane: PaneState, id: string, field: NodeTextField) => {
+    const destination = paneRuntimeGraph(pane);
+    const node = destination.nodes.find(candidate => candidate.id === id);
+    if (!node || !canMutateCanvasPane(pane) || isPaneStructureProxyNode(pane.structureView, id)
+      || isCrossSpaceProxyNode(scopedPaneGraph(pane).nodes.find(candidate => candidate.id === id))) return null;
+
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    const initialValue = node[field] ?? '';
+    const isCurrent = () => canMutateCanvasPane(pane) && paneRuntimeGraph(pane) === destination
+      && destination.nodes.includes(node) && (node[field] ?? '') === initialValue;
+    const commit = (value: string) => {
+      const editor = createNodeTextEditor({
+        getGraph: () => paneRuntimeGraph(pane),
+        getSelectedNode: () => node,
+        canMutate: isCurrent,
+        saveUndo: () => runtime.undoManager.pushSnapshot(destination),
+        onChange: () => {
+          if (field === 'label' && isStructureNode(node)) syncStructureCollections(destination);
+          const managers = new Set([runtime.simManager]);
+          for (const owner of allPaneOwners()) {
+            if ((owner.index === PANE_LEFT ? primaryRuntime : owner.runtime) === runtime) managers.add(scopedPaneSimulationManager(owner));
+          }
+          for (const manager of managers) {
+            const simulated = manager?.getSim()?.nodes().find((candidate: any) => candidate.id === id);
+            if (simulated) simulated[field] = node[field];
+          }
+          scheduleSaveForRuntime(runtime);
+          if (focusedPaneState() === pane && pane.selNode === id) fillNode(id);
+          scheduleNameRender();
+        },
+      });
+      editor.begin(field);
+      editor.update(field, value);
+      editor.end();
+    };
+    return { node, initialValue, isCurrent, commit };
+  };
+
+  const noteEditSessionForPane = (pane: PaneState, id: string): NodeNoteEdit | null => {
+    const change = createPaneNodeTextChange(pane, id, 'note');
+    return change ? { note: change.initialValue, commit: change.commit } : null;
+  };
+
+  const beginNodeNoteEditForPane = (pane: PaneState, id: string): boolean => {
+    const change = createPaneNodeTextChange(pane, id, 'note');
+    const px = panePixi(pane);
+    if (!change || !px) return false;
+    const live = scopedPaneSimulationManager(pane)?.getSim()?.nodes().find((candidate: any) => candidate.id === id) ?? change.node;
+    const canvas = px.app.canvas.getBoundingClientRect();
+    const point = px.viewport.toScreen(live.x, live.y);
+    const radius = live._semanticCard?.form === 'card' ? live._semanticCard.width / 2 : getNodeVisualRadius(live);
+    return selectedNotePreview.show(change.node.label ?? '', change.initialValue, canvas.left + point.x, canvas.top + point.y,
+      radius * px.viewport.scale.x, canvas, () => ({ note: change.initialValue, commit: change.commit })) && selectedNotePreview.edit();
+  };
+
+  const beginNodeTitleEditForPane = (pane: PaneState, id: string, selectContents = false): boolean => {
+    const change = createPaneNodeTextChange(pane, id, 'label');
+    if (!change) return false;
+    const { node } = change;
+
+    if (focusedPaneState() !== pane) switchFocusedPane(pane.index);
+    if (pane.selNode !== id) fillNode(id);
+    selectedNotePreview.hide();
+
+    let hiddenTitle: NodeSprite['label'] | undefined;
+    const restoreTitle = () => {
+      if (!hiddenTitle) return;
+      if (!hiddenTitle.destroyed) hiddenTitle.renderable = true;
+      hiddenTitle = undefined;
+      panePixi(pane)?.app.render();
+    };
+
+    return inlineNodeTitle.begin({
+      label: change.initialValue,
+      selectContents,
+      fontFamily: (pane.index === PANE_LEFT ? fontFamily : pane.fontFamily) || DEFAULT_CANVAS_FONT,
+      restoreTitle,
+      anchor: () => {
+        const px = panePixi(pane);
+        if (!px || !change.isCurrent() || focusedPaneState() !== pane || pane.selNode !== id) return null;
+        const sprite = (pane.index === PANE_LEFT ? nodeSprites : extraSprites[pane.index - 1])?.get(id);
+        const { viewport } = px;
+        const canvas = px.app.canvas.getBoundingClientRect();
+        const scaleX = canvas.width / (viewport.screenWidth || canvas.width || 1);
+        const scaleY = canvas.height / (viewport.screenHeight || canvas.height || 1);
+        const title = sprite?.label;
+        const bounds = renderedNodeTitleHitBounds(sprite, viewport, undefined, undefined, title === hiddenTitle);
+        if (bounds && title) {
+          const start = viewport.toScreen(bounds.left, bounds.top);
+          const end = viewport.toScreen(bounds.right, bounds.bottom);
+          const height = (end.y - start.y) * scaleY;
+          const fontSize = title.style.fontSize * height / Math.max(1, title.bounds.height);
+          const fill = title.style.fill;
+          const color = typeof fill === 'number' ? `#${fill.toString(16).padStart(6, '0')}` : typeof fill === 'string' ? fill : undefined;
+          if (hiddenTitle !== title) {
+            restoreTitle();
+            hiddenTitle = title;
+            title.renderable = false;
+            px.app.render();
+          }
+          return { x: canvas.left + start.x * scaleX, y: canvas.top + start.y * scaleY,
+            width: (end.x - start.x) * scaleX, height, fontSize, fontWeight: title.style.fontWeight, color,
+            startAligned: title.anchor.x === 0, canvas };
+        }
+        const simulated = scopedPaneSimulationManager(pane)?.getSim()?.nodes().find((candidate: any) => candidate.id === id) ?? node;
+        const point = viewport.toScreen(simulated.x, simulated.y + getNodeVisualRadius(simulated) + 3);
+        return { x: canvas.left + point.x * scaleX, y: canvas.top + point.y * scaleY,
+          width: 0, height: 18, fontSize: 15 * viewport.scale.y * scaleY, startAligned: false, canvas };
+      },
+      commit: change.commit,
+    });
+  };
+  const commitCreatedPaneNodes = (pane: PaneState, destination: GraphData, nodes: any[], structureId: string | null, edges: any[] = []): boolean => {
+    if (!canMutateCanvasPane(pane) || paneRuntimeGraph(pane) !== destination
+      || (pane.structureView?.structureId ?? null) !== structureId || nodes.length === 0) return false;
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    const ids = new Set(destination.nodes.map(node => String(node.id)));
+    for (const node of nodes) {
+      if (ids.has(String(node.id))) return false;
+      ids.add(String(node.id));
+    }
+    if (edges.some(edge => !ids.has(String(typeof edge.source === 'object' ? edge.source.id : edge.source))
+      || !ids.has(String(typeof edge.target === 'object' ? edge.target.id : edge.target)))) return false;
+    if (structureId) {
+      const preview = { ...destination, nodes: [...destination.nodes, ...nodes] };
+      if (nodes.some(node => previewStructureMembershipTransaction(preview,
+        { action: 'add', structureId, nodeId: node.id }).status !== 'changed')) return false;
+    }
+    // Check order capacity without repairing the live document before its snapshot.
+    assignCreatedOrders(nodes, destination.nodes.map(node => ({ ...node })));
+    runtime.undoManager.pushSnapshot(destination);
+    assignCreatedOrders(nodes, destination.nodes);
+    destination.nodes.push(...nodes);
+    destination.edges.push(...edges);
+    if (structureId) for (const node of nodes) {
+      transactStructureMembership(destination, { action: 'add', structureId, nodeId: node.id });
+    }
+    scheduleSaveForRuntime(runtime);
+    reinitializeRuntimeViews(runtime);
+    pane.selNode = nodes[0].id; pane.selEdge = null; pane.selGroup = null;
+    if (focusedPaneState() === pane) fillNode(nodes[0].id);
+    syncFocusedCommands(); draw();
+    return true;
+  };
+  const duplicateNodeForPane = (pane: PaneState, nodeId: string, expectedGraph = paneRuntimeGraph(pane)): string | null => {
+    if (!canMutateCanvasPane(pane) || paneRuntimeGraph(pane) !== expectedGraph) return null;
+    const node = expectedGraph.nodes.find(candidate => candidate.id === nodeId);
+    if (!node || node._structureInteriorProxy || node._localContextProxy) return null;
+    const copy = prepareGraphCopy(expectedGraph, { nodes: [node], edges: [] },
+      { x: (node.x || 0) + 60, y: (node.y || 0) + 40 });
+    return commitCreatedPaneNodes(pane, expectedGraph, copy.nodes, pane.structureView?.structureId ?? null)
+      ? copy.nodes[0].id : null;
+  };
+  const captureMediaImport = (pane: PaneState, placement?: { x: number; y: number }) => {
+    if (!canMutateCanvasPane(pane)) {
+      showToast(paneRuntimeGraph(pane).settings?.sourceMode === 'vault-readonly'
+        ? '这是只读来源；请把附件放入图空间' : '请先完成这个空间的文字编辑，再导入附件', 'info', 3500);
+      return null;
+    }
+    return createMediaImportSession(pane, {
+      getGraph: paneRuntimeGraph, canMutate: canMutateCanvasPane,
+      getContextKey: owner => owner.structureView?.structureId ?? null,
+      getOrigin: owner => panePixi(owner)?.viewport.center ?? { x: 0, y: 0 },
+      commit: commitCreatedPaneNodes,
+    }, placement);
+  };
+  const importBrowserFiles = async (session: NonNullable<ReturnType<typeof captureMediaImport>>, files: File[]) => {
+    try {
+      const { sources, unsupported } = await readBrowserMediaSources(files);
+      const created = session.add(sources);
+      if (created.length) showToast(`已导入 ${created.length} 个附件${unsupported.length ? `，另 ${unsupported.length} 个文件类型暂不支持` : ''}`, 'success');
+      else if (sources.length) showToast('目标空间已变化，未导入附件', 'info', 3000);
+      else if (unsupported.length) showToast('这些文件类型暂不支持，请选择图片、音视频、PDF 或文本', 'info', 3500);
+    } catch (error) {
+      showToast('无法读取附件，请重新选择文件', 'error', 3500);
+      console.warn('[nodespace] Attachment import:', error);
+    }
+  };
   const scopedPaneGraph = (pane: PaneState): GraphData => pane.structureView?.graph
     ?? pane.localContextProjection?.graph
     ?? paneRuntimeGraph(pane);
   const scopedPaneSimulationManager = (pane: PaneState): any => pane.structureView?.simManager
     ?? pane.localContextProjection?.simManager
     ?? (pane.index === PANE_LEFT ? simManager : pane.simManager);
+
+  function setPaneNodesFixed(pane: PaneState, ids: readonly string[], desired?: boolean, expectedView = scopedPaneGraph(pane)): boolean {
+    const view = scopedPaneGraph(pane);
+    if (view !== expectedView || !canMutateCanvasPane(pane)) return false;
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    if (runtime.fileOperationActive) return false;
+    const nodesById = new Map(runtime.graph.nodes.map(node => [String(node.id), node]));
+    const visibleById = view === runtime.graph ? nodesById : new Map(view.nodes.map(node => [String(node.id), node]));
+    const requested = [...new Set(ids.map(String))];
+    if (!requested.length || requested.some(id => !nodesById.has(id) || !visibleById.has(id)
+      || isPaneStructureProxyNode(pane.structureView, id) || isCrossSpaceProxyNode(visibleById.get(id)))) return false;
+
+    const fixed = desired ?? !requested.every(id => nodesById.get(id).fixed);
+    const manager = scopedPaneSimulationManager(pane);
+    const rendered = coordinateLayoutModes.has(pane.activeMode) ? view.nodes : manager?.getSim()?.nodes() ?? [];
+    const renderedById = new Map<string, { x: number; y: number }>(rendered.map((node: any) => [String(node.id), node]));
+    const changes = new Map<string, { fixed: boolean; fx: number | null; fy: number | null }>();
+    for (const id of requested) {
+      const node = nodesById.get(id);
+      if (Boolean(node.fixed) === fixed) continue;
+      const position = renderedById.get(id) ?? node;
+      if (fixed && (!Number.isFinite(position.x) || !Number.isFinite(position.y))) return false;
+      changes.set(id, { fixed, fx: fixed ? position.x : null, fy: fixed ? position.y : null });
+    }
+    if (changes.size === 0) return false;
+
+    runtime.undoManager.pushSnapshot(runtime.graph);
+    const managers = new Set([runtime.simManager]);
+    for (const owner of allPaneOwners()) {
+      if ((owner.index === PANE_LEFT ? primaryRuntime : owner.runtime) !== runtime) continue;
+      const savedPins = owner.index === PANE_LEFT ? savedFixedNodes : owner.savedFixedNodes;
+      for (const pin of savedPins) {
+        const change = changes.get(pin.id);
+        if (!change) continue;
+        Object.assign(pin, change);
+        if (change.fx !== null && change.fy !== null) { pin.x = change.fx; pin.y = change.fy; }
+      }
+      // An in-flight semantic animation still owns its displayed coordinates.
+      // The pin becomes authoritative before the next automatic layout pass.
+      if (owner.layout.current instanceof SemanticLayoutController) {
+        owner.currentAnimationCancel?.();
+        owner.currentAnimationCancel = null;
+      }
+      managers.add(scopedPaneSimulationManager(owner));
+    }
+    for (const [id, change] of changes) {
+      const node = nodesById.get(id);
+      Object.assign(node, change);
+      if (change.fixed) { node.x = change.fx; node.y = change.fy; }
+    }
+    for (const simulationManager of managers) {
+      const simulation = simulationManager?.getSim();
+      if (!simulation) continue;
+      const members = simulation.nodes();
+      let changed = false;
+      for (const node of members) {
+        const change = changes.get(String(node.id));
+        if (!change) continue;
+        temporaryNodeAnchors.delete(node);
+        Object.assign(node, change);
+        if (change.fixed) { node.x = change.fx; node.y = change.fy; }
+        changed = true;
+      }
+      if (changed && !simulationManager.isStaticMode()) {
+        simulation.nodes(members);
+        simulation.alpha(Math.max(simulation.alpha(), 0.01)).restart();
+      }
+    }
+    scheduleSaveForRuntime(runtime);
+    draw();
+    return true;
+  }
+
   // Search depends on pane-scope helpers; initialize its view only after those
   // helpers exist (startup executes this path synchronously).
   syncSearchControlsFromFocusedPane();
@@ -5878,7 +5917,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       () => pane.linkDist, () => pane.linkStr, () => pane.charge, () => pane.centerS,
       () => pane.collideR, () => pane.groupBound,
       () => pane.alphaTarget, () => pane.heatingTime,
-      () => new Set(),
+      () => getCollapsedHierarchyHiddenNodeIds(view.graph),
       () => draw(),
     );
     view.simManager.initSim();
@@ -6001,9 +6040,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   attachLocalContextNavigation(pane1);
 
   deleteNodesForPane = (pane, requestedIds) => {
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
     const runtimeGraph = paneRuntimeGraph(pane);
     if (runtimeGraph.settings?.sourceMode === 'vault-readonly') {
       showToast('这是由 Vault 原文生成的只读视图，不能删除投影卡片', 'info', 3500);
+      return false;
+    }
+    if (runtime.textEditActive || pane.textViewActive) {
+      showToast('请先完成文字编辑，再删除节点', 'info', 3000);
       return false;
     }
     const ids = [...new Set(requestedIds)].filter(id => !isPaneStructureProxyNode(pane.structureView, id));
@@ -6021,47 +6065,45 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
 
     pane.undoManager.pushSnapshot(runtimeGraph);
-    const sim = scopedPaneSimulationManager(pane)?.getSim?.();
-    const now = performance.now();
+    const beforeIds = new Set(runtimeGraph.nodes.map(node => node.id));
     for (const node of nodes) {
       if (isStructureNode(node)) {
         dissolveStructureNode(runtimeGraph, node.id);
         continue;
       }
       detachNodeFromStructure(runtimeGraph, node.id);
-      const simNode = sim?.nodes?.().find((candidate: any) => candidate.id === node.id);
-      if (simNode) simNode._dying = now;
       const nodeIndex = runtimeGraph.nodes.findIndex(candidate => candidate.id === node.id);
       if (nodeIndex >= 0) runtimeGraph.nodes.splice(nodeIndex, 1);
-      for (const edge of runtimeGraph.edges) {
-        const source = typeof edge.source === 'object' ? edge.source.id : edge.source;
-        const target = typeof edge.target === 'object' ? edge.target.id : edge.target;
-        if (source === node.id || target === node.id) edge._dyingAt = now;
-      }
+    }
+    const remainingIds = new Set(runtimeGraph.nodes.map(node => node.id));
+    const removedIds = new Set([...beforeIds].filter(id => !remainingIds.has(id)));
+    // Deletion belongs to the document transaction, not a later animation
+    // callback. Undo, redo and immediate saves must all see the complete result.
+    for (let index = runtimeGraph.edges.length - 1; index >= 0; index--) {
+      const edge = runtimeGraph.edges[index];
+      const source = typeof edge.source === 'object' ? edge.source.id : edge.source;
+      const target = typeof edge.target === 'object' ? edge.target.id : edge.target;
+      if (removedIds.has(source) || removedIds.has(target)) runtimeGraph.edges.splice(index, 1);
     }
     pane.selNode = null;
     pane.selEdge = null;
     pane.selGroup = null;
-    if (pane.index === PANE_LEFT) clearEd();
-    reinitializeRuntimeViews(pane.index === PANE_LEFT ? primaryRuntime : pane.runtime);
-    if (pane.index === PANE_LEFT) scheduleSave(); else scheduleSaveForPane(pane);
+    if (focusedPaneState() === pane) clearEd();
+    reinitializeRuntimeViews(runtime);
+    scheduleSaveForRuntime(runtime);
     draw();
-    setTimeout(() => {
-      for (let index = runtimeGraph.edges.length - 1; index >= 0; index--) {
-        const edge: any = runtimeGraph.edges[index];
-        if (edge._dyingAt && performance.now() - edge._dyingAt >= 400) runtimeGraph.edges.splice(index, 1);
-      }
-      reinitializeRuntimeViews(pane.index === PANE_LEFT ? primaryRuntime : pane.runtime);
-      if (pane.index === PANE_LEFT) scheduleSave(); else scheduleSaveForPane(pane);
-      draw();
-    }, 400);
     return true;
   };
 
   deleteEdgesForPane = (pane, projectedIndexes) => {
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
     const runtimeGraph = paneRuntimeGraph(pane);
     if (runtimeGraph.settings?.sourceMode === 'vault-readonly') {
       showToast('这些关系来自 Markdown 原文（显式链接或标题层级），不能在投影视图中删除', 'info', 3800);
+      return false;
+    }
+    if (runtime.textEditActive || pane.textViewActive) {
+      showToast('请先完成文字编辑，再删除关系', 'info', 3000);
       return false;
     }
     const originalIndexes = [...new Set(projectedIndexes.map(index => originalEdgeIndexForPane(pane, index)))];
@@ -6069,24 +6111,42 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       showToast('这是只读代理关系；请退出内部视图后编辑', 'info', 3500);
       return false;
     }
-    const indexes = (originalIndexes as number[]).filter(index => runtimeGraph.edges[index]);
+    const indexes = (originalIndexes as number[]).filter(index => Number.isInteger(index) && index >= 0 && runtimeGraph.edges[index]);
     if (indexes.length === 0) return false;
     pane.undoManager.pushSnapshot(runtimeGraph);
-    const now = performance.now();
-    for (const index of indexes) runtimeGraph.edges[index]._dyingAt = now;
+    for (const index of indexes.sort((a, b) => b - a)) runtimeGraph.edges.splice(index, 1);
     pane.selEdge = null;
-    if (pane.index === PANE_LEFT) clearEd();
-    if (pane.index === PANE_LEFT) scheduleSave(); else scheduleSaveForPane(pane);
+    if (focusedPaneState() === pane) clearEd();
+    reinitializeRuntimeViews(runtime);
+    scheduleSaveForRuntime(runtime);
     draw();
-    setTimeout(() => {
-      for (let index = runtimeGraph.edges.length - 1; index >= 0; index--) {
-        const edge: any = runtimeGraph.edges[index];
-        if (edge._dyingAt && performance.now() - edge._dyingAt >= 400) runtimeGraph.edges.splice(index, 1);
-      }
-      reinitializeRuntimeViews(pane.index === PANE_LEFT ? primaryRuntime : pane.runtime);
-      if (pane.index === PANE_LEFT) scheduleSave(); else scheduleSaveForPane(pane);
-      draw();
-    }, 400);
+    return true;
+  };
+
+  deleteGroupForPane = (pane, id) => {
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    const runtimeGraph = paneRuntimeGraph(pane);
+    if (runtimeGraph.settings?.sourceMode === 'vault-readonly') {
+      showToast('这是由 Vault 原文生成的只读视图，不能删除集合', 'info', 3500);
+      return false;
+    }
+    if (runtime.textEditActive || pane.textViewActive) {
+      showToast('请先完成文字编辑，再删除集合', 'info', 3000);
+      return false;
+    }
+    const index = runtimeGraph.groups.findIndex(group => group.id === id);
+    if (index < 0) return false;
+    if (isStructureCollection(runtimeGraph.groups[index])) {
+      showToast('结构集合随对应结构管理，请从结构卡片调整成员', 'info', 3500);
+      return false;
+    }
+    pane.undoManager.pushSnapshot(runtimeGraph);
+    runtimeGraph.groups.splice(index, 1);
+    pane.selGroup = null;
+    if (focusedPaneState() === pane) clearEd();
+    reinitializeRuntimeViews(runtime);
+    scheduleSaveForRuntime(runtime);
+    draw();
     return true;
   };
 
@@ -6190,7 +6250,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
             await persistRuntimeSnapshot(runtime, collectRuntimeSettings(runtime));
           }, 300);
         }
-        renderAllTabs();
+        syncSpaceNavigation();
       },
       draw,
       toast: (message, type) => showToast(message, type, 4000),
@@ -6201,12 +6261,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (editor.isActive()) return;
         const targetPane = pane === pane0 ? pane0 as unknown as PaneState : pane as PaneState;
         const runtime = paneRuntime(pane);
-        if (runtime.graph.settings?.sourceMode === 'vault-readonly') {
-          const source = runtime.graph.nodes[0]?.sourceRef as VaultSourceRef | undefined;
-          if (source?.path) void openVaultResourceInObsidian(source.path, source.block ? `^${source.block}` : source.heading);
-          showToast('Vault 文档保持单一原文；已交给 Obsidian 编辑', 'info', 3500);
-          return;
-        }
+        if (runtime.graph.settings?.sourceMode === 'vault-readonly') return;
         if (targetPane.structureView && !exitStructureForPane(targetPane)) {
           showToast('当前结构内部视图无法安全退出，暂不能进入文字视图', 'warning', 4000);
           return;
@@ -6313,6 +6368,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       s.layoutMode = layoutMode; s.gridSnapEnabled = gridSnapEnabled;
       s.partialGridSnap = partialGridSnap; s.nodeColorStyle = nodeColorStyle;
       s.fixedHollow = fixedHollow; s.fontFamily = fontFamily;
+      s.edgeColorGradient = edgeColorGradient; s.edgeWidthByLevel = edgeWidthByLevel;
       s.cardBorderStyle = cardBorderStyle;
       s.draggingNode = draggingNode; s.wasDragged = wasDragged;
       s.search = search; s.sField = sField; s.sDisplayMode = sDisplayMode; s.sMatchMode = sMatchMode;
@@ -6353,6 +6409,30 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
   };
 
+  async function openFirstSplitPane(fileName: string) {
+    splitActive = true;
+    pane1Container.style.display = '';
+    dualPane.layoutPanes();
+    if (!extraPixis[0]) {
+      const px = await createPixiApp(pane1Container);
+      extraPixis[0] = pixi1 = pane1.pixi = px;
+      px.viewport.on('moved', () => { scheduleVaultViewportSave(pane1); if (readyToDraw) drawGridOnly(); });
+      px.viewport.on('zoomed-end', () => { scheduleVaultViewportSave(pane1); if (readyToDraw) { draw(); refreshSemanticLensForPane(pane1); } });
+      px.onContextRestored = () => { simManager1.initSim(); draw(); };
+      bindCanvasEvents(pane1, px.app.canvas as any, bindPaneEvents(pane1, px, simManager1, pane1NodeSprites, { v: null }));
+    }
+    await loadGraphDataPane1(fileName);
+    dualPane.layoutPanes();
+    const px = extraPixis[0];
+    const { clientWidth: width, clientHeight: height } = pane1Container;
+    const center = { x: px.viewport.center.x, y: px.viewport.center.y };
+    px.app.renderer.resize(width, height);
+    px.viewport.resize(width, height);
+    px.viewport.moveCenter(center.x, center.y);
+    switchFocusedPane(PANE_RIGHT);
+    draw();
+  }
+
   function addSplitPane(fileName: string) {
     if (blockForTextDraft('调整分屏')) return;
     const newC = dualPane.addPane();
@@ -6366,9 +6446,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     attachStructureNavigation(np);
     attachLocalContextNavigation(np);
     mountTextEditor(np);
-    // 先设置标签（同步），确保 renderAllTabs 能立即显示
+    // Keep the graph selection while the renderer initializes.
     np.openTabs = [fileName]; np.activeTab = fileName;
-    createPixiApp(newC).then(async px => {
+    const ready = createPixiApp(newC).then(async px => {
       extraPixis[idx] = px;
       extraPanes[idx].pixi = px;
       np.pixi = px;
@@ -6390,13 +6470,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       bindCanvasEvents(np, px.app.canvas as any, bindPaneEvents(
         np, px, extraSims[idx], extraSprites[idx], { v: null }
       ));
-      // 新窗格应用光晕滤镜
-      updateBlobFilters();
-      // pixi 就绪后刷新标签栏
-      renderAllTabs(); draw();
+      switchFocusedPane(np.index);
+      syncSpaceNavigation(); draw();
     });
-    switchFocusedPane(idx + 1);
-    renderAllTabs(); draw();
+    syncSpaceNavigation(); draw();
+    return ready;
   }
   function removeSplitPane(idx: number) {
     if (blockForTextDraft('关闭窗格')) return;
@@ -6404,6 +6482,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (idx < 0 || idx >= extraPanes.length) return;
 
     if (idx === 0 && extraPanes.length === 1) {
+      splitActive = false;
+      paneGraphLoads.delete(pane1);
+      openTabRequests.delete(pane1);
       // 仅剩 pane1 → 隐藏分屏（复用 pane1 数据）
       exitStructureForPane(extraPanes[0]);
       extraPanes[0].localContextProjection?.simManager?.getSim?.()?.stop?.();
@@ -6415,7 +6496,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       dualPane.paneContainers[PANE_RIGHT].style.display = 'none';
       dualPane.layoutPanes();
       if (focusedPaneIndex === PANE_RIGHT) switchFocusedPane(PANE_LEFT);
-      renderAllTabs(); draw();
+      syncSpaceNavigation(); draw();
       return;
     }
 
@@ -6429,6 +6510,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
     // 销毁目标窗格的布局与 pixi
     const np = extraPanes[idx];
+    paneGraphLoads.delete(np);
+    openTabRequests.delete(np);
     exitStructureForPane(np);
     np.localContextProjection?.simManager?.getSim?.()?.stop?.();
     np.localContextProjection = null;
@@ -6478,7 +6561,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       for (const [key, sprite] of pane1.nodeSprites) pane1NodeSprites.set(key, sprite);
     }
 
-    renderAllTabs(); draw();
+    syncSpaceNavigation(); draw();
   }
   // paneContainers 跟踪（兼容现有引用）
   const paneContainers = dualPane.paneContainers;
@@ -6544,30 +6627,58 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       showToast('已退出连线模式', 'info', 2500);
       return false;
     }
+    const initialSource = focusedMobileSelectionState().isSingleOrdinaryNode
+      ? targetPane?.selNode ?? selNode
+      : null;
+    const sourceNode = initialSource
+      ? (targetPane?.simManager ?? simManager).getSim()?.nodes().find((node: any) => node.id === initialSource)
+      : null;
     if (targetPane) {
       targetPane.linkMode = true;
-      targetPane.linkSrc = null;
-      targetPane.linkCursorX = 0;
-      targetPane.linkCursorY = 0;
+      targetPane.linkSrc = initialSource;
+      targetPane.linkCursorX = sourceNode?.x ?? 0;
+      targetPane.linkCursorY = sourceNode?.y ?? 0;
       clearLinkPreview(targetPane);
     } else {
       linkMode = true;
-      linkSrc = null;
-      linkCursorX = 0;
-      linkCursorY = 0;
+      linkSrc = initialSource;
+      linkCursorX = sourceNode?.x ?? 0;
+      linkCursorY = sourceNode?.y ?? 0;
       clearLinkPreview(pane0);
     }
     draw();
     syncFocusedCommands();
-    showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000);
+    showToast(initialSource
+      ? '选择目标节点，或点击空白处长出新想法'
+      : '点击源节点，再点击目标；点击空白处可以长出新想法', 'info', 3000);
     return true;
   };
 
+  function syncEditorShellGeometry(): DOMRect {
+    const shell = editorShell.getBoundingClientRect();
+    const bottom = `${Math.ceil(shell.bottom - appShell.getBoundingClientRect().top)}px`;
+    if (appShell.style.getPropertyValue('--fg-editor-shell-bottom') !== bottom) {
+      appShell.style.setProperty('--fg-editor-shell-bottom', bottom);
+    }
+    return shell;
+  }
+
+  function graphTopClearance(canvas: DOMRect): number {
+    const chrome = [syncEditorShellGeometry(), floatingTop.getBoundingClientRect()];
+    let bottom = canvas.top;
+    for (const rect of chrome) {
+      if (rect.width > 0 && rect.height > 0 && rect.right > canvas.left && rect.left < canvas.right
+        && rect.bottom > canvas.top && rect.top < canvas.bottom) bottom = Math.max(bottom, rect.bottom);
+    }
+    return bottom - canvas.top;
+  }
+
   function fitPaneNodes(targetPane: PaneState | any, nodes: any[], time = FIT_ALL_DURATION) {
     const targetPixi = targetPane?.pixi ?? (targetPane === pane0 ? pixi : null);
-    if (!targetPixi || nodes.length === 0) return;
+    const positionedNodes = nodes.filter(node => Number.isFinite(node.x) && Number.isFinite(node.y));
+    if (!targetPixi || positionedNodes.length === 0) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const node of nodes) {
+    for (const node of positionedNodes) {
       const card = node._semanticCard;
       const halfWidth = card?.width ? card.width / 2 : (node.radius || 9);
       const halfHeight = card?.height ? card.height / 2 : (node.radius || 9);
@@ -6579,13 +6690,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const viewport = targetPixi.viewport;
     const canvasRect = targetPixi.app.canvas.getBoundingClientRect();
     const sidebarRect = sidebar.sidebar.getBoundingClientRect();
-    const topRect = floatingTop.getBoundingClientRect();
     const leftInset = sidebarRect.right > canvasRect.left && sidebarRect.left < canvasRect.right
       ? Math.max(14, sidebarRect.right - canvasRect.left + 14)
       : 14;
-    const topInset = topRect.bottom > canvasRect.top && topRect.top < canvasRect.bottom
-      ? Math.max(14, topRect.bottom - canvasRect.top + 14)
-      : 14;
+    const topInset = graphTopClearance(canvasRect) + 14;
     const mobileBar = document.querySelector<HTMLElement>('.fg-mobile-toolbar');
     const mobileBarStyle = mobileBar ? getComputedStyle(mobileBar) : null;
     const mobileBarRect = mobileBar && mobileBarStyle?.display !== 'none' && mobileBarStyle?.visibility !== 'hidden'
@@ -6596,20 +6704,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       : 30;
     const availableWidth = Math.max(1, viewport.screenWidth - leftInset - rightInset);
     const availableHeight = Math.max(1, viewport.screenHeight - topInset - bottomInset);
-    const width = Math.max(1, maxX - minX + 90);
-    const height = Math.max(1, maxY - minY + 100);
-    // Leave breathing room for semantic region captions, edge labels and the
-    // short refinement animation, all of which extend beyond raw card bounds.
-    const scale = Math.min(availableWidth / width, availableHeight / height, 1.35) * 0.9;
+    const compact = positionedNodes.every(node => node._semanticCard?.form === 'node')
+      && !targetPane.localContext && !targetPane.structureBoundaryShapes?.size;
+    // Node view has no card excerpts or region captions. Its existing label
+    // footprints already reserve space, so an extra card-sized margin would
+    // needlessly shrink even a handful of ideas on a phone.
+    const width = Math.max(1, maxX - minX + (compact ? 28 : 90));
+    const height = Math.max(1, maxY - minY + (compact ? 36 : 100));
+    let scale = Math.min(availableWidth / width, availableHeight / height, 1.35) * (compact ? 0.96 : 0.9);
+    if (time === 0) {
+      viewport.setZoom(scale, false);
+      scale = viewport.scale.x;
+    }
     const screenCenterX = leftInset + availableWidth / 2;
     const screenCenterY = topInset + availableHeight / 2;
     const worldCenterX = (minX + maxX) / 2 - (screenCenterX - viewport.screenWidth / 2) / scale;
     const worldCenterY = (minY + maxY) / 2 - (screenCenterY - viewport.screenHeight / 2) / scale;
-    viewport.animate({
-      scale,
-      position: { x: worldCenterX, y: worldCenterY },
-      time,
-    });
+    if (time === 0) viewport.moveCenter(worldCenterX, worldCenterY);
+    else viewport.animate({ scale, position: { x: worldCenterX, y: worldCenterY }, time });
   }
 
   /** Keep the reader's zoom and framing unless newly revealed content falls
@@ -6621,13 +6733,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const scale = Math.max(0.01, viewport.scale.x || 1);
     const canvasRect = targetPixi.app.canvas.getBoundingClientRect();
     const sidebarRect = sidebar.sidebar.getBoundingClientRect();
-    const topRect = floatingTop.getBoundingClientRect();
     const left = (sidebarRect.right > canvasRect.left && sidebarRect.left < canvasRect.right
       ? Math.max(18, sidebarRect.right - canvasRect.left + 18)
       : 18) + 22;
-    const top = (topRect.bottom > canvasRect.top && topRect.top < canvasRect.bottom
-      ? Math.max(18, topRect.bottom - canvasRect.top + 18)
-      : 18) + 22;
+    const top = graphTopClearance(canvasRect) + 40;
     const right = viewport.screenWidth - 42;
     const mobileBar = document.querySelector<HTMLElement>('.fg-mobile-toolbar');
     const mobileBarStyle = mobileBar ? getComputedStyle(mobileBar) : null;
@@ -6659,10 +6768,72 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
   }
 
+  function revealEditedSelection(occluder: HTMLElement) {
+    const pane = focusedPaneState();
+    const targetPixi = panePixi(pane);
+    if (!targetPixi || pane.centerMode || pane.draggingNode || targetPixi.viewport.pause
+      || ['cardgrid', 'category', 'fullcat'].includes(pane.activeMode)) return;
+    const incoming = targetPixi.viewport.plugins.get('animate');
+    if (incoming && searchAnimations.has(incoming)) {
+      return () => { if (targetPixi.viewport.plugins.get('animate') === incoming) targetPixi.viewport.plugins.remove('animate'); };
+    }
+    const ids = new Set<string>();
+    if (pane.selNode) ids.add(pane.selNode);
+    else if (pane.selEdge !== null) {
+      const index = originalEdgeIndexForPane(pane, pane.selEdge);
+      const edge = index === null ? null : paneRuntimeGraph(pane).edges[index];
+      if (edge) for (const endpoint of [edge.source, edge.target]) ids.add(typeof endpoint === 'object' ? endpoint.id : endpoint);
+    }
+    const sprites = pane.index === PANE_LEFT ? nodeSprites : extraSprites[pane.index - 1];
+    const targets: RevealRect[] = [];
+    for (const id of ids) {
+      const sprite = sprites?.get(id);
+      if (!sprite || !sprite.container.visible || sprite.container.destroyed) continue;
+      const bounds = sprite.container.getBounds().rectangle;
+      targets.push({ left: bounds.x, top: bounds.y, right: bounds.x + bounds.width, bottom: bounds.y + bounds.height });
+    }
+    const viewport = targetPixi.viewport, canvas = targetPixi.app.canvas.getBoundingClientRect();
+    if (!canvas.width || !canvas.height) return;
+    const scaleX = viewport.screenWidth / canvas.width, scaleY = viewport.screenHeight / canvas.height;
+    const localRect = (rect: DOMRect): RevealRect => ({
+      left: (rect.left - canvas.left) * scaleX, top: (rect.top - canvas.top) * scaleY,
+      right: (rect.right - canvas.left) * scaleX, bottom: (rect.bottom - canvas.top) * scaleY,
+    });
+    const obstacles = [occluder, sidebar.sidebar, editorShell, floatingTop, document.querySelector<HTMLElement>('.fg-mobile-toolbar')]
+      .filter((element): element is HTMLElement => !!element && getComputedStyle(element).display !== 'none' && getComputedStyle(element).visibility !== 'hidden')
+      .map(element => localRect(element.getBoundingClientRect()));
+    const visual = window.visualViewport;
+    const screen = {
+      left: Math.max(16, ((visual?.offsetLeft || 0) - canvas.left) * scaleX + 16),
+      top: Math.max(16, ((visual?.offsetTop || 0) - canvas.top) * scaleY + 16),
+      right: Math.min(viewport.screenWidth - 16, ((visual?.offsetLeft || 0) + (visual?.width || window.innerWidth) - canvas.left) * scaleX - 16),
+      bottom: Math.min(viewport.screenHeight - 16, ((visual?.offsetTop || 0) + (visual?.height || window.innerHeight) - canvas.top) * scaleY - 16),
+    };
+    const shift = computeRevealTranslation(targets, screen, obstacles);
+    if (!shift) return;
+    const center = { x: viewport.center.x - shift.x / viewport.scale.x, y: viewport.center.y - shift.y / viewport.scale.y };
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      viewport.moveCenter(center.x, center.y); draw();
+    } else {
+      viewport.animate({ position: center, time: 240, removeOnInterrupt: true });
+      const animation = viewport.plugins.get('animate');
+      return () => { if (viewport.plugins.get('animate') === animation) viewport.plugins.remove('animate'); };
+    }
+  }
+
   function fitFocusedPane() {
     const targetPane = focusedExtraPane();
     const focusedPane = targetPane ?? pane0 as unknown as PaneState;
-    const nodes = scopedPaneSimulationManager(focusedPane)?.getSim()?.nodes() ?? [];
+    const controller = focusedPane.layout.current;
+    const automatic = controller instanceof SemanticLayoutController;
+    if (automatic && controller.flush()) draw();
+    const sprites = focusedPane.index === PANE_LEFT ? nodeSprites : extraSprites[focusedPane.index - 1];
+    const finalNodes = automatic
+      ? new Map(scopedPaneGraph(focusedPane).nodes.map(node => [node.id, node]))
+      : null;
+    const nodes = (scopedPaneSimulationManager(focusedPane)?.getSim()?.nodes() ?? [])
+      .filter((node: any) => !sprites || sprites.has(node.id))
+      .map((node: any) => finalNodes?.get(node.id) ?? node);
     fitPaneNodes(focusedPane, nodes);
   }
 
@@ -6713,49 +6884,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   syncFocusedCommands();
   window.addEventListener('beforeunload', () => mobileToolbar.destroy(), { once: true });
 
-  const refreshBtn = document.createElement('button');
-  refreshBtn.className = 'fg-action fg-action-secondary';
-  refreshBtn.textContent = '刷新'; refreshBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  refreshBtn.onclick = async () => {
-    const focusedExtra = focusedExtraPane();
-    if (focusedExtra) {
-      if (focusedExtra.activeMode === 'radial') { applyLayoutMode('radial'); return; }
-      if (isBuiltin(focusedExtra.activeTab)) {
-        const builtin = repairGraphCreatedOrders(JSON.parse(JSON.stringify(BUILTIN_GRAPHS[focusedExtra.activeTab])));
-        focusedExtra.graph.nodes = builtin.nodes; focusedExtra.graph.edges = builtin.edges; focusedExtra.graph.groups = builtin.groups;
-        normalizeStructureRelations(focusedExtra.graph);
-        await writeGraphData(focusedExtra.activeTab, focusedExtra.graph);
-      } else {
-        const saved = await readGraphData(focusedExtra.activeTab);
-        if (saved) {
-          focusedExtra.graph.nodes = saved.nodes; focusedExtra.graph.edges = saved.edges || []; focusedExtra.graph.groups = saved.groups || [];
-          normalizeStructureRelations(focusedExtra.graph);
-        }
-      }
-      reinitializeRuntimeViews(focusedExtra.runtime); draw();
-      return;
-    }
-    if (activeMode === 'tree') { applyTreeLayoutV3(); return; }
-    if (activeMode === 'radial') { applyLayoutMode('radial'); return; }
-    if (activeMode === 'category') { applyLayoutMode('category'); return; }
-    if (activeMode === 'fullcat') { applyLayoutMode('fullcat'); return; }
-    if (activeMode === 'cardgrid') { applyLayoutMode('cardgrid'); return; }
-    if (isBuiltin(activeTab)) {
-      const builtin = repairGraphCreatedOrders(JSON.parse(JSON.stringify(BUILTIN_GRAPHS[activeTab])));
-      graph.nodes = builtin.nodes; graph.edges = builtin.edges; graph.groups = builtin.groups;
-      graph.settings = builtin.settings || graph.settings;
-      normalizeStructureRelations(graph);
-      await writeGraphData(activeTab, graph);
-    } else {
-      const saved = await readGraphData(activeTab);
-      if (saved) {
-        graph.nodes = saved.nodes; graph.edges = saved.edges || []; graph.groups = saved.groups || [];
-        normalizeStructureRelations(graph);
-      }
-    }
-    reinitializeRuntimeViews(primaryRuntime); draw();
-  };
-  controlsRow2.appendChild(refreshBtn);
   // --- 布局切换时保存/恢复固定节点 ---
   let savedFixedNodes: { id: string; x: number; y: number; fx: number | null; fy: number | null; fixed: boolean }[] = [];
   let savedGroupModes: { id: string; mode: string; nodeColorMode: string; nodeColor: string }[] = [];
@@ -6776,183 +6904,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   // --- 树形布局 ---
   let treeMode = false;
-  const treeBtn = document.createElement('button');
-  treeBtn.textContent = '树形'; treeBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  treeBtn.onclick = () => {
-    const isExtra = focusedPaneIndex === PANE_RIGHT;
-    const _g = isExtra ? pane1.graph : graph;
-    const _sm = isExtra ? simManager1 : simManager;
-    if (categoryMode || fullCatMode) { if (!isExtra) saveFixedState(); }
-    if (!isExtra) { treeMode = !treeMode; }
-    else { pane1.treeMode = !pane1.treeMode; }
-    treeBtn.style.background = ((isExtra ? pane1.treeMode : treeMode)) ? '#5B8FF9' : '';
-    treeBtn.style.color = ((isExtra ? pane1.treeMode : treeMode)) ? '#fff' : '';
-    if (fullCatMode) { fullCatBtn.click(); }
-    if (categoryMode) { if (!isExtra) categoryMode = false; catBtn.style.background = ''; catBtn.style.color = ''; }
-    if ((isExtra ? pane1.treeMode : treeMode)) {
-      for (const n of _g.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
-      for (const e of _g.edges) { delete (e as any)._conflict; }
-      if (isExtra) {
-        // Pane1 tree: simplified BFS layout
-        const root = _g.nodes[0];
-        if (root) {
-          const levels = new Map<string, number>();
-          const children = new Map<string, string[]>();
-          levels.set(root.id, 0);
-          for (const e of _g.edges) {
-            const src = typeof e.source === 'object' ? (e.source as any).id : e.source;
-            const tgt = typeof e.target === 'object' ? (e.target as any).id : e.target;
-            if (!children.has(src)) children.set(src, []);
-            children.get(src)!.push(tgt);
-          }
-          const q = [root.id];
-          while (q.length > 0) {
-            const pid = q.shift()!;
-            const pl = levels.get(pid) || 0;
-            const kids = children.get(pid) || [];
-            for (const cid of kids) { levels.set(cid, pl + 1); q.push(cid); }
-          }
-          const levelCounts = new Map<number, number>();
-          for (const [nid, lv] of levels) {
-            const n = _g.nodes.find(n => n.id === nid);
-            if (n) {
-              n.x = 0 + lv * 200;
-              n.y = (levelCounts.get(lv) || 0) * 80 - ((_g.nodes.filter(n => levels.get(n.id) === lv).length - 1) * 40);
-              n.fixed = true; n.fx = n.x; n.fy = n.y;
-              levelCounts.set(lv, (levelCounts.get(lv) || 0) + 1);
-            }
-          }
-        }
-      } else {
-        applyTreeLayoutV3();
-      }
-    }
-    else {
-      for (const n of _g.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
-      for (const e of _g.edges) { delete (e as any)._conflict; }
-      _sm.initSim();
-      draw();
-    }
-  };
-  // (treeBtn removed — now in mode bar)
 
-  // 树形布局逻辑
-  const applyTreeLayoutLegacy = () => {
-    const nodes = graph.nodes;
-    const edges = graph.edges;
-    if (nodes.length === 0) return;
-    // 找根：headingLevel=1 或半径最大
-    let root = nodes.find((n: any) => n.headingLevel === 1) || nodes.reduce((a: any, b: any) => (b.radius || 9) > (a.radius || 9) ? b : a);
-    const rootId = root.id;
-    // BFS 建树（所有边都参与遍历，包括虚线）
-    const children = new Map<string, string[]>();
-    const parent = new Map<string, string>();
-    const visited = new Set<string>([rootId]);
-    const queue = [rootId];
-    while (queue.length > 0) {
-      const pid = queue.shift()!;
-      if (!children.has(pid)) children.set(pid, []);
-      for (const e of edges) {
-        const src = typeof e.source === 'object' ? e.source.id : e.source;
-        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-        let childId: string | null = null;
-        if (src === pid && !visited.has(tgt)) childId = tgt;
-        else if (tgt === pid && !visited.has(src)) childId = src;
-        if (childId) {
-          visited.add(childId);
-          parent.set(childId, pid);
-          children.get(pid)!.push(childId);
-          queue.push(childId);
-        }
-      }
-    }
-    // 标记冲突边：只标记不在树中的边，用户自设虚线不算冲突
-    for (const e of edges) {
-      delete (e as any)._conflict;
-      const src = typeof e.source === 'object' ? e.source.id : e.source;
-      const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-      const isParent = parent.get(src) === tgt || parent.get(tgt) === src;
-      if (!isParent) {
-        (e as any)._conflict = true;
-      }
-    }
-    // 计算子树的叶节点数（决定宽度）
-    const leafCount = new Map<string, number>();
-    const calcLeaves = (id: string): number => {
-      const kids = children.get(id) || [];
-      if (kids.length === 0) { leafCount.set(id, 1); return 1; }
-      let sum = 0;
-      for (const cid of kids) sum += calcLeaves(cid);
-      leafCount.set(id, Math.max(sum, 1));
-      return leafCount.get(id)!;
-    };
-    calcLeaves(rootId);
-
-    const levelY = 100;
-    const unitX = 110; // 每个叶节点占据的宽度
-    const levels = new Map<string, number>();
-    const posX = new Map<string, number>();
-
-    const layoutTree = (id: string, depth: number, leftBound: number) => {
-      levels.set(id, depth);
-      const kids = children.get(id) || [];
-      if (kids.length === 0) {
-        posX.set(id, leftBound);
-        return;
-      }
-      // 每个子树居中于其叶节点范围
-      let cursor = leftBound;
-      const kidPositions: number[] = [];
-      for (const cid of kids) {
-        const w = leafCount.get(cid) || 1;
-        layoutTree(cid, depth + 1, cursor);
-        const center = cursor + (w - 1) * unitX / 2;
-        kidPositions.push(center);
-        cursor += w * unitX;
-      }
-      // 父节点居中于子节点
-      posX.set(id, (kidPositions[0] + kidPositions[kidPositions.length - 1]) / 2);
-    };
-    layoutTree(rootId, 0, 0);
-
-    // 孤立节点
-    let maxLv = 0;
-    for (const [id, lv] of levels) { if (lv > maxLv) maxLv = lv; }
-    for (const n of nodes) {
-      if (!visited.has(n.id)) {
-        levels.set(n.id, maxLv + 1);
-        posX.set(n.id, (children.get(rootId)?.length || 0) * unitX);
-        children.get(rootId)!.push(n.id);
-      }
-    }
-    // 居中整个树：找到最左和最右
-    let minX = Infinity, maxX = -Infinity;
-    for (const [id, x] of posX) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
-    const offsetX = -(minX + maxX) / 2;
-    // 存储目标位置，由动画逐帧过渡
-    for (const n of nodes) {
-      (n as any)._treeX = (posX.get(n.id) ?? 0) + offsetX;
-      (n as any)._treeY = (levels.get(n.id) ?? 0) * levelY;
-    }
-    // RAF 动画平滑过渡到目标树位置
-    const simNodes = simManager.getSim()?.nodes() || [];
-    simManager.getSim()?.stop();
-    currentAnimationCancel?.();
-    currentAnimationCancel = startNodeAnimation({
-      nodes: graph.nodes,
-      simNodes,
-      getTarget: (n) => {
-        const tx = (n as any)._treeX, ty = (n as any)._treeY;
-        if (tx == null) return null;
-        return { x: tx, y: ty };
-      },
-      onFrame: () => sharedState.directDraw?.(),
-      onComplete: () => simManager.initSim(),
-      fixOnComplete: true,
-    });
-  };
-
-  const applyTreeLayoutV3 = () => {
+  const applyTreeLayoutV3 = (runtime = primaryRuntime) => {
+    const manager = simManager;
     const projection = getStructureProjection(graph);
     if (projection.nodes.length === 0) return;
     const result = computeTreeLayout(projection.nodes, projection.edges);
@@ -6984,17 +6938,16 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       (node as any)._treeY = target.y;
       (node as any)._treeDepth = target.depth;
       (node as any)._treeParentId = result.parentByNode.get(node.id) ?? null;
-      node.fixed = false;
-      node.fx = null;
-      node.fy = null;
     }
-    const simNodes = simManager.getSim()?.nodes() || [];
-    simManager.getSim()?.stop();
+    const simNodes = manager.getSim()?.nodes() || [];
+    manager.getSim()?.stop();
+    manager.setStaticMode(true);
     currentAnimationCancel?.();
     currentAnimationCancel = startNodeAnimation({
       nodes: projection.nodes,
       simNodes,
       getTarget: node => {
+        if (node.fixed) return null;
         const point = result.positions.get(node.id);
         return point ? { x: point.x, y: point.y } : null;
       },
@@ -7002,343 +6955,184 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       easing: EASING.smoothStep,
       onFrame: () => sharedState.directDraw?.(),
       onComplete: () => {
-        simManager.setStaticMode(true);
-        simManager.initStatic();
+        for (const node of projection.nodes) {
+          if (!node.fixed) { node.fx = null; node.fy = null; }
+        }
+        manager.initStatic();
         draw();
-        scheduleSave();
+        scheduleSaveForRuntime(runtime);
       },
-      fixOnComplete: true,
     });
   };
-
-  // --- 逆时针旋转 90°（变换节点坐标）---
-  const rotBtn = document.createElement('button');
-  rotBtn.textContent = '旋转'; rotBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  rotBtn.onclick = () => {
-    // 所有节点绕原点 (0,0) 逆时针旋转 90°：(x,y) → (y, -x)
-    for (const n of graph.nodes) {
-      const oldX = n.x, oldY = n.y;
-      n.x = oldY;
-      n.y = -oldX;
-      if (n.fx != null) { n.fx = oldY; n.fy = -oldX; }
-    }
-    scheduleSave();
-    if (treeMode) {
-      // 树模式：旋转后更新目标位置并重新缓动
-      for (const n of graph.nodes) {
-        n.fixed = false; n.fx = null; n.fy = null;
-        if ((n as any)._treeX != null) {
-          const tx = (n as any)._treeX, ty = (n as any)._treeY;
-          (n as any)._treeX = ty;
-          (n as any)._treeY = -tx;
-        }
-      }
-      // 重新启动缓动到旋转后的目标
-      const simNodes = simManager.getSim()?.nodes() || [];
-      for (const n of graph.nodes) {
-        if ((n as any)._treeX != null) {
-          const sn = simNodes.find((s: any) => s.id === n.id);
-          (n as any)._sx = sn ? sn.x : n.x;
-          (n as any)._sy = sn ? sn.y : n.y;
-        }
-      }
-      simManager.getSim()?.stop();
-      currentAnimationCancel?.();
-      currentAnimationCancel = startNodeAnimation({
-        nodes: graph.nodes,
-        simNodes: simManager.getSim()?.nodes() || [],
-        getTarget: (n) => {
-          const tx = (n as any)._treeX, ty = (n as any)._treeY;
-          if (tx == null) return null;
-          return { x: tx, y: ty };
-        },
-        onFrame: () => sharedState.directDraw?.(),
-        onComplete: () => simManager.initSim(),
-        fixOnComplete: true,
-      });
-    }
-    else { simManager.initSim(); draw(); }
-  };
-  controlsRow2.appendChild(rotBtn);
 
   // 导入多媒体按钮
   const importBtn = document.createElement('button');
-  importBtn.textContent = '导入多媒体'; importBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
+  importBtn.type = 'button';
+  importBtn.textContent = '导入附件';
   importBtn.onclick = async () => {
-    // Electron 模式：原生文件对话框，直接存路径
+    const session = captureMediaImport(focusedPaneState());
+    if (!session) return;
+    controlsDetails.open = false;
     const ea = (window as any).electronAPI;
     if (ea?.openFile) {
-      const filePath = await ea.openFile();
-      if (!filePath) return;
-      const name = filePath.split(/[\\/]/).pop() || 'file';
-      let mediaType = 'md';
-      if (/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(name)) mediaType = 'image';
-      else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(name)) mediaType = 'audio';
-      else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(name)) mediaType = 'video';
-      const id = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-      const node = { id, label: name, radius: 11, headingLevel: 4, tags: [],
-        x: Math.random() * 200 - 100, y: Math.random() * 200 - 100,
-        mediaType, mediaUrl: filePath };
-      assignCreatedOrder(node, graph.nodes);
-      graph.nodes.push(node);
-      scheduleSave(); simManager.initSim(); draw();
+      try {
+        const filePath = await ea.openFile();
+        if (!filePath) return;
+        const name = filePath.split(/[\\/]/).pop() || 'file';
+        const type = mediaTypeForFile(name);
+        if (!type) { showToast('请选择图片、音视频、PDF 或文本文件', 'info'); return; }
+        if (!session.valid()) { showToast('目标空间已变化，未导入附件', 'info'); return; }
+        const value = type === 'md' ? await ea.readFile(filePath) : filePath;
+        if (typeof value !== 'string') throw new Error(value?.error || 'Cannot read attachment');
+        if (session.add([{ name, type, value }]).length) showToast('已导入附件', 'success');
+        else showToast('目标空间已变化，未导入附件', 'info');
+      } catch (error) {
+        showToast('无法读取附件，请重新选择文件', 'error', 3500);
+        console.warn('[nodespace] Attachment import:', error);
+      }
       return;
     }
-    // 浏览器模式：blob URL
     const inp = document.createElement('input');
-    inp.type = 'file'; inp.multiple = true;
-    inp.onchange = () => {
-      const files = inp.files;
-      if (!files || !pixi) return;
-      const nodes = Array.from(files).map(file => {
-        let mediaType = 'md';
-        if (/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(file.name)) mediaType = 'image';
-        else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) mediaType = 'audio';
-        else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) mediaType = 'video';
-        const id = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        return { id, label: file.name, radius: 11, headingLevel: 4, tags: [],
-          x: Math.random() * 200 - 100, y: Math.random() * 200 - 100,
-          mediaType, mediaUrl: URL.createObjectURL(file), _blobUrl: true };
-      });
-      assignCreatedOrders(nodes, graph.nodes);
-      graph.nodes.push(...nodes);
-      scheduleSave(); simManager.initSim(); draw();
-    };
+    inp.type = 'file'; inp.multiple = true; inp.accept = MEDIA_FILE_ACCEPT;
+    inp.onchange = () => { if (inp.files?.length) void importBrowserFiles(session, Array.from(inp.files)); };
     inp.click();
   };
 
+  const backupActions = document.createElement('div');
+  backupActions.className = 'fg-backup-actions';
+  backupActions.setAttribute('role', 'group');
+  backupActions.setAttribute('aria-label', '图文件操作');
+  const exportBackupButton = document.createElement('button');
+  exportBackupButton.type = 'button';
+  exportBackupButton.textContent = '导出备份';
+  const restoreBackupButton = document.createElement('button');
+  restoreBackupButton.type = 'button';
+  restoreBackupButton.textContent = '从备份恢复';
+  backupActions.append(importBtn, exportBackupButton, restoreBackupButton);
 
-  // --- 分类布局 ---
-  let categoryMode = false;
-  const catBtn = document.createElement('button');
-  catBtn.textContent = '分类'; catBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  catBtn.onclick = () => {
-    categoryMode = !categoryMode;
-    catBtn.style.background = categoryMode ? '#5B8FF9' : '';
-    catBtn.style.color = categoryMode ? '#fff' : '';
-    if (categoryMode) {
-      saveFixedState();
-      if (treeMode) { treeMode = false; treeBtn.style.background = ''; treeBtn.style.color = ''; for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } }
-      if (fullCatMode) { fullCatBtn.click(); }
-      for (const c of pixi!.groupLayer.children.slice()) c.destroy({ children: true });
-      applyCategoryLayout();
-    } else {
-      restoreFixedState();
-      // 缓动退出
-      categoryMode = false; // 立即停止渲染框
-      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; (n as any)._sx = n.x; (n as any)._sy = n.y; }
-      (graph as any)._categoryBoxes = null;
-      delete (graph as any)._categoryBoxes;
-      simManager.initSim();
-      currentAnimationCancel?.();
-      currentAnimationCancel = startNodeAnimation({
-        nodes: graph.nodes,
-        simNodes: simManager.getSim()?.nodes() || [],
-        getSource: (n) => ({ x: (n as any)._sx, y: (n as any)._sy }),
-        getTarget: (n) => {
-          const sim = simManager.getSim()?.nodes() || [];
-          const sn = sim.find((s: any) => s.id === n.id);
-          return sn ? { x: sn.x, y: sn.y } : null;
-        },
-        onFrame: () => sharedState.directDraw?.(),
-        unfixSimOnComplete: true,
-      });
+  exportBackupButton.onclick = async () => {
+    const pane = focusedPaneState();
+    const runtime = pane.index === PANE_LEFT ? primaryRuntime : pane.runtime;
+    const graphId = runtime.fileName;
+    if (!graphId || graphId !== (pane.index === PANE_LEFT ? activeTab : pane.activeTab)) {
+      showToast('请等空间加载完再导出备份', 'info');
+      return;
+    }
+    if (isVaultLocationTabId(graphId) || runtime.graph.settings?.sourceMode === 'vault-readonly') {
+      showToast('备份只适用于可编辑的图空间。资料库原文请单独备份。', 'info', 5000);
+      return;
+    }
+    if (blockForTextDraft('导出备份') || runtime.textEditActive) return;
+    exportBackupButton.disabled = true;
+    exportBackupButton.textContent = '正在整理…';
+    try {
+      const name = graphId.split(/[\\/]/).pop()!.replace(/\.json$/i, '');
+      const settings = pane.index === PANE_LEFT ? collectSettings() : collectPaneSettings(pane);
+      const { text, summary } = await createSpaceBackup({ name, graphId, graph: { ...runtime.graph, settings } });
+      const fileName = backupFileStem(name) + SPACE_BACKUP_EXTENSION;
+      const contents = describeBackupContents(summary);
+      const messageType = summary.missingAttachments ? 'warning' : 'success';
+      if (safIsAvailable()) {
+        const saved = await safSaveBackup(fileName, text);
+        if (saved) showToast(`已保存备份 · ${contents}`, messageType, 5500);
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      try { link.click(); }
+      finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30_000); }
+      showToast(`已提交备份下载 · ${contents}`, messageType, 5500);
+    } catch (error) {
+      showToast(`无法导出备份：${error instanceof Error ? error.message : '请重试'}`, 'error', 5500);
+    } finally {
+      exportBackupButton.disabled = false;
+      exportBackupButton.textContent = '导出备份';
     }
   };
-  // (catBtn removed — now in mode bar)
 
-  // --- 全分类布局 ---
-  let fullCatMode = false;
-  const fullCatBtn = document.createElement('button');
-  fullCatBtn.textContent = '全分类'; fullCatBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  let fullCatSavedModes: { id: string; mode: string }[] = [];
-  fullCatBtn.onclick = () => {
-    fullCatMode = !fullCatMode;
-    fullCatBtn.style.background = fullCatMode ? '#5B8FF9' : '';
-    fullCatBtn.style.color = fullCatMode ? '#fff' : '';
-    if (fullCatMode) {
-      if (treeMode) { treeMode = false; treeBtn.style.background = ''; treeBtn.style.color = ''; for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } }
-      if (categoryMode) { categoryMode = false; catBtn.style.background = ''; catBtn.style.color = ''; }
-      for (const c of pixi!.groupLayer.children.slice()) c.destroy({ children: true });
-      (graph as any)._categoryBoxes = null;
-      // 临时启用所有集合
-      fullCatSavedModes = graph.groups.map(g => ({ id: g.id, mode: g.displayMode }));
-      for (const g of graph.groups) { if (g.displayMode === 'none') g.displayMode = 'rect'; }
-      applyCategoryLayout(true);
-    } else {
-      // 恢复集合显示状态
-      for (const g of graph.groups) {
-        const saved = savedGroupModes.find(s => s.id === g.id);
-        if (saved) g.displayMode = saved.mode as any;
-      }
-      categoryMode = false; catBtn.style.background = ''; catBtn.style.color = '';
-      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; (n as any)._sx = n.x; (n as any)._sy = n.y; }
-      (graph as any)._categoryBoxes = null; delete (graph as any)._categoryBoxes;
-      simManager.initSim();
-      currentAnimationCancel?.();
-      currentAnimationCancel = startNodeAnimation({
-        nodes: graph.nodes,
-        simNodes: simManager.getSim()?.nodes() || [],
-        getSource: (n) => ({ x: (n as any)._sx, y: (n as any)._sy }),
-        getTarget: (n) => {
-          const sim = simManager.getSim()?.nodes() || [];
-          const sn = sim.find((s: any) => s.id === n.id);
-          return sn ? { x: sn.x, y: sn.y } : null;
-        },
-        onFrame: () => sharedState.directDraw?.(),
-        unfixSimOnComplete: true,
-      });
-    }
-  };
-  // (fullCatBtn removed — now in mode bar)
-
-  const applyCategoryLayout = (allGroups = false) => {
-    const nodes = graph.nodes;
-    const groups = allGroups ? graph.groups : graph.groups.filter(g => g.displayMode !== 'none');
-    const groupNodes = new Map<string, any[]>();
-    const conflictNodes: any[] = [];
-    const noGroupNodes: any[] = [];
-    for (const n of nodes) {
-      n.fixed = false; n.fx = null; n.fy = null;
-      const matchGroups = groups.filter(g => isNodeInGroup(n, g));
-      if (matchGroups.length === 0) noGroupNodes.push(n);
-      else if (matchGroups.length === 1) {
-        const gid = matchGroups[0].id;
-        if (!groupNodes.has(gid)) groupNodes.set(gid, []);
-        groupNodes.get(gid)!.push(n);
-      } else conflictNodes.push(n);
-    }
-    const parts: { label: string; nodes: any[]; color: string }[] = [];
-    for (const g of groups) {
-      const gn = groupNodes.get(g.id) || [];
-      if (gn.length > 0) parts.push({ label: g.label, nodes: gn, color: g.color || '#5B8FF9' });
-    }
-    if (noGroupNodes.length > 0) parts.push({ label: '无', nodes: noGroupNodes, color: '#888' });
-    if (conflictNodes.length > 0) parts.push({ label: '冲突', nodes: conflictNodes, color: '#CC4400' });
-    if (parts.length === 0) return;
-
-    // 按节点数决定框大小：每节点 18000px²，最小 260×260
-    const unitArea = 18000;
-    const innerPad = 55;
-    const boxMin = 260;
-    const gap = 12; // 框间小间距
-    parts.sort((a, b) => {
-      if (a.label === '冲突') return 1; if (b.label === '冲突') return -1;
-      if (a.label === '无') return 1; if (b.label === '无') return -1;
-      return 0;
-    });
-    // 计算每个框的实际宽高
-    const sizes = parts.map(p => {
-      const area = Math.max(boxMin * boxMin, p.nodes.length * unitArea);
-      return { w: Math.sqrt(area), h: Math.sqrt(area) };
-    });
-    // 紧排：按行打包，每行高度统一
-    const maxRowW = Math.max(...sizes.map(s => s.w)) * parts.length + gap * (parts.length - 1);
-    let rowY = 0, rowIdx = 0;
-    while (rowIdx < parts.length) {
-      // 找出这一行能放下的框
-      let rowX = 0, rowH = 0, endIdx = rowIdx;
-      for (let i = rowIdx; i < parts.length; i++) {
-        const testW = rowX + (rowX > 0 ? gap : 0) + sizes[i].w;
-        if (testW > maxRowW && rowIdx !== i) break;
-        rowX = testW;
-        rowH = Math.max(rowH, sizes[i].h);
-        endIdx = i + 1;
-      }
-      // 布局这一行
-      let curX = -rowX / 2;
-      for (let i = rowIdx; i < endIdx; i++) {
-        const s = sizes[i];
-        const bx = curX;
-        const by = rowY;
-        const bw = s.w, bh = rowH;
-        const nCount = parts[i].nodes.length;
-        const nCols = Math.ceil(Math.sqrt(nCount * bw / bh));
-        const nRows = Math.ceil(nCount / nCols);
-        const nx = nCols > 1 ? (bw - innerPad * 2) / (nCols - 1) : 0;
-        const ny = nRows > 1 ? (bh - innerPad * 2) / (nRows - 1) : 0;
-        parts[i].nodes.forEach((n, ni) => {
-          const nc = ni % nCols, nr = Math.floor(ni / nCols);
-          (n as any)._treeX = bx + innerPad + nc * nx;
-          (n as any)._treeY = by + innerPad + nr * ny;
+  restoreBackupButton.onclick = () => {
+    if (blockForTextDraft('恢复备份')) return;
+    const destination = adapter;
+    const pane = focusedPaneState();
+    const originatingTab = paneLoadedTab(pane);
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file || restoreBackupButton.disabled) return;
+      if (file.size > SPACE_BACKUP_MAX_FILE_BYTES) { showToast('备份文件太大，无法读取', 'error'); return; }
+      restoreBackupButton.disabled = true;
+      restoreBackupButton.textContent = '正在检查…';
+      let restoredPath: string | null = null;
+      try {
+        const text = await file.text();
+        const { name, summary } = inspectSpaceBackup(text);
+        if (destination !== adapter) { showToast('存储位置已切换，请重新选择备份', 'info'); return; }
+        if (!await confirmAction(`恢复「${name}」为一个新空间？原有图不会被覆盖。${describeBackupContents(summary)}。`,
+          { confirm: '恢复为新空间', cancel: '取消' })) return;
+        if (destination !== adapter || blockForTextDraft('恢复备份')) {
+          if (destination !== adapter) showToast('存储位置已切换，请重新选择备份', 'info');
+          return;
+        }
+        restoreBackupButton.textContent = '正在恢复…';
+        const path = await findRestoreCopyPath(name, destination, isNewGraphPathReserved);
+        await restoreSpaceBackup(text, {
+          restoredGraphId: path,
+          saveGraph: data => writeNewGraph(destination, path, data),
         });
-        (parts[i] as any)._box = { x: bx, y: by, w: bw, h: bh, color: parts[i].color, label: parts[i].label };
-        curX += bw + gap;
+        restoredPath = path;
+        showToast(`已恢复为「${path.replace(/\.json$/i, '')}」`, 'success', 5000);
+        if (destination === adapter) {
+          await refreshFileTree();
+          if (focusedPaneState() === pane && paneLoadedTab(pane) === originatingTab && !blockForTextDraft('打开恢复的空间')) {
+            controlsDetails.open = false;
+            await openTab(path);
+          }
+        }
+      } catch (error) {
+        if (restoredPath) showToast(`备份已恢复，暂时无法打开「${restoredPath.replace(/\.json$/i, '')}」；请从侧栏打开。`, 'warning', 6500);
+        else showToast(`无法恢复备份：${error instanceof Error ? error.message : '请重试'}`, 'error', 6500);
+      } finally {
+        restoreBackupButton.disabled = false;
+        restoreBackupButton.textContent = '从备份恢复';
       }
-      rowY += rowH + gap;
-      rowIdx = endIdx;
-    }
-    // 整体居中
-    const boxes = parts.map(p => (p as any)._box).filter(Boolean);
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const b of boxes) { minX = Math.min(minX, b.x); minY = Math.min(minY, b.y); maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h); }
-    const offX = -(minX + maxX) / 2, offY = -(minY + maxY) / 2;
-    for (const b of boxes) { b.x += offX; b.y += offY; }
-    for (const n of graph.nodes) {
-      if ((n as any)._treeX != null) { (n as any)._treeX += offX; (n as any)._treeY += offY; }
-    }
-
-    // 冲突节点饼状设色
-    for (const n of conflictNodes) {
-      const matchGroups = groups.filter(g => isNodeInGroup(n, g));
-      (n as any)._pieColors = matchGroups.map(g => g.color || '#5B8FF9');
-    }
-
-    (graph as any)._categoryBoxes = parts.map(p => (p as any)._box).filter(Boolean);
-    // 不调用 scheduleSave：布局是临时视图，不应持久化固定状态
-
-    // 缓动进入
-    const simNodes = simManager.getSim()?.nodes() || [];
-    simManager.getSim()?.stop();
-    currentAnimationCancel?.();
-    currentAnimationCancel = startNodeAnimation({
-      nodes: graph.nodes,
-      simNodes,
-      getTarget: (n) => {
-        const tx = (n as any)._treeX, ty = (n as any)._treeY;
-        if (tx == null) return null;
-        return { x: tx, y: ty };
-      },
-      onFrame: () => sharedState.directDraw?.(),
-      onComplete: () => simManager.initSim(),
-      fixOnComplete: true,
-    });
+    };
+    input.click();
   };
 
-  // --- 集合搜索 ---
+
+  let categoryMode = false;
+  let fullCatMode = false;
+
   // --- 统一布局模式选择器 ---
   interface SavedLayout { name: string; nodes: { id: string; x: number; y: number; fx: number | null; fy: number | null; fixed: boolean }[]; groupModes: { id: string; mode: string }[]; }
-  let layouts: SavedLayout[] = [];
-  const loadLayouts = () => {
-    try { layouts = JSON.parse(localStorage.getItem(`fg-layouts-${activeTab}`) || '[]'); } catch { layouts = []; }
+  const readSavedLayouts = (fileName: string): SavedLayout[] => {
+    try {
+      const items = JSON.parse(localStorage.getItem(`fg-layouts-${fileName}`) || '[]');
+      return Array.isArray(items) ? items.filter(item => item && typeof item.name === 'string'
+        && Array.isArray(item.nodes) && Array.isArray(item.groupModes)) : [];
+    } catch { return []; }
   };
-  const saveLayouts = () => { localStorage.setItem(`fg-layouts-${activeTab}`, JSON.stringify(layouts)); };
-  loadLayouts();
+  const writeSavedLayouts = (fileName: string, layouts: SavedLayout[]) => {
+    localStorage.setItem(`fg-layouts-${fileName}`, JSON.stringify(layouts));
+  };
 
   const layoutDetails = document.createElement('details');
   layoutDetails.className = 'fg-toolbar-panel fg-layout-panel';
+  layoutDetails.addEventListener('toggle', () => {
+    if (layoutDetails.open) renderModeBar();
+  });
   const layoutSum = document.createElement('summary');
-  layoutSum.className = 'fg-toolbar-summary fg-action';
+  layoutSum.className = toolbarSummaryClass;
   layoutSum.textContent = '视图';
   layoutDetails.appendChild(layoutSum);
   const layoutPopover = document.createElement('div');
   layoutPopover.className = 'fg-toolbar-popover fg-layout-popover';
   layoutDetails.appendChild(layoutPopover);
-  const viewIntro = document.createElement('div');
-  viewIntro.className = 'fg-view-intro';
-  const viewIntroCopy = document.createElement('div');
-  viewIntroCopy.className = 'fg-view-intro-copy';
-  const viewIntroLabel = document.createElement('span');
-  viewIntroLabel.className = 'fg-view-section-label';
-  viewIntroLabel.textContent = '当前视图';
-  const viewIntroHint = document.createElement('span');
-  viewIntroHint.className = 'fg-view-intro-hint';
-  viewIntroHint.textContent = '内容保持不变，只改变观察方式';
-  viewIntroCopy.append(viewIntroLabel, viewIntroHint);
-  const viewIntroStatus = document.createElement('span');
-  viewIntroStatus.className = 'fg-view-status';
-  viewIntro.append(viewIntroCopy, viewIntroStatus);
-  layoutPopover.appendChild(viewIntro);
   const modeRow = document.createElement('div');
   modeRow.className = 'fg-mode-switcher';
   layoutPopover.appendChild(modeRow);
@@ -7368,47 +7162,87 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   semanticLegend.style.cssText = `display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 2px 1px;font-size:${V('--fg-font-xs','0.72em')};opacity:.72;`;
   semanticLegendDetails.appendChild(semanticLegend);
   layoutPopover.appendChild(semanticLegendDetails);
-  const localSemanticEmbeddings = new LocalSemanticEmbeddingProvider();
-  let localSemanticState: LocalSemanticState = localSemanticEmbeddings.getState();
-  const semanticVectorsByGraph = new WeakMap<GraphData, { signature: string; vectors: ReadonlyMap<string, readonly number[]> }>();
-  const semanticVectorRequests = new WeakMap<GraphData, string>();
   const updateSemanticModeLabel = () => {
     const pill = modeRow.querySelector<HTMLElement>('.fg-semantic-auto-pill');
     if (!pill) return;
-    const ready = localSemanticState.status === 'ready';
-    const usingLocalModel = ready && (graph as any)._semanticScene?.source === 'qwen-local';
-    const lens = (graph as any)._semanticScene?.lens;
-    const adaptive = (graph.settings?.semanticCardDensity ?? 'mixed') === 'mixed' && lens;
+    const pane = focusedPaneState();
+    const model = scopedPaneGraph(pane);
+    const lens = pane.semanticLensState;
+    const adaptive = pane.activeMode === 'auto'
+      && (model.settings?.semanticCardDensity ?? DEFAULT_SEMANTIC_CARD_DENSITY) === 'mixed' && lens;
     pill.textContent = `自动整理${adaptive ? ` · ${lens.expandedNodeIds.length} 张展开` : ''}`;
-    const baseTitle = usingLocalModel
-      ? `自动整理 · 已启用本地语义辅助 · ${localSemanticState.vectorCount} 个条目`
-      : ready
-        ? '自动整理 · 本地语义辅助已就绪，等待足够的非敏感内容'
-        : localSemanticState.status === 'probing'
-        ? '自动整理 · 正在寻找可用的本地语义辅助'
-        : '自动整理 · 使用轻量文本算法';
+    const baseTitle = '自动整理 · 根据连线、层级和文字线索在本机排布';
     pill.title = adaptive
-      ? `${baseTitle} · 自适应展开 ${lens.expandedNodeIds.length}/${graph.nodes.length}`
+      ? `${baseTitle} · 自适应展开 ${lens.expandedNodeIds.length}/${model.nodes.length}`
       : baseTitle;
   };
-  localSemanticEmbeddings.subscribe(state => {
-    localSemanticState = state;
-    updateSemanticModeLabel();
-  });
 
-  // Keep all three toolbar panels together and in a predictable tab order.
+  // Keep the dropdowns in their visual and keyboard order.
   primaryRow.appendChild(controlsDetails);
   primaryRow.appendChild(layoutDetails);
   primaryRow.appendChild(settingsDet);
+  const splitDetails = document.createElement('details');
+  splitDetails.className = 'fg-toolbar-panel fg-split-panel';
+  const splitSummary = document.createElement('summary');
+  splitSummary.className = toolbarSummaryClass;
+  splitSummary.textContent = '分屏';
+  const splitMenu = document.createElement('div');
+  splitMenu.className = 'fg-toolbar-popover fg-split-menu';
+  const addPaneControl = document.createElement('button');
+  addPaneControl.type = 'button';
+  addPaneControl.textContent = '添加窗格';
+  const closePaneControl = document.createElement('button');
+  closePaneControl.type = 'button';
+  closePaneControl.textContent = '关闭最右窗格';
+  splitMenu.append(addPaneControl, closePaneControl);
+  splitDetails.append(splitSummary, splitMenu);
+  primaryRow.appendChild(splitDetails);
+  let splitPending = false;
+  syncSplitControls = () => {
+    addPaneControl.disabled = splitPending || !paneLoadedTab(focusedPaneState());
+    closePaneControl.disabled = splitPending || !splitActive;
+  };
+  const changeSplit = async (add: boolean) => {
+    if (splitPending || blockForTextDraft(add ? '添加窗格' : '关闭窗格')) return;
+    const count = splitActive ? extraPanes.length : 0;
+    const fileName = paneLoadedTab(focusedPaneState());
+    if (add ? !fileName : count === 0) return;
+    splitDetails.open = false;
+    splitPending = true;
+    syncSplitControls();
+    try {
+      if (add) {
+        if (count) await addSplitPane(fileName);
+        else await openFirstSplitPane(fileName);
+      } else {
+        const pane = extraPanes[count - 1];
+        if (!await saveRuntimeNow(pane.runtime, collectPaneSettings(pane))) return;
+        removeSplitPane(count - 1);
+      }
+      persistTabs();
+    } catch (error) {
+      if (add && extraPanes.length > count) removeSplitPane(extraPanes.length - 1);
+      reportWorkbenchActionError(error);
+    } finally {
+      splitPending = false;
+      syncSpaceNavigation();
+    }
+  };
+  addPaneControl.onclick = () => { void changeSplit(true); };
+  closePaneControl.onclick = () => { void changeSplit(false); };
+  for (const control of primaryRow.querySelectorAll(':scope > .fg-action')) {
+    control.classList.add('fg-shell-control');
+  }
   setupToolbarDropdowns([
     { details: controlsDetails, summary: controlsSum, popover: controlsDiv, align: 'start' },
     { details: layoutDetails, summary: layoutSum, popover: layoutPopover, align: 'end' },
     { details: settingsDet, summary: settingsSum, popover: setDiv, align: 'end' },
+    { details: splitDetails, summary: splitSummary, popover: splitMenu, align: 'end' },
   ]);
-  const toolbarDropdownDetails = [controlsDetails, layoutDetails, settingsDet];
+  const toolbarDropdownDetails = [controlsDetails, layoutDetails, settingsDet, splitDetails];
   const syncToolbarStacking = () => {
-    floatingTop.style.zIndex = String(
-      toolbarDropdownDetails.some(details => details.open) ? Z_DROPDOWN : Z_FLOATING_UI,
+    editorShell.style.zIndex = String(
+      toolbarDropdownDetails.some(details => details.open) ? Z_TOOLBAR_POPOVER : Z_FLOATING_UI,
     );
   };
   for (const details of toolbarDropdownDetails) details.addEventListener('toggle', syncToolbarStacking);
@@ -7416,18 +7250,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const applySemanticPositions = (
     targetPane: PaneState | any,
     animate = true,
-    suppliedVectors?: ReadonlyMap<string, readonly number[]>,
-    requestLocalVectors = true,
     fitAfter = false,
     animationDuration = 260,
   ) => {
     const targetGraph = scopedPaneGraph(targetPane as PaneState);
     const targetSimManager = scopedPaneSimulationManager(targetPane as PaneState);
     if (!targetGraph || !targetSimManager) return;
-    const signature = semanticGraphSignature(targetGraph);
-    const cached = semanticVectorsByGraph.get(targetGraph);
-    const semanticVectors = suppliedVectors ?? (cached?.signature === signature ? cached.vectors : undefined);
-    const density = targetGraph.settings?.semanticCardDensity ?? 'mixed';
+    const density = targetGraph.settings?.semanticCardDensity ?? DEFAULT_SEMANTIC_CARD_DENSITY;
     const localContext = targetPane.localContext as LocalContextState | null | undefined;
     const localContextForms = { ...(targetGraph.settings?.semanticCardForms || {}) };
     for (const member of localContext?.members || []) localContextForms[member.id] = 'card';
@@ -7455,13 +7284,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       focusNodeId: lens.focusNodeId,
       expandedNodeIds: lens.expandedNodeIds,
     };
-    const ideal = computeSemanticLayout(targetGraph, { semanticVectors, collapsedNodeIds });
-    const semanticSource: SemanticLayoutSource = semanticVectors && semanticVectors.size >= 2 ? 'dense' : 'lexical';
+    const ideal = computeSemanticLayout(targetGraph, { collapsedNodeIds });
     const stabilized = stabilizeSemanticLayout(
       targetGraph,
       ideal,
       targetGraph.settings?.semanticLayoutMemory,
-      semanticSource,
     );
     const result = stabilized.result;
     targetGraph.settings = {
@@ -7474,7 +7301,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
     (targetGraph as any)._semanticScene = {
       regions: result.regions,
-      source: semanticSource === 'dense' ? 'qwen-local' : 'lexical',
       semanticEdgeCount: result.semanticEdgeCount,
       echoes: result.echoes,
       changedNodeCount: stabilized.changedNodeIds.length,
@@ -7483,24 +7309,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       globalReframe: stabilized.globalReframe,
       lens: targetPane.semanticLensState,
     };
-    if (targetPane === pane0) updateSemanticModeLabel();
-
-    if (!semanticVectors && requestLocalVectors && targetGraph.nodes.length >= 2
-      && semanticVectorRequests.get(targetGraph) !== signature) {
-      semanticVectorRequests.set(targetGraph, signature);
-      void localSemanticEmbeddings.vectorsForGraph(targetGraph).then(vectors => {
-        if (semanticVectorRequests.get(targetGraph) === signature) semanticVectorRequests.delete(targetGraph);
-        if (vectors.size < 2 || semanticGraphSignature(targetGraph) !== signature) return;
-        semanticVectorsByGraph.set(targetGraph, { signature, vectors });
-        const stillAutomatic = targetPane === pane0 ? activeMode === 'auto' : targetPane.activeMode === 'auto';
-        if (stillAutomatic && scopedPaneGraph(targetPane as PaneState) === targetGraph) {
-          // Dense vectors arrive asynchronously. Refining card positions must
-          // not also take over the reader's camera or erase their current
-          // zoom/pan context.
-          applySemanticPositions(targetPane, true, vectors, false, false);
-        }
-      });
-    }
+    if (targetPane === focusedPaneState()) updateSemanticModeLabel();
 
     targetPane.currentAnimationCancel?.();
     const previousNodes = targetSimManager.getSim()?.nodes?.() || targetGraph.nodes;
@@ -7549,12 +7358,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       // Camera fitting is an explicit interaction. A synchronous/background
       // layout pass is not permission to recenter the viewport.
       if (fitAfter) {
+        const load = paneGraphLoads.get(targetPane);
         const fittedNodes = [...result.positions.values()].map(position => ({
           x: position.x,
           y: position.y,
           _semanticCard: position.card,
         }));
-        requestAnimationFrame(() => fitPaneNodes(targetPane, fittedNodes));
+        requestAnimationFrame(() => {
+          if (paneGraphLoads.get(targetPane) === load && scopedPaneGraph(targetPane) === targetGraph) {
+            fitPaneNodes(targetPane, fittedNodes);
+          }
+        });
       }
     };
 
@@ -7760,7 +7574,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   refreshSemanticLensForPane = (targetPane) => {
     const targetGraph = targetPane ? scopedPaneGraph(targetPane as PaneState) : undefined;
     if (!targetGraph || targetPane.activeMode !== 'auto'
-      || (targetGraph.settings?.semanticCardDensity ?? 'mixed') !== 'mixed') return;
+      || (targetGraph.settings?.semanticCardDensity ?? DEFAULT_SEMANTIC_CARD_DENSITY) !== 'mixed') return;
     const previous = targetPane.semanticLensState;
     const nextBand = resolveSemanticLensBand(targetPane.pixi?.viewport?.scale?.x ?? 1, previous?.band);
     const focusNodeId = targetPane.selNode ?? null;
@@ -7770,132 +7584,79 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const focusChanged = previous?.focusNodeId !== focusNodeId;
     if (focusChanged) {
       semanticLensTimers.delete(targetPane);
-      applySemanticPositions(targetPane, true, undefined, true, false, 120);
+      applySemanticPositions(targetPane, true, false, 120);
       return;
     }
+    const load = paneGraphLoads.get(targetPane);
     const timer = setTimeout(() => {
       semanticLensTimers.delete(targetPane);
-      if (targetPane.activeMode === 'auto' && scopedPaneGraph(targetPane as PaneState) === targetGraph) {
-        applySemanticPositions(targetPane, true, undefined, true, false, 160);
+      if (paneGraphLoads.get(targetPane) === load && targetPane.activeMode === 'auto' && scopedPaneGraph(targetPane as PaneState) === targetGraph) {
+        applySemanticPositions(targetPane, true, false, 160);
       }
     }, 24);
     semanticLensTimers.set(targetPane, timer);
   };
 
-  const exitLayoutMode = (toMode = 'auto') => {
-    currentAnimationCancel?.();
-    const focused = focusedPaneIndex === PANE_LEFT ? pane0 as unknown as PaneState : extraPanes[focusedPaneIndex - 1];
-    if (toMode !== 'auto' && focused?.localContext) closeLocalContextForPane(focused);
-    if (activeMode === 'tree') {
-      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
-      for (const e of graph.edges) { delete (e as any)._conflict; delete (e as any)._treeRoute; }
-    } else if (activeMode === 'category' || activeMode === 'fullcat') {
-      const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
-      if (targetPane) clearPaneLayout(targetPane);
-      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._sx; delete (n as any)._sy; }
-      for (const e of graph.edges) { delete (e as any)._conflict; }
-      (graph as any)._categoryBoxes = null;
-      if (activeMode === 'fullcat') {
-        for (const g of graph.groups) {
-          const saved = (window as any)._savedGroupModes?.find((s: any) => s.id === g.id);
-          if (saved) g.displayMode = saved.mode;
-        }
-      }
-    } else if (activeMode === 'cardgrid') {
-      const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
-      if (targetPane) clearPaneLayout(targetPane);
-    }
-    activeMode = toMode;
-    syncFocusedCommands();
-    renderModeBar();
-    if (toMode === 'auto') {
-      const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
-      if (targetPane) activateSemanticLayoutForPane(targetPane);
-      saveNow();
-    }
-  };
-
   // --- 格点吸附 ---
-  const snapPosToGrid = (x: number, y: number, sp?: number): [number, number] => {
-    const s = sp ?? (gridSp || 30);
-    return [Math.round(x / s) * s, Math.round(y / s) * s];
+  const snapPosToGrid = (x: number, y: number, spacing: number): [number, number] => {
+    const step = spacing || 30;
+    return [Math.round(x / step) * step, Math.round(y / step) * step];
   };
 
-  const applyGridSnapLayout = () => {
-    const nodes = getSim()?.nodes() || [];
-    const targets: { id: string; x: number; y: number }[] = [];
-    for (const n of nodes) {
-      const [sx, sy] = snapPosToGrid(n.x, n.y);
-      targets.push({ id: n.id, x: sx, y: sy });
-    }
-    // 立即标记 fixed（graph + sim），让样式过渡动画和位移动画同时开始
-    for (const n of graph.nodes) {
-      const t = targets.find(t => t.id === n.id);
-      if (t) { n.fixed = true; }
-    }
-    const sim = getSim();
-    if (sim) {
-      for (const sn of sim.nodes()) {
-        if (targets.find(t => t.id === sn.id)) sn.fixed = true;
+  const applyGridSnapLayout = (pane: PaneState) => {
+    const destination = paneRuntimeGraph(pane);
+    if (scopedPaneGraph(pane) !== destination || destination.settings?.sourceMode === 'vault-readonly') return;
+    const nodes: GraphData['nodes'] = scopedPaneSimulationManager(pane)?.getSim()?.nodes() ?? [];
+    const nodesById = new Map(destination.nodes.map(node => [node.id, node]));
+    const step = pane.gridSp || 30;
+    const occupied = new Set<string>();
+    const cellKey = (x: number, y: number) => `${x},${y}`;
+    const held = (node: GraphData['nodes'][number]) => node.fixed || nodesById.get(node.id)?.fixed || node.id === pane.draggingNode?.id;
+    for (const node of nodes) {
+      if (held(node) && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+        occupied.add(cellKey(...snapPosToGrid(node.x, node.y, step)));
       }
     }
-    // Animate to grid positions
-    currentAnimationCancel = startNodeAnimation({
-      nodes: graph.nodes,
-      simNodes: getSim()?.nodes() || [],
-      getTarget: (n) => {
-        const t = targets.find(t => t.id === n.id);
-        return t ? { x: t.x, y: t.y } : null;
-      },
-      getSource: (n) => {
-        const sn = (getSim()?.nodes() || []).find((s: any) => s.id === n.id);
-        return sn ? { x: sn.x, y: sn.y } : { x: n.x, y: n.y };
-      },
-      duration: 400,
-      onFrame: () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); },
-      onComplete: () => {
-        // 防重叠：记录已占用的格点，冲突时偏移到最近空位
-        const occupied = new Set<string>();
-        const cellKey = (x: number, y: number) => `${x},${y}`;
-        const gridStep = gridSp;
-        const findFree = (sx: number, sy: number): [number, number] => {
-          for (let r = 0; r <= 8; r++) {
-            for (let dx = -r; dx <= r; dx++) {
-              for (let dy = -r; dy <= r; dy++) {
-                if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-                const k = cellKey(sx + dx * gridStep, sy + dy * gridStep);
-                if (!occupied.has(k)) return [sx + dx * gridStep, sy + dy * gridStep];
-              }
-            }
-          }
-          return [sx, sy];
-        };
-        for (const n of graph.nodes) {
-          let [sx, sy] = snapPosToGrid(n.x, n.y);
-          if (occupied.has(cellKey(sx, sy))) {
-            [sx, sy] = findFree(sx, sy);
-          }
-          occupied.add(cellKey(sx, sy));
-          n.x = sx; n.y = sy; n.fx = sx; n.fy = sy;
-        }
-        const sim = getSim();
-        if (sim) {
-          for (const sn of sim.nodes()) {
-            const gn = graph.nodes.find(n => n.id === sn.id);
-            if (gn) {
-              sn.x = gn.x; sn.y = gn.y; sn.fx = gn.fx; sn.fy = gn.fy; sn.fixed = true;
-            }
+    const findFree = (sx: number, sy: number): [number, number] => {
+      for (let radius = 0; radius <= 8; radius++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          for (let dy = -radius; dy <= radius; dy++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+            const x = sx + dx * step, y = sy + dy * step;
+            if (!occupied.has(cellKey(x, y))) return [x, y];
           }
         }
-        simManager.initSim();
-        draw();
-      },
-    });
+      }
+      return [sx, sy];
+    };
+    for (const node of nodes) {
+      const saved = nodesById.get(node.id);
+      if (!saved || held(node) || !Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
+      const [x, y] = findFree(...snapPosToGrid(node.x, node.y, step));
+      occupied.add(cellKey(x, y));
+      node.x = saved.x = x;
+      node.y = saved.y = y;
+    }
   };
 
-  const applyLayoutMode = (mode: string) => withFocusedPane(() => {
-    const targetRuntime = focusedExtraPane()?.runtime ?? primaryRuntime;
-    const layoutPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
+  const cycleGridSnapForPane = (pane: PaneState) => {
+    const enableAll = !pane.gridSnapEnabled && pane.partialGridSnap;
+    const enablePartial = !pane.gridSnapEnabled && !pane.partialGridSnap;
+    const runtime = paneRuntime(pane);
+    for (const owner of allPaneOwners()) {
+      if (paneRuntime(owner) !== runtime) continue;
+      owner.gridSnapEnabled = enableAll;
+      owner.partialGridSnap = enablePartial;
+    }
+    if (enableAll) applyGridSnapLayout(pane);
+    scheduleSaveForRuntime(runtime, pane.index === PANE_LEFT ? collectSettings() : collectPaneSettings(pane));
+    draw();
+  };
+
+  const applyLayoutMode = (mode: string, persistSelection = true, paneIndex = focusedPaneIndex) => withFocusedPane(() => {
+    const extraPane = paneIndex === PANE_LEFT ? null : extraPanes[paneIndex - 1];
+    const targetRuntime = extraPane?.runtime ?? primaryRuntime;
+    const layoutPane = extraPane ?? pane0;
     if (coordinateLayoutModes.has(mode) && targetRuntime.ownerCount > 1) {
       showToast('同一文件正在多个窗格中打开，当前布局需要独占文档', 'warning', 4000);
       return;
@@ -7906,33 +7667,37 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if ((activeMode === 'auto' || activeMode === 'force') && activeMode !== mode) saveFixedState();
     // 清理当前模式
     if (activeMode === 'auto') layoutPane?.layout.clear();
-    if (activeMode === 'tree') { for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } for (const e of graph.edges) { delete (e as any)._conflict; delete (e as any)._treeRoute; } }
-    if (activeMode === 'category' || activeMode === 'fullcat') { (graph as any)._categoryBoxes = null;
-      for (const n of graph.nodes) { delete (n as any)._pieColors; }
-      if (activeMode === 'fullcat') { for (const g of graph.groups) { const saved = (window as any)._savedGroupModes?.find((s: any) => s.id === g.id); if (saved) g.displayMode = saved.mode; } }
+    if (activeMode === 'tree') {
+      for (const node of graph.nodes) if (!node.fixed) { node.fx = null; node.fy = null; }
+      for (const edge of graph.edges) { delete (edge as any)._conflict; delete (edge as any)._treeRoute; }
     }
+    if (activeMode === 'category' || activeMode === 'fullcat') clearTransientCategoryVisuals(graph);
     if (activeMode === 'radial') {
-      stopStarLoop();
+      if (paneIndex === PANE_LEFT) stopStarLoop();
       for (const n of graph.nodes) { delete (n as any)._starId; delete (n as any)._starRoot; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._starRadius; delete (n as any)._starAngle; }
     }
     if (activeMode === 'cardgrid' || activeMode === 'category' || activeMode === 'fullcat') {
-      const targetPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
-      if (targetPane) clearPaneLayout(targetPane);
+      clearPaneLayout(layoutPane);
     }
-    activeMode = mode;
+    layoutPane.activeMode = activeMode = mode;
     const usesStaticSimulation = mode === 'auto' || coordinateLayoutModes.has(mode);
     layoutPane?.simManager?.setStaticMode(usesStaticSimulation);
     // Card controllers own their small, bounded simulations. Keep the legacy
     // graph simulation as a direct-reference static facade so later settings
     // refreshes cannot restart a second, invisible coordinate source.
     if (coordinateLayoutModes.has(mode)) layoutPane?.simManager?.initStatic();
-    if (['cardgrid', 'category', 'fullcat'].includes(mode)) boxSelectMode = false;
-    syncFocusedCommands();
-    renderModeBar();
+    if (paneIndex === focusedPaneIndex) {
+      if (['cardgrid', 'category', 'fullcat'].includes(mode)) boxSelectMode = false;
+      syncFocusedCommands();
+      renderModeBar();
+    }
     // Persist the selection itself for every mode. Derived coordinates may be
     // saved again when their animation settles, but the mode must survive an
     // immediate file refresh or app restart.
-    scheduleSaveForRuntime(targetRuntime);
+    if (persistSelection) {
+      const settings = extraPane ? collectPaneSettings(extraPane) : collectSettings();
+      scheduleSaveForRuntime(targetRuntime, settings);
+    }
     const getCardLayoutBounds = (targetPixi: any) => () => {
       const canvasRect = targetPixi.app.canvas.getBoundingClientRect();
       const topRect = floatingTop.getBoundingClientRect();
@@ -7964,20 +7729,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       };
       const modeId = cardSource === 'components' ? 'cardgrid' : allGroups ? 'fullcat' : 'category';
       const controller = new CardGridController(modeId);
-      const isPrimaryPane = focusedPaneIndex === PANE_LEFT;
-      const extraPane = isPrimaryPane ? null : extraPanes[focusedPaneIndex - 1];
-      const targetPane = isPrimaryPane ? pane0 : extraPane;
+      const targetPane = layoutPane;
       const focusPixi = targetPane?.pixi ?? null;
       if (!targetPane || !focusPixi) return;
+      const targetRuntime = extraPane?.runtime ?? primaryRuntime;
+      const stillOwnsGraph = () => (extraPane?.runtime ?? primaryRuntime) === targetRuntime;
       controller.drawFn = () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); };
       controller.saveFn = () => {
-        if (isPrimaryPane) scheduleSave();
-        else if (extraPane) scheduleSaveForPane(extraPane);
+        if (!stillOwnsGraph()) return;
+        if (extraPane) scheduleSaveForPane(extraPane);
+        else scheduleSaveForRuntime(targetRuntime, collectSettings());
       };
-      controller.directSaveFn = () => {
-        if (isPrimaryPane) saveNow().catch(() => {});
-        else if (extraPane) saveRuntimeNow(extraPane.runtime, collectPaneSettings(extraPane)).catch(() => {});
-      };
+      controller.directSaveFn = controller.saveFn;
       targetPane.layout.clear();
       controller.activate(graph, focusPixi, simManager, simParams, {
         borderStyle: cardBorderStyle,
@@ -7996,19 +7759,37 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     } else if (mode === 'force') {
       // 保存当前位置作为动画起点
       for (const n of graph.nodes) { (n as any)._sx = n.x; (n as any)._sy = n.y; }
-      // 彻底清理所有布局残留和固定状态
-      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._starId; delete (n as any)._starRoot; delete (n as any)._radialX; delete (n as any)._radialY; delete (n as any)._starRadius; delete (n as any)._starAngle; }
+      const previousPins = new Map(savedFixedNodes.map(node => [node.id, node]));
+      for (const node of graph.nodes) {
+        const previous = previousPins.get(node.id);
+        if (previous) {
+          node.fixed = previous.fixed;
+          if (previous.fixed) { node.x = previous.x; node.y = previous.y; }
+        }
+        node.fx = node.fixed ? node.x : null;
+        node.fy = node.fixed ? node.y : null;
+        delete node._pieColors; delete node._treeX; delete node._treeY;
+        delete node._starId; delete node._starRoot; delete node._radialX; delete node._radialY;
+        delete node._starRadius; delete node._starAngle;
+      }
       for (const e of graph.edges) { delete (e as any)._conflict; }
       (graph as any)._categoryBoxes = null;
       // 持久化并启动模拟（抑制首帧绘制，防止闪烁）
       _skipDraw = true;
-      simManager.initSim();
+      const forceGraph = graph;
+      const forceManager = simManager;
+      const forceGroups = savedGroupModes;
+      savedFixedNodes = [];
+      savedGroupModes = [];
+      forceManager.initSim();
+      const forceSimulation = forceManager.getSim();
       currentAnimationCancel = startNodeAnimation({
-        nodes: graph.nodes,
-        simNodes: simManager.getSim()?.nodes() || [],
+        nodes: forceGraph.nodes,
+        simNodes: forceSimulation?.nodes() || [],
         getSource: (n) => ({ x: (n as any)._sx, y: (n as any)._sy }),
         getTarget: (n) => {
-          const sim = simManager.getSim()?.nodes() || [];
+          if (n.fixed || forceManager.getSim() !== forceSimulation) return null;
+          const sim = forceSimulation?.nodes() || [];
           const sn = sim.find((s: any) => s.id === n.id);
           return sn ? { x: sn.x, y: sn.y } : null;
         },
@@ -8016,39 +7797,22 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         easing: EASING.smoothStep, // 比 easeInOutCubic 更柔和
         onFrame: () => { _skipDraw = false; draw(); },
         onComplete: () => {
-          const sim = simManager.getSim();
-          // 收集固定节点 ID
-          const fixedIds = new Set(savedFixedNodes.filter(s => s.fixed).map(s => s.id));
-          // 恢复手动固定节点到进入布局前的原始位置（graph + sim 同步）
-          for (const s of savedFixedNodes) {
-            const n = graph.nodes.find(n => n.id === s.id);
-            if (n && s.fixed) { n.x = s.x; n.y = s.y; n.fixed = true; n.fx = s.fx; n.fy = s.fy; }
-            if (sim && s.fixed) {
-              const sn = sim.nodes().find((sn2: any) => sn2.id === s.id);
-              if (sn) { sn.x = s.x; sn.y = s.y; sn.fx = s.fx ?? s.x; sn.fy = s.fy ?? s.y; sn.fixed = true; }
-            }
-          }
-          // 释放非固定节点的 sim 约束
-          if (sim) {
-            for (const sn of sim.nodes()) {
-              if (!fixedIds.has(sn.id)) { sn.fx = null; sn.fy = null; }
-            }
-          }
+          if (forceManager.getSim() !== forceSimulation) return;
+          for (const node of forceGraph.nodes) if (!node.fixed) { node.fx = null; node.fy = null; }
+          for (const node of forceSimulation?.nodes() ?? []) if (!node.fixed) { node.fx = null; node.fy = null; }
           // 恢复集合显示状态
-          for (const gs of savedGroupModes) {
-            const g = graph.groups.find(g => g.id === gs.id);
+          for (const gs of forceGroups) {
+            const g = forceGraph.groups.find(g => g.id === gs.id);
             if (g) { g.displayMode = gs.mode as any; g.nodeColorMode = gs.nodeColorMode as any; g.nodeColor = gs.nodeColor; }
           }
-          savedFixedNodes = [];
-          savedGroupModes = [];
           draw();
         },
       });
     } else if (mode === 'tree') {
-      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
-      for (const e of graph.edges) { delete (e as any)._conflict; }
-      applyTreeLayoutV3();
+      applyTreeLayoutV3(targetRuntime);
     } else if (mode === 'radial') {
+      const radialGraph = graph;
+      const radialManager = simManager;
       for (const n of graph.nodes) { (n as any)._sx = n.x; (n as any)._sy = n.y; }
       const radialProjection = getStructureProjection(graph);
       computeRadialLayout(radialProjection.nodes, radialProjection.edges);
@@ -8068,16 +7832,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         easing: EASING.smoothStep,
         onFrame: () => { if (sharedState.directDraw) sharedState.directDraw(); else draw(); },
         onComplete: () => {
-          for (const n of graph.nodes) { delete (n as any)._sx; delete (n as any)._sy; delete (n as any)._tx; delete (n as any)._ty; n.fx = null; n.fy = null; }
+          for (const n of radialGraph.nodes) { delete (n as any)._sx; delete (n as any)._sy; delete (n as any)._tx; delete (n as any)._ty; n.fx = null; n.fy = null; }
           // 动画期间节点或结构可能已变化 → 用当前投影重算，保证数据一致
-          const currentProjection = getStructureProjection(graph);
+          const currentProjection = getStructureProjection(radialGraph);
           computeRadialLayout(currentProjection.nodes, currentProjection.edges);
-          simManager.initSim();
-          const s2 = simManager.getSim();
+          radialManager.initSim();
+          const s2 = radialManager.getSim();
           if (s2) (s2 as any)._animating = false;
-          simManager.setStaticMode(true);
-          simManager.initStatic();
-          startStarLoop();
+          radialManager.setStaticMode(true);
+          radialManager.initStatic();
+          if (paneIndex === PANE_LEFT) startStarLoop();
+          draw();
         },
       });
     } else if (mode === 'cardgrid') {
@@ -8088,7 +7853,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       activateCardMode('groups', true);
     } else {
       // 自定义布局
-      const l = layouts.find(x => x.name === mode);
+      const l = readSavedLayouts(targetRuntime.fileName).find(x => x.name === mode);
       if (l) {
         for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
         for (const sn of l.nodes) { const n = graph.nodes.find(n => n.id === sn.id); if (n) { n.x = sn.x; n.y = sn.y; n.fx = sn.fx; n.fy = sn.fy; n.fixed = sn.fixed; } }
@@ -8096,9 +7861,23 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         simManager.initSim(); draw();
       }
     }
-  });
+  }, paneIndex);
 
+  let previousViewPane: PaneState | undefined;
+  let previousViewMode = '';
   const renderModeBar = () => {
+    const pane = focusedPaneState();
+    const runtime = paneRuntime(pane);
+    const fileName = runtime.fileName;
+    const destination = adapter;
+    const load = paneGraphLoads.get(pane);
+    const isCurrent = () => adapter === destination && paneRuntime(pane) === runtime
+      && runtime.fileName === fileName && paneGraphLoads.get(pane) === load;
+    const mode = pane.activeMode;
+    const model = runtime.graph;
+    const layouts = readSavedLayouts(fileName);
+    const focusedControl = document.activeElement instanceof HTMLButtonElement && layoutPopover.contains(document.activeElement)
+      ? document.activeElement.dataset.viewAction : undefined;
     modeRow.innerHTML = '';
     alternateModeRow.innerHTML = '';
     formRow.innerHTML = '';
@@ -8108,237 +7887,229 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       auto: '自动整理',
       force: '自由布局',
       tree: '树形观察',
-      radial: starRotateMode ? '星型观察 · 旋转' : '星型观察',
+      radial: '星型观察',
       category: '分组观察',
       fullcat: '完整分组观察',
       cardgrid: '卡片平铺',
     };
-    const activeViewName = modeNames[activeMode] || activeMode || '自动整理';
-    viewIntroStatus.textContent = activeViewName;
-    viewAlternativesSummary.textContent = activeMode === 'auto'
+    const activeViewName = modeNames[mode] || mode || '自动整理';
+    viewAlternativesSummary.textContent = mode === 'auto'
       ? '其他观察方式'
       : `其他观察方式 · ${activeViewName}`;
-    if (activeMode !== 'auto') viewAlternatives.open = true;
-    const mkPill = (label: string, mode: string, isActive: boolean) => {
-      const pill = document.createElement('span');
-      pill.className = 'fg-mode-pill' + (isActive ? ' is-active' : '');
+    if (previousViewPane !== pane || previousViewMode !== mode) viewAlternatives.open = mode !== 'auto';
+    previousViewPane = pane;
+    previousViewMode = mode;
+    const viewButton = (label: string, action: () => void, pressed?: boolean, key = label) => {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'fg-mode-pill' + (pressed ? ' is-active' : '');
       pill.textContent = label;
-      pill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
-        isActive ? `background:rgba(91,143,249,0.35);border:1px solid rgba(91,143,249,0.5);color:${V('--fg-text','#fff')};` : `border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`
-      }`;
-      pill.onclick = () => { if (!isActive) applyLayoutMode(mode); };
+      pill.dataset.viewAction = key;
+      if (pressed !== undefined) pill.setAttribute('aria-pressed', String(pressed));
+      pill.onclick = () => {
+        if (!isCurrent() || focusedInteractionBlocked('调整视图')) return;
+        action();
+      };
       return pill;
     };
-    const automaticPill = mkPill('自动整理', 'auto', activeMode === 'auto');
+    const layoutButton = (label: string, option: string) => viewButton(label, () => {
+      if (pane.activeMode !== option) applyLayoutMode(option, true, pane.index);
+    }, mode === option, `layout:${option}`);
+    const automaticPill = layoutButton('自动整理', 'auto');
     automaticPill.classList.add('fg-semantic-auto-pill');
     modeRow.appendChild(automaticPill);
     updateSemanticModeLabel();
-    alternateModeRow.appendChild(mkPill('自由（力导向）', 'force', activeMode === 'force'));
-    alternateModeRow.appendChild(mkPill('树形', 'tree', activeMode === 'tree'));
-    // 星型：点一次 → 静态径向，再点一次 → 恒星星系自转（黄色高亮）
-    (() => {
-      const isRadial = activeMode === 'radial';
-      const label = isRadial && starRotateMode ? '星型 ⟳' : '星型';
-      const pill = document.createElement('span');
-      pill.className = 'fg-mode-pill' + (isRadial ? ' is-active' : '');
-      pill.textContent = label;
-      const bg = isRadial && starRotateMode
-        ? `background:rgba(245,158,11,0.35);border:1px solid rgba(245,158,11,0.5);color:${V('--fg-text','#fff')};`
-        : isRadial
-        ? `background:rgba(91,143,249,0.35);border:1px solid rgba(91,143,249,0.5);color:${V('--fg-text','#fff')};`
-        : `border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
-      pill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${bg}`;
-      pill.onclick = () => {
-        if (!isRadial) { applyLayoutMode('radial'); return; }
+    alternateModeRow.append(
+      layoutButton('自由（力导向）', 'force'),
+      layoutButton('树形', 'tree'),
+      layoutButton('星型', 'radial'),
+      layoutButton('分组', 'category'),
+      layoutButton('完整分组', 'fullcat'),
+      layoutButton('卡片平铺', 'cardgrid'),
+    );
+    if (mode === 'radial' && pane.index === PANE_LEFT) {
+      alternateModeRow.appendChild(viewButton('星型旋转', () => {
         starRotateMode = !starRotateMode;
-        scheduleSave();
+        scheduleSaveForRuntime(runtime, collectSettings());
         _starLastFrameTime = performance.now();
         renderModeBar();
-      };
-      alternateModeRow.appendChild(pill);
-    })();
-    // 分类按钮：三态循环  关闭 → 分类 → 全分类
-    const catMode = activeMode === 'category' || activeMode === 'fullcat';
-    const catLabel = activeMode === 'fullcat' ? '完整分组' : '分组';
-    const catPill = document.createElement('span');
-    catPill.className = 'fg-mode-pill' + (catMode ? ' is-active' : '');
-    catPill.textContent = catLabel;
-    catPill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
-      catMode ? `background:rgba(245,158,11,0.3);border:1px solid rgba(245,158,11,0.5);color:${V('--fg-text','#fff')};` : `border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`
-    }`;
-    catPill.onclick = () => {
-      if (activeMode === 'category') applyLayoutMode('fullcat');
-      else if (activeMode === 'fullcat') applyLayoutMode('auto');
-      else applyLayoutMode('category');
-    };
-    alternateModeRow.appendChild(catPill);
-    alternateModeRow.appendChild(mkPill('卡片平铺', 'cardgrid', activeMode === 'cardgrid'));
-    const textViewPill = document.createElement('span');
-    textViewPill.className = 'fg-mode-pill fg-text-view-entry';
-    textViewPill.textContent = '文字编辑';
-    textViewPill.title = '在当前窗格中以文字编辑整张图';
-    textViewPill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
-    textViewPill.onclick = () => {
-      const pane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
-      if (!pane) return;
-      mountTextEditor(pane);
-      textEditors.get(pane)?.enter();
-    };
-    viewToolsRow.appendChild(textViewPill);
-    // 格点吸附独立 toggle（三态：关闭→部分→全部→关闭），可与任何布局并存
-    const snapToggle = document.createElement('span');
-    snapToggle.className = 'fg-mode-pill fg-view-toggle';
-    const updateSnapLabel = () => {
-      if (gridSnapEnabled) { snapToggle.textContent = '⦿ 全部'; snapToggle.title = '全部格点：所有节点吸附到网格'; }
-      else if (partialGridSnap) { snapToggle.textContent = '◉ 部分'; snapToggle.title = '部分格点：仅固定节点吸附到网格'; }
-      else { snapToggle.textContent = '○ 格点'; snapToggle.title = '格点吸附：关闭'; }
-      snapToggle.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
-        gridSnapEnabled ? `background:rgba(91,143,249,0.35);border:1px solid rgba(91,143,249,0.5);color:${V('--fg-text','#fff')};` :
-        partialGridSnap ? `background:rgba(245,158,11,0.25);border:1px solid rgba(245,158,11,0.4);color:${V('--fg-text','#fff')};` :
-        `border:1px dashed ${V('--fg-border-light','rgba(255,255,255,0.18)')};`
-      }`;
-    };
-    updateSnapLabel();
-    snapToggle.onclick = () => {
-      if (!gridSnapEnabled && !partialGridSnap) {
-        // 关闭 → 部分
-        partialGridSnap = true;
-      } else if (partialGridSnap) {
-        // 部分 → 全部
-        partialGridSnap = false; gridSnapEnabled = true;
-        applyGridSnapLayout();
-      } else {
-        // 全部 → 关闭：解固定所有节点
-        gridSnapEnabled = false;
-        for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
-        const sim = getSim();
-        if (sim) { for (const sn of sim.nodes()) { sn.fixed = false; sn.fx = null; sn.fy = null; } }
-        simManager.initSim(); draw();
+      }, starRotateMode));
+    }
+    const fitAction = viewButton('全览', () => {
+      layoutDetails.open = false;
+      fitFocusedPane();
+    });
+    fitAction.title = '显示所有节点 (F)';
+    fitAction.dataset.mobileDuplicate = 'true';
+    viewToolsRow.appendChild(fitAction);
+    if (model.settings?.sourceMode !== 'vault-readonly') {
+      const textViewPill = viewButton('文字编辑', async () => {
+        if (markdownSourceEditor?.isOpen()) {
+          if (!await markdownSourceEditor.requestClose() || !isCurrent() || focusedPaneState() !== pane
+            || focusedInteractionBlocked('打开文字编辑')) return;
+        }
+        mountTextEditor(pane);
+        const editor = textEditors.get(pane);
+        editor?.enter();
+        if (editor?.isActive()) layoutDetails.open = false;
+      });
+      textViewPill.classList.add('fg-text-view-entry');
+      textViewPill.title = '在当前窗格中以文字编辑整张图';
+      viewToolsRow.appendChild(textViewPill);
+    } else if (vaultPathFromTabId(fileName) && vaultIndex && desktopApi?.writeFile) {
+      const note = model.nodes[0];
+      if (note?.sourceRef?.kind === 'markdown') {
+        viewToolsRow.appendChild(viewButton('编辑 Markdown', async () => {
+          if (await openMarkdownSourceEditor(pane, note)) layoutDetails.open = false;
+        }));
       }
-      scheduleSave();
-      updateSnapLabel();
+    }
+    const snapToggle = document.createElement('button');
+    snapToggle.type = 'button';
+    snapToggle.className = 'fg-mode-pill fg-grid-snap-control';
+    snapToggle.dataset.viewAction = 'grid-snap';
+    const fixedViewToggle = document.createElement('button');
+    fixedViewToggle.type = 'button';
+    fixedViewToggle.className = 'fg-mode-pill fg-fixed-view-control';
+    fixedViewToggle.dataset.viewAction = 'fixed-node-style';
+    const syncCanvasViewControls = () => {
+      const snapMode = pane.gridSnapEnabled ? '全部' : pane.partialGridSnap ? '固定' : '关';
+      snapToggle.textContent = `格点 · ${snapMode}`;
+      snapToggle.title = pane.gridSnapEnabled ? '所有节点吸附到网格'
+        : pane.partialGridSnap ? '仅固定节点吸附到网格' : '格点吸附已关闭';
+      snapToggle.classList.toggle('is-active', pane.gridSnapEnabled || pane.partialGridSnap);
+      fixedViewToggle.textContent = pane.fixedHollow ? '固定 · 镂空' : '固定 · 实心';
+      fixedViewToggle.title = '切换固定节点的显示样式';
     };
-    viewToolsRow.appendChild(snapToggle);
-    // 固定视图 toggle：镂空 / 实心
-    const fixedViewToggle = document.createElement('span');
-    fixedViewToggle.className = 'fg-mode-pill fg-view-toggle';
-    fixedViewToggle.textContent = fixedHollow ? '◉ 镂空' : '● 实心';
-    fixedViewToggle.title = fixedHollow ? '固定节点镂空显示' : '固定节点实心显示';
-    fixedViewToggle.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
+    syncCanvasViewControls();
+    snapToggle.onclick = () => {
+      if (!isCurrent() || focusedInteractionBlocked('调整视图')) return;
+      cycleGridSnapForPane(pane);
+      syncCanvasViewControls();
+    };
     fixedViewToggle.onclick = () => {
-      fixedHollow = !fixedHollow;
-      fixedViewToggle.textContent = fixedHollow ? '◉ 镂空' : '● 实心';
-      fixedViewToggle.title = fixedHollow ? '固定节点镂空显示' : '固定节点实心显示';
-      scheduleSave(); draw();
+      if (!isCurrent() || focusedInteractionBlocked('调整视图')) return;
+      const hollow = !pane.fixedHollow;
+      for (const owner of allPaneOwners()) {
+        if (paneRuntime(owner) === runtime) owner.fixedHollow = hollow;
+      }
+      scheduleSaveForRuntime(runtime, pane.index === PANE_LEFT ? collectSettings() : collectPaneSettings(pane));
+      syncCanvasViewControls();
+      draw();
     };
-    viewToolsRow.appendChild(fixedViewToggle);
-    for (const l of layouts) {
-      const active = activeMode === l.name;
-      const pill = mkPill(l.name, l.name, active);
-      pill.oncontextmenu = (e) => {
-        e.preventDefault();
-        const menu = document.createElement('div');
-        menu.className = 'fg-context-menu fg-layout-context-menu';
-        menu.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:${Z_CONTEXT_MENU};background:${V('--fg-surface-glass','rgba(40,42,48,0.9)')};border:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.15)')};border-radius:6px;padding:4px 0;min-width:90px;font-size:${V('--fg-font-sm', '0.8em')};color:${V('--fg-text','#ccc')};box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};backdrop-filter:blur(10px);`;
-        const mk = (t: string, fn: () => void) => {
-          const mi = document.createElement('div'); mi.textContent = t;
-          mi.className = 'fg-context-menu-item';
-          mi.style.cssText = 'padding:3px 8px;cursor:pointer;';
-          mi.onmouseenter = () => mi.style.background = V('--fg-button-hover','rgba(255,255,255,0.12)');
-          mi.onmouseleave = () => mi.style.background = '';
-          mi.onclick = () => { fn(); menu.remove(); }; return mi;
-        };
-        menu.appendChild(mk('重命名', async () => { const nn = await safePrompt('新名称：', l.name); if (nn) { const oldActive = activeMode === l.name; l.name = nn; if (oldActive) activeMode = nn; saveLayouts(); renderModeBar(); } }));
-                menu.appendChild(mk('删除', async () => { if (await confirmAction(`删除 "${l.name}"？`)) { if (activeMode === l.name) applyLayoutMode('auto'); layouts = layouts.filter(x => x !== l); saveLayouts(); renderModeBar(); } }));
-        document.body.appendChild(menu);
-        const close = () => { menu.remove(); document.removeEventListener('click', close); };
-        setTimeout(() => document.addEventListener('click', close), 0);
-      };
+    viewToolsRow.append(snapToggle, fixedViewToggle);
+    for (const layout of layouts) {
+      const pill = layoutButton(layout.name, layout.name);
+      bindContextMenuTrigger(pill, (x, y) => {
+        const { left, top } = appShell.getBoundingClientRect();
+        showActionWheel(appShell, x - left, y - top, [
+          { label: '重命名', icon: 'edit', action: async () => {
+            const name = (await safePrompt('排布名称', layout.name))?.trim();
+            if (!name || !isCurrent() || name === layout.name) return;
+            const latest = readSavedLayouts(fileName);
+            const original = latest.find(item => item.name === layout.name);
+            if (!original) return;
+            if (Object.prototype.hasOwnProperty.call(modeNames, name) || latest.some(item => item.name === name)) {
+              showToast('这个排布名称已在使用', 'warning');
+              return;
+            }
+            original.name = name;
+            writeSavedLayouts(fileName, latest);
+            for (const owner of allPaneOwners()) {
+              if (paneRuntime(owner) !== runtime || owner.activeMode !== layout.name) continue;
+              owner.activeMode = name;
+              scheduleSaveForRuntime(runtime, owner.index === PANE_LEFT ? collectSettings() : collectPaneSettings(owner));
+            }
+            renderModeBar();
+          } },
+          { label: '删除', icon: 'delete', destructive: true, action: async () => {
+            if (!await confirmAction('删除「' + layout.name + '」？') || !isCurrent()) return;
+            writeSavedLayouts(fileName, readSavedLayouts(fileName).filter(item => item.name !== layout.name));
+            for (const owner of allPaneOwners()) {
+              if (paneRuntime(owner) === runtime && owner.activeMode === layout.name) applyLayoutMode('auto', true, owner.index);
+            }
+            renderModeBar();
+          } },
+        ], { label: '排布操作', returnFocus: pill, clearSelection: false });
+      });
       alternateModeRow.appendChild(pill);
     }
-    // + 保存按钮
-    const addBtn = document.createElement('span');
-    addBtn.textContent = '+ 保存当前排布'; addBtn.title = '把当前节点位置保存为一种观察方式';
-    addBtn.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs', '0.72em')};padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
-    addBtn.onclick = async () => {
-      // 如果在自定义布局模式，直接更新当前布局
-      if (!['auto', 'force', 'tree', 'radial', 'category', 'fullcat', 'cardgrid'].includes(activeMode)) {
-        const l = layouts.find(x => x.name === activeMode);
-        if (l) {
-          l.nodes = graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, fx: n.fx, fy: n.fy, fixed: n.fixed || false }));
-          l.groupModes = graph.groups.map(g => ({ id: g.id, mode: g.displayMode }));
-          saveLayouts(); renderModeBar(); return;
-        }
-      }
-      const name = await safePrompt('布局名称：');
-      if (!name) return;
-      const exists = layouts.findIndex(l => l.name === name);
-      if (exists >= 0) { if (!await confirmAction(`覆盖 "${name}"？`)) return; layouts.splice(exists, 1); }
-      layouts.push({ name,
-        nodes: graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, fx: n.fx, fy: n.fy, fixed: n.fixed || false })),
-        groupModes: graph.groups.map(g => ({ id: g.id, mode: g.displayMode })),
-      });
-      saveLayouts(); renderModeBar();
-    };
-    alternateModeRow.appendChild(addBtn);
 
-    const formPane = focusedPaneIndex === PANE_LEFT ? pane0 : extraPanes[focusedPaneIndex - 1];
-    const formGraph = formPane?.graph ?? graph;
-    const density = formGraph.settings?.semanticCardDensity ?? 'mixed';
+    const saveLayoutButton = viewButton('+ 保存当前排布', async () => {
+      const current = readSavedLayouts(fileName).find(layout => layout.name === pane.activeMode);
+      const name = current?.name ?? (await safePrompt('排布名称'))?.trim();
+      if (!name || !isCurrent()) return;
+      if (Object.prototype.hasOwnProperty.call(modeNames, name)) {
+        showToast('这个排布名称已在使用', 'warning');
+        return;
+      }
+      let latest = readSavedLayouts(fileName);
+      if (!current && latest.some(layout => layout.name === name)) {
+        if (!await confirmAction('覆盖「' + name + '」？') || !isCurrent()) return;
+        latest = readSavedLayouts(fileName);
+      }
+      const visible: GraphData['nodes'] = pane.simManager?.getSim()?.nodes() ?? [];
+      const byId = new Map(visible.map(node => [node.id, node]));
+      const saved: SavedLayout = {
+        name,
+        nodes: model.nodes.map(node => {
+          const position = byId.get(node.id) ?? node;
+          return { id: node.id, x: position.x, y: position.y, fx: node.fx ?? null, fy: node.fy ?? null, fixed: !!node.fixed };
+        }),
+        groupModes: model.groups.map(group => ({ id: group.id, mode: group.displayMode })),
+      };
+      const index = latest.findIndex(layout => layout.name === name);
+      if (index === -1) latest.push(saved);
+      else latest[index] = saved;
+      writeSavedLayouts(fileName, latest);
+      renderModeBar();
+    });
+    saveLayoutButton.title = '把当前节点位置保存为一种观察方式';
+    alternateModeRow.appendChild(saveLayoutButton);
+
+    const density = model.settings?.semanticCardDensity ?? DEFAULT_SEMANTIC_CARD_DENSITY;
     const formLabel = document.createElement('span');
     formLabel.textContent = '信息粒度';
     formLabel.title = '自动整理中，内容以卡片或节点呈现的密度';
-    formLabel.style.cssText = `font-size:${V('--fg-font-xs','0.72em')};opacity:.58;margin-right:2px;white-space:nowrap;`;
+    formLabel.style.cssText = 'font-size:var(--fg-font-xs,.72em);opacity:.58;margin-right:2px;white-space:nowrap;';
     formRow.appendChild(formLabel);
-    const densityChoices: Array<{ value: 'full' | 'mixed' | 'nodes'; label: string; title: string }> = [
+    const densityChoices = [
+      { value: 'nodes', label: '节点', title: '显示节点与明确连线，保持简洁的网络图' },
       { value: 'full', label: '阅读', title: '尽可能全部展开为卡片' },
       { value: 'mixed', label: '自适应', title: '根据缩放、焦点、关系和画面空间自动分配卡片' },
-      { value: 'nodes', label: '地图', title: '全部收束为节点；离开地图后恢复原有形态偏好' },
-    ];
+    ] as const;
     for (const choice of densityChoices) {
       const active = density === choice.value;
-      const pill = document.createElement('span');
-      pill.className = `fg-mode-pill fg-semantic-form-pill${active ? ' is-active' : ''}`;
-      pill.textContent = choice.label;
-      pill.title = choice.title;
-      pill.style.cssText = `-webkit-app-region:no-drag;font-size:${V('--fg-font-xs','0.72em')};padding:1px 8px;cursor:pointer;border-radius:999px;white-space:nowrap;user-select:none;${
-        active
-          ? 'background:rgba(136,192,208,.22);border:1px solid rgba(136,192,208,.5);'
-          : `border:1px solid ${V('--fg-border-light','rgba(255,255,255,.18)')};`
-      }`;
-      pill.onclick = () => {
+      const pill = viewButton(choice.label, () => {
         if (active) return;
-        formGraph.settings = {
-          ...(formGraph.settings ?? DEFAULT_SETTINGS),
+        model.settings = {
+          ...(model.settings ?? DEFAULT_SETTINGS),
           semanticCardDensity: choice.value,
-          // A global density change is an explicit re-composition request, not
-          // a content edit that should be damped by the previous layout.
           semanticLayoutMemory: undefined,
         };
-        if (formPane) formPane.semanticLensState = null;
-        if (focusedPaneIndex === PANE_LEFT) {
-          scheduleSave();
-          if (activeMode === 'auto') applySemanticPositions(pane0, true, undefined, true, true);
-        } else if (formPane) {
-          scheduleSaveForPane(formPane as PaneState);
-          if (formPane.activeMode === 'auto') applySemanticPositions(formPane, true, undefined, true, true);
-        }
+        pane.semanticLensState = null;
+        scheduleSaveForRuntime(runtime, pane.index === PANE_LEFT ? collectSettings() : collectPaneSettings(pane));
+        if (pane.activeMode === 'auto') applySemanticPositions(pane, true, true);
         renderModeBar();
-      };
+      }, active);
+      pill.classList.add('fg-semantic-form-pill');
+      pill.title = choice.title;
       formRow.appendChild(pill);
     }
+
+
     const legendEntries = [
       { text: '⌒ 明确', title: '用户创建的明确关系：稳定浅弧，不暗示方向' },
-      { text: '↗ 引用', title: 'Obsidian 双链、嵌入与反向链接：来自原文的权威关系，不是语义猜测' },
+      { text: '↗ 引用', title: '来自 Obsidian 原文的双链、嵌入与反向链接' },
       { text: '⌁ 方向', title: '箭头、因果、依赖或先后关系：弧线与方向记号' },
       { text: '└ 结构', title: '层级、包含或归属关系：骨架式曲线' },
-      { text: '┄ 回声', title: '算法观察到的语义相近：只在相关焦点附近出现' },
+      { text: '┄ 文字线索', title: '本机文字匹配得到的共同词语：在阅读、自适应或局部上下文中显示' },
       { text: '□ 待办', title: '文字看起来像待办或提醒' },
       { text: '◎ 问题', title: '文字看起来像一个问题' },
-      { text: '● 敏感', title: '可能包含密码、密钥等敏感信息；不参与语义分析' },
+      { text: '● 摘要隐藏', title: '可能包含密码或密钥，自动排布时跳过文字匹配' },
     ];
-    formRow.style.display = activeMode === 'auto' ? 'flex' : 'none';
-    semanticLegendDetails.style.display = activeMode === 'auto' ? 'block' : 'none';
+    formRow.style.display = mode === 'auto' ? 'flex' : 'none';
+    semanticLegendDetails.style.display = mode === 'auto' ? 'block' : 'none';
     for (const entry of legendEntries) {
       const item = document.createElement('span');
       item.textContent = entry.text;
@@ -8346,69 +8117,41 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       item.style.whiteSpace = 'nowrap';
       semanticLegend.appendChild(item);
     }
+    if (focusedControl && layoutDetails.open && document.activeElement === document.body) {
+      const replacement = [...layoutPopover.querySelectorAll<HTMLButtonElement>('button[data-view-action]')]
+        .find(button => button.dataset.viewAction === focusedControl && button.getClientRects().length);
+      (replacement ?? layoutSum).focus({ preventScroll: true });
+    }
   };
+  refreshOpenViewMenu = () => { if (layoutDetails.open) renderModeBar(); };
   renderModeBar();
 
-  // --- 集合搜索 ---
-  const groupInput = document.createElement('input');
-  groupInput.type = 'text'; groupInput.placeholder = '搜索集合';
-  groupInput.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 6px;border:1px solid ${V('--fg-input-border','#ccc')};border-radius:6px;width:240px;`;
-  searchRow.appendChild(groupInput);
-  // 适配按钮移入更多操作
-  const fitBtn = document.createElement('button');
-  fitBtn.textContent = '适应'; fitBtn.title = '回到中心并适应所有节点 (F)';
-  fitBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
-  fitBtn.onclick = fitFocusedPane;
-  controlsRow2.appendChild(fitBtn);
-  controlsRow2.appendChild(importBtn);
-  controlsDiv.appendChild(controlsRow2);
+  controlsDiv.appendChild(backupActions);
 
-  const groupDropdown = document.createElement('div');
-  groupDropdown.className = 'fg-group-dropdown';
-  groupDropdown.style.cssText = `position:absolute;z-index:${Z_DROPDOWN};background:${V('--fg-surface','#fff')};border:1px solid ${V('--fg-border','#d0d0d0')};border-radius:4px;max-height:150px;overflow-y:auto;display:none;font-size:${V('--fg-font-md', '0.85em')};min-width:160px;`;
-  groupInput.parentElement!.style.position = 'relative';
-  groupInput.parentElement!.appendChild(groupDropdown);
-  groupInput.addEventListener('input', () => {
-    const q = groupInput.value.trim().toLowerCase();
+  setupGroupSearch(groupInput, groupDropdown, () => {
     const targetPane = focusedPaneState();
     const targetGraph = paneRuntimeGraph(targetPane);
-    syncStructureCollections(targetGraph);
-    groupDropdown.innerHTML = '';
-    if (!q) { groupDropdown.style.display = 'none'; return; }
-    const matched = targetGraph.groups.filter(g => g.label.toLowerCase().includes(q));
-    if (matched.length > 0) {
-      matched.forEach(g => {
-        const item = document.createElement('div');
-        item.className = 'fg-group-dropdown-item';
-        item.style.cssText = 'padding:4px 8px;cursor:pointer;display:flex;align-items:center;gap:6px;';
-        const dot = document.createElement('span');
-        dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${g.color};flex-shrink:0;`;
-        item.appendChild(dot); item.appendChild(document.createTextNode(g.label));
-        item.onmousedown = (ev) => { ev.preventDefault(); withFocusedPane(() => fillGroup(g.id)); groupDropdown.style.display = 'none'; };
-        item.onmouseenter = () => item.style.background = V('--fg-button-hover','#e8e8e8');
-        item.onmouseleave = () => item.style.background = '';
-        groupDropdown.appendChild(item);
-      });
-    }
-    const createItem = document.createElement('div');
-    createItem.className = 'fg-group-dropdown-item fg-group-dropdown-create';
-    createItem.style.cssText = `padding:4px 8px;cursor:pointer;color:#5B8FF9;font-style:italic;border-top:1px solid ${V('--fg-border-light','#eee')};`;
-    createItem.textContent = `+ 创建集合 "${q}"`;
-    createItem.onmousedown = (ev) => {
-      ev.preventDefault();
-      targetPane.undoManager.pushSnapshot(targetGraph);
-      const newGroup = { id: 'g_' + Date.now(), label: q, color: '#5B8FF9', borderColor: '#3A6FD8', opacity: 0.15, displayMode: 'rect' as any, nodeColorMode: 'off' as any };
-      targetGraph.groups.push(newGroup);
-      scheduleSaveForRuntime(targetPane.runtime);
-      draw();
-      withFocusedPane(() => fillGroup(newGroup.id));
-      groupDropdown.style.display = 'none';
+    if (canMutateCanvasPane(targetPane)) syncStructureCollections(targetGraph);
+    const groups = targetGraph.groups;
+    const isCurrent = () => allPaneOwners().includes(targetPane) && focusedPaneState() === targetPane
+      && paneRuntimeGraph(targetPane) === targetGraph && targetGraph.groups === groups;
+    return {
+      groups, isCurrent, canCreate: () => isCurrent() && canMutateCanvasPane(targetPane),
+      open: group => {
+        if (!isCurrent() || !groups.includes(group)) return;
+        controlsDetails.open = false; fillGroup(group.id);
+      },
+      create: label => {
+        if (!isCurrent() || !canMutateCanvasPane(targetPane) || groups.some(group => group.label === label)) return;
+        const color = '#' + getAccentColorsForTheme(targetPane.graphTheme).accent.toString(16).padStart(6, '0');
+        const newGroup = { id: createGroupId(groups), label, color, borderColor: color,
+          opacity: 0.15, displayMode: 'rect', nodeColorMode: 'off' };
+        const runtime = targetPane.index === PANE_LEFT ? primaryRuntime : targetPane.runtime;
+        runtime.undoManager.pushSnapshot(targetGraph); groups.push(newGroup);
+        scheduleSaveForRuntime(runtime); controlsDetails.open = false; fillGroup(newGroup.id); draw();
+      },
     };
-    groupDropdown.appendChild(createItem);
-    groupDropdown.style.display = 'block';
   });
-  groupInput.addEventListener('focus', () => { if (groupInput.value.trim()) groupInput.dispatchEvent(new Event('input')); });
-  groupInput.addEventListener('blur', () => { setTimeout(() => { groupDropdown.style.display = 'none'; }, 150); });
 
   // --- 缩放/平移由 pixi-viewport 处理 ---
 
@@ -8477,15 +8220,20 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   };
 
   markdownSourceEditor = createMarkdownSourceEditor(appShell, {
+    createLiveInput: async (host, onInput) => (await import('./markdown-live-input')).createMarkdownLiveInput(host, onInput),
     readFile: readMarkdownEditorSource,
-    writeFile: async (target, content) => {
+    writeFile: async (target, content, expectedContent) => {
       const ea = (window as any).electronAPI;
       const rootPath = vaultIndex?.rootPath || fileSystemMountPath;
       if (!ea?.writeFile || !rootPath || !await ensureVaultReadPermission(rootPath)) {
         throw new Error('当前环境不能写入 Vault 原文');
       }
-      const result = await ea.writeFile(target.absolutePath, content);
+      const result = await ea.writeFile(target.absolutePath, content, expectedContent);
+      if (result?.conflict === true && typeof result.content === 'string') {
+        return { conflict: true, content: result.content };
+      }
       if (!result?.ok) throw new Error(result?.error || '写入没有完成');
+      return { ok: true };
     },
     confirmDiscard: title => confirmAction(
       `“${title}”还有尚未保存的原文修改。`,
@@ -8507,19 +8255,34 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     },
   });
 
-  openMarkdownSourceEditor = async (sourcePane, node) => {
+  const markdownProjectionTarget = (pane: PaneState, node: any): MarkdownProjectionTarget | null => {
+    const source = node?.sourceRef as VaultSourceRef | undefined;
+    const runtimeGraph = paneRuntimeGraph(pane);
+    if (!vaultIndex || !(window as any).electronAPI?.writeFile || runtimeGraph.settings?.sourceMode !== 'vault-readonly'
+      || source?.kind !== 'markdown' || source.block || node.mediaType !== 'md' || typeof node.mediaUrl !== 'string') return null;
+    if (source.heading && source.line) {
+      return { kind: 'section', heading: source.heading, headingPath: source.headingPath, line: source.line };
+    }
+    if (source.heading || source.line !== 1) return null;
+    return { kind: 'document', wholeBody: true };
+  };
+
+  openMarkdownSourceEditor = async (sourcePane, node, field) => {
+    if (blockForTextDraft('编辑原文')) return false;
     const reference = (node?.resourceRef?.kind === 'markdown'
       ? node.resourceRef
       : node?.sourceRef?.kind === 'markdown' ? node.sourceRef : null) as VaultSourceRef | null;
     const rootPath = vaultIndex?.rootPath || fileSystemMountPath;
     if (!reference?.path || !rootPath || !markdownSourceEditor) {
       showToast('Vault 尚未连接，暂时无法编辑原文', 'warning', 3500);
-      return;
+      return false;
     }
     if (node?._resourceReferenceStatus === 'broken') {
       showToast(`引用目标不存在：${reference.path}`, 'warning', 4200);
-      return;
+      return false;
     }
+    const projectionTarget = field && markdownProjectionTarget(sourcePane, node);
+    if (field && (!projectionTarget || field === 'title' && projectionTarget.kind !== 'section')) return false;
     const title = String(node?.label || reference.displayLabel || vaultDisplayName(vaultTabId(reference.path))).trim() || '未命名笔记';
     const opened = await markdownSourceEditor.open({
       path: normalizeVaultPath(reference.path),
@@ -8530,8 +8293,22 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       block: reference.block,
       line: reference.line,
       editable: !!(window as any).electronAPI?.writeFile,
+      projection: field && projectionTarget ? { target: projectionTarget, field } : undefined,
     });
     if (opened && focusedPaneIndex !== sourcePane.index) switchFocusedPane(sourcePane.index);
+    return opened;
+  };
+
+  const vaultReaderEditAction = (pane: PaneState, node: any) => {
+    if (!vaultIndex || !(window as any).electronAPI?.writeFile || node?._resourceReferenceStatus === 'broken') return undefined;
+    if (node?.sourceRef?.kind !== 'markdown' && node?.resourceRef?.kind !== 'markdown') return undefined;
+    const field = markdownProjectionTarget(pane, node) ? 'body' : undefined;
+    return {
+      label: field ? '修改内容' : '编辑原文',
+      onSelect: async () => {
+        if (await openMarkdownSourceEditor(pane, node, field)) hideMedia(node.id, true);
+      },
+    };
   };
 
   const loadResourceReferenceCardPreview = (reference: ResourceReference): Promise<string> => {
@@ -8659,7 +8436,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (result.ok && result.value) {
       try { return repairGraphCreatedOrders(JSON.parse(result.value) as GraphData); } catch { return null; }
     }
-    const stored = await createStorage(normalized).readData();
+    const stored = readRecoveryGraph(normalized);
     return stored ? repairGraphCreatedOrders(stored) : null;
   };
 
@@ -9120,7 +8897,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       : [`# ${resolved.label}`, '', `${resolved.nodes.length} 个节点 · ${resolved.edges.length} 条线`, '',
         ...resolved.nodes.slice(0, 48).map(candidate => `- ${candidate.label || candidate.id}`),
         ...(resolved.nodes.length > 48 ? ['', `另有 ${resolved.nodes.length - 48} 个节点…`] : [])].join('\n');
-    showMedia(mediaOverlayContainer, node.id, resolved.label, 'md', content, node.color || '#5B8FF9', () => {
+    showMedia(mediaOverlayContainer, node.id, resolved.label, 'md', content, mediaAccentForNode(node, getTheme(sourcePane.graphTheme)), () => {
       const screen = px.viewport.toScreen(simNode.x, simNode.y);
       const rect = px.app.canvas.getBoundingClientRect();
       return { x: rect.left + screen.x, y: rect.top + screen.y };
@@ -9135,7 +8912,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const focusSpaceReferenceTarget = (pane: PaneState, resolved: ResolvedSpaceReference) => {
     pane.spaceFocusNodeIds = resolved.reference.kind === 'fragment' ? [...resolved.nodeIds] : null;
     if (resolved.reference.kind === 'space') return;
+    const load = paneGraphLoads.get(pane);
     setTimeout(() => {
+      if (paneGraphLoads.get(pane) !== load) return;
       const targetGraph = paneRuntimeGraph(pane);
       const wanted = new Set(resolved.nodeIds);
       const targets = targetGraph.nodes.filter(candidate => wanted.has(String(candidate.id)));
@@ -9321,7 +9100,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       content = joinVaultPath(fileSystemMountPath, reference.path);
     }
     const displayLabel = node.label || reference.displayLabel || reference.path;
-    showMedia(mediaOverlayContainer, node.id, displayLabel, type, content, node.color || '#5B8FF9', () => {
+    showMedia(mediaOverlayContainer, node.id, displayLabel, type, content, mediaAccentForNode(node, getTheme(sourcePane.graphTheme)), () => {
       const screen = px.viewport.toScreen(simNode.x, simNode.y);
       const rect = px.app.canvas.getBoundingClientRect();
       return { x: rect.left + screen.x, y: rect.top + screen.y };
@@ -9331,7 +9110,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }, 'reader', reference.kind !== 'folder' ? {
       label: '在 Obsidian 中打开',
       onSelect: () => { void openVaultResourceInObsidian(reference.path, reference.block ? `^${reference.block}` : reference.heading); },
-    } : undefined);
+    } : undefined, null, vaultReaderEditAction(sourcePane, node));
     manuallyOpenedMediaIds.add(node.id);
     draw();
   };
@@ -9457,7 +9236,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const focusEnteredReference = (pane: PaneState, reference: ResourceReference) => {
     if (!reference.heading && !reference.block && !reference.line) return;
+    const load = paneGraphLoads.get(pane);
     setTimeout(() => {
+      if (paneGraphLoads.get(pane) !== load) return;
       const targetGraph = paneRuntimeGraph(pane);
       const target = targetGraph.nodes.find((candidate: any) =>
         (reference.block && candidate.sourceRef?.block === reference.block)
@@ -9572,14 +9353,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       referenceNavigationInFlight.delete(focusedPaneIndex);
     }
     syncVaultSpaceBreadcrumb();
-    if (journey.viewport) {
-      setTimeout(() => {
-        restoreViewport();
-      }, 620);
-    }
   };
 
-  const openVaultNodeContent = (sourcePane: PaneState, node: any) => {
+  const openVaultNodeContent = (sourcePane: PaneState, node: any, editable = false) => {
     if (!node?.mediaType) return;
     const px = sourcePane.index === PANE_LEFT ? pixi : sourcePane.pixi;
     const manager = scopedPaneSimulationManager(sourcePane);
@@ -9591,19 +9367,19 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     );
     let displayUrl = node.mediaUrl || '';
     if (displayUrl && /^[A-Z]:[\\/]/.test(displayUrl)) {
-      displayUrl = 'file:///' + displayUrl.replace(/\\/g, '/').replace(/^[A-Z]:/, (match: string) => match.toLowerCase());
+      displayUrl = toFileUrl(displayUrl);
     }
-    showMedia(mediaOverlayContainer, node.id, displayLabel, node.mediaType, displayUrl, node.color || '#5B8FF9', () => {
+    showMedia(mediaOverlayContainer, node.id, displayLabel, node.mediaType, displayUrl, mediaAccentForNode(node, getTheme(sourcePane.graphTheme)), () => {
       const screen = px.viewport.toScreen(simNode.x, simNode.y);
       const rect = px.app.canvas.getBoundingClientRect();
       return { x: rect.left + screen.x, y: rect.top + screen.y };
-    }, () => { px.viewport.pause = true; }, () => { px.viewport.pause = false; }, true, () => {
+    }, () => { px.viewport.pause = true; }, () => { px.viewport.pause = false; }, !editable || paneRuntimeGraph(sourcePane).settings?.sourceMode === 'vault-readonly', () => {
       manuallyOpenedMediaIds.delete(node.id);
       draw();
     }, 'reader', node.sourceRef?.path ? {
       label: '在 Obsidian 中打开',
       onSelect: () => { void openVaultResourceInObsidian(node.sourceRef.path, node.sourceRef.block ? `^${node.sourceRef.block}` : node.sourceRef.heading); },
-    } : undefined);
+    } : undefined, editable ? mediaTextEditorForPane(sourcePane, node, 'mediaUrl') : null, vaultReaderEditAction(sourcePane, node));
     manuallyOpenedMediaIds.add(node.id);
     draw();
   };
@@ -9630,7 +9406,19 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   const onContextMenu = (menuPane: PaneState, type: 'blank'|'node'|'edge'|'group', id: string | null, screenX: number, screenY: number) => {
     const items: ContextMenuItem[] = [];
-    const mx = screenX, my = screenY;
+    const { left, top } = appShell.getBoundingClientRect();
+    const mx = screenX - left, my = screenY - top;
+    const presentMenu = () => {
+      if (items.length === 0) return;
+      if (type === 'node') {
+        const { commands, remaining } = nodeContextActions(items);
+        if (commands.length) showContextWheel(appShell, mx, my, commands, remaining, items);
+        else showActionWheel(appShell, mx, my, items, { label: '节点操作' });
+      } else {
+        const label = { blank: '画布操作', edge: '连线操作', group: '分组操作' }[type];
+        showActionWheel(appShell, mx, my, items, { label });
+      }
+    };
     const focusedPane = menuPane;
     const targetPane = menuPane.index === PANE_LEFT ? null : menuPane;
     const isExtra = menuPane.index !== PANE_LEFT;
@@ -9647,7 +9435,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         items.push({ label: '退回上一层', action: () => backLocalContextForPane(focusedPane) });
       }
       items.push({ label: '收束并返回整图', action: () => closeLocalContextForPane(focusedPane) });
-      showContextMenu(appShell, mx, my, items);
+      presentMenu();
       return;
     }
     if (isCrossSpaceProxyNode(projectedNode) || isCrossSpaceProxyEdge(projectedEdge)) {
@@ -9669,14 +9457,14 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         items.push({ label: '退回上一层', action: () => backLocalContextForPane(focusedPane) });
       }
       items.push({ label: '收束局部空间', action: () => closeLocalContextForPane(focusedPane) });
-      showContextMenu(appShell, mx, my, items);
+      presentMenu();
       return;
     }
     if ((type === 'node' && isPaneStructureProxyNode(focusedPane.structureView, id))
       || (type === 'edge' && isPaneStructureProxyEdge(focusedPane.structureView, id === null ? null : Number(id)))) {
       items.push({ label: '只读入口（退出内部视图后编辑）', disabled: true });
       items.push({ label: '返回整图', action: () => exitStructureForPane(focusedPane, true) });
-      showContextMenu(appShell, mx, my, items);
+      presentMenu();
       return;
     }
     if (_runtimeGraph.settings?.sourceMode === 'vault-readonly') {
@@ -9685,6 +9473,13 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const source = node?.sourceRef as VaultSourceRef | undefined;
         const reference = source ? createVaultResourceReference(source, vaultIndex) : null;
         const referenceNode = reference ? { ...node, resourceRef: reference, _resourceReferenceStatus: 'ok' } : null;
+        const projectionTarget = markdownProjectionTarget(focusedPane, node);
+        if (projectionTarget?.kind === 'section') {
+          items.push({ label: '修改标题', action: () => { void openMarkdownSourceEditor(focusedPane, node, 'title'); } });
+        }
+        if (projectionTarget) {
+          items.push({ label: '修改内容', action: () => { void openMarkdownSourceEditor(focusedPane, node, 'body'); } });
+        }
         if (reference && referenceNode) {
           if (source?.kind === 'markdown') {
             items.push({ label: '编辑原文', action: () => { void openMarkdownSourceEditor(focusedPane, node); } });
@@ -9716,55 +9511,20 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         if (source?.kind === 'markdown') {
           items.push({ label: '在 Obsidian 中打开原文', action: () => { void openVaultResourceInObsidian(source.path, source.block ? `^${source.block}` : source.heading); } });
         }
-        items.push({ separator: true });
-        items.push({ label: '由 Vault 原文生成 · 只读', disabled: true });
+        if (!projectionTarget) items.push({ label: '由 Vault 原文生成', disabled: true });
       } else {
-        items.push({ label: '这是原文的只读投影视图', disabled: true });
+        items.push({ label: '关系来自 Markdown 原文', disabled: true });
       }
-      showContextMenu(appShell, mx, my, items);
+      presentMenu();
       return;
     }
     const _getSim = () => _sm?.getSim();
     const _saveUndo = () => (targetPane?.undoManager ?? undoManager).pushSnapshot(_runtimeGraph);
-    const _addToSim = (node: any) => {
-      const s = _getSim();
-      if (s) {
-        node.fx = node.x; node.fy = node.y;
-        s.nodes([...s.nodes(), node]); s.alpha(0.05).alphaTarget(0.005).restart();
-        // 弹簧过渡释放
-        setTimeout(() => {
-          const anchorX = node.x, anchorY = node.y;
-          let spring = 0.25;
-          const relax = () => {
-            spring *= 0.88;
-            if (spring < 0.015) { node.fx = null; node.fy = null; s.alphaTarget(0); return; }
-            node.fx = node.x + (anchorX - node.x) * spring;
-            node.fy = node.y + (anchorY - node.y) * spring;
-            requestAnimationFrame(relax);
-          };
-          relax();
-        }, 1500);
-      }
-    };
     const _initSim = () => _sm.initSim();
-    const _fixNode = (nid: string) => {
-      const n = _g.nodes.find(gn => gn.id === nid);
-      if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; }
-      const s = _getSim(); if (s) { const sn = s.nodes().find((sn2: any) => sn2.id === nid); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } s.nodes(s.nodes()); s.alpha(Math.max(s.alpha(), 0.01)).restart(); }
-    };
-    const _unfixNodes = (ids: string[]) => {
-      const s = _getSim();
-      for (const nid of ids) {
-        const n = _g.nodes.find(gn => gn.id === nid);
-        if (n) { n.fixed = false; n.fx = null; n.fy = null; }
-        if (s) { const sn = s.nodes().find((sn2: any) => sn2.id === nid); if (sn) { sn.fixed = false; sn.fx = null; sn.fy = null; } }
-      }
-      if (s) { s.nodes(s.nodes()); s.alpha(Math.max(s.alpha(), 0.01)).restart(); }
-    };
     if (type === 'blank') {
       if (focusedPane.structureView) {
         items.push({ label: '返回整图', action: () => exitStructureForPane(focusedPane, true) });
-        showContextMenu(appShell, mx, my, items);
+        presentMenu();
         return;
       }
       // 复制框选节点
@@ -9818,75 +9578,37 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       // 粘贴剪贴板节点
       if (sharedState.nodeClipboard && sharedState.nodeClipboard.nodes.length > 0) {
         items.push({
+          id: 'paste-nodes',
           label: `粘贴 (${sharedState.nodeClipboard.nodes.length} 节点)`,
           action: () => {
-            _saveUndo();
-            const idMap: Record<string, string> = {};
+            if (!sharedState.nodeClipboard || !canMutateCanvasPane(focusedPane) || paneRuntimeGraph(focusedPane) !== _runtimeGraph) return;
             const center = _px?.viewport?.center ?? { x: 0, y: 0 };
-            // 计算偏移：把剪贴板节点的中心移到视口中心
-            const cbCenterX = sharedState.nodeClipboard!.nodes.reduce((a, n) => a + (n.x || 0), 0) / sharedState.nodeClipboard!.nodes.length;
-            const cbCenterY = sharedState.nodeClipboard!.nodes.reduce((a, n) => a + (n.y || 0), 0) / sharedState.nodeClipboard!.nodes.length;
-            const offsetX = center.x - cbCenterX;
-            const offsetY = center.y - cbCenterY;
-            // 生成新 ID
-            for (const n of sharedState.nodeClipboard!.nodes) {
-              idMap[n.id] = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            try {
+              const copy = prepareGraphCopy(_runtimeGraph, sharedState.nodeClipboard, center);
+              if (commitCreatedPaneNodes(focusedPane, _runtimeGraph, copy.nodes, null, copy.edges))
+                showToast(`已粘贴 ${copy.nodes.length} 个节点${copy.edges.length ? `及 ${copy.edges.length} 条边` : ''}`, 'success');
+            } catch (error) {
+              console.warn('[nodespace] Paste:', error);
+              showToast('无法粘贴，请重新复制节点后再试', 'info');
             }
-            const sourceNodes = sharedState.nodeClipboard!.nodes
-              .map((node: any, index: number) => ({ node, index }))
-              .sort((a, b) => {
-                const aOrder = Number.isSafeInteger(a.node.createdOrder) && a.node.createdOrder >= 0 ? a.node.createdOrder : Infinity;
-                const bOrder = Number.isSafeInteger(b.node.createdOrder) && b.node.createdOrder >= 0 ? b.node.createdOrder : Infinity;
-                return aOrder - bOrder || a.index - b.index;
-              });
-            const newNodes = sourceNodes.map(({ node: n }) => ({
-              ...sanitizeCopiedNode(n),
-              id: idMap[n.id],
-              x: (n.x || 0) + offsetX,
-              y: (n.y || 0) + offsetY,
-              fx: null, fy: null, fixed: false,
-              _isNew: true,
-            }));
-            assignCreatedOrders(newNodes, _g.nodes);
-            _g.nodes.push(...newNodes);
-            const newEdges = sharedState.nodeClipboard!.edges.map((e: any) => ({
-              ...JSON.parse(JSON.stringify(e)),
-              source: idMap[e.source],
-              target: idMap[e.target],
-            }));
-            _g.edges.push(...newEdges);
-            scheduleSave();
-            // 加入模拟
-            const s = _getSim();
-            if (s) {
-              for (const n of newNodes) s.nodes([...s.nodes(), n]);
-              s.alpha(0.3).restart();
-              setTimeout(() => {
-                newNodes.forEach((n: any) => { n.fx = null; n.fy = null; });
-                s.alphaTarget(0);
-              }, 2000);
-            }
-            draw();
-            showToast(`已粘贴 ${newNodes.length} 个节点${newEdges.length ? `及 ${newEdges.length} 条边` : ''}`, 'success');
           },
         });
       }
       items.push({
         label: '新建节点',
+        icon: 'child',
         action: () => {
           const center = _px?.viewport?.center ?? { x: 0, y: 0 };
           const cx = center.x, cy = center.y;
-          const newId = 'n_' + Date.now();
-          const node = { id: newId, label: '新节点', headingLevel: 6, tags: [], x: cx, y: cy, _isNew: true };
-          assignCreatedOrder(node, _g.nodes);
-          _saveUndo(); _g.nodes.push(node); scheduleSave();
-          _addToSim(node);
-          draw();
-          if (!isExtra) { if (!isExtra) fillNode(newId); };
+          const node = { id: createNodeId(_runtimeGraph.nodes), label: '新记录', headingLevel: 6, tags: [], x: cx, y: cy, _isNew: true };
+          if (commitCreatedPaneNodes(focusedPane, _runtimeGraph, [node], null)) beginNodeTitleEditForPane(focusedPane, node.id, true);
         },
       });
     } else if (type === 'node' && id) {
       const node = _g.nodes.find(n => n.id === id);
+      if (node && canMutateCanvasPane(focusedPane)) {
+        items.push({ id: 'edit-note', label: '修改内容', icon: 'edit', action: () => beginNodeNoteEditForPane(focusedPane, id) });
+      }
       if (node && focusedPane.activeMode === 'auto' && !focusedPane.structureView && !isStructureNode(node)) {
         const inCurrentContext = focusedPane.localContext?.members.some(member => member.id === id) ?? false;
         items.push({
@@ -9934,7 +9656,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         }
         items.push({ separator: true });
         items.push({ label: '从当前空间移除', action: () => { deleteNodesForPane(focusedPane, [id]); } });
-        showContextMenu(appShell, mx, my, items);
+        presentMenu();
         return;
       }
       const resourceReference = isResourceReferenceNode(node) ? node.resourceRef : null;
@@ -9978,7 +9700,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           })),
         }, true);
       }
-      addItem({ label: '编辑', action: () => { fillNode(id); } }, true);
+      addItem({ label: '重命名', icon: 'edit', action: () => beginNodeTitleEditForPane(focusedPane, id) }, true);
+      addItem({ label: '编辑属性', action: () => { fillNode(id); } }, true);
       const hlNode = _g.nodes.find(n => n.id === id);
       if (hlNode && !isStructureNode(hlNode)) {
         addItem({ label: '新建子节点', action: () => { createChildNodeForPane(id, targetPane); } }, true);
@@ -10038,16 +9761,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         });
       }
       // 复制节点
-      addItem({ label: '复制节点', action: () => {
-        const orig = _g.nodes.find(n => n.id === id);
-        if (!orig) return;
-        const newId = 'n_' + Date.now();
-        const copy = sanitizeCopiedNode(orig);
-        copy.id = newId; copy.x = (orig.x || 0) + 60; copy.y = (orig.y || 0) + 40;
-        delete copy.fx; delete copy.fy; delete copy.fixed;
-        assignCreatedOrder(copy, _g.nodes);
-        _saveUndo(); _g.nodes.push(copy);
-        scheduleSave(); _initSim(); draw(); { if (!isExtra) fillNode(newId); };
+      addItem({ label: '创建副本', action: () => {
+        duplicateNodeForPane(focusedPane, id, _runtimeGraph);
       }});
       if (!resourceReference && node?.mediaType && isExpanded(id) && hoveredMediaId !== id) {
         items.push({ label: '收起', action: () => { hideMedia(id); manuallyOpenedMediaIds.delete(id); draw(); } });
@@ -10058,16 +9773,16 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           const n = _g.nodes.find(n => n.id === id)!;
           let displayUrl = n.mediaUrl || '';
           if (displayUrl && /^[A-Z]:[\\/]/.test(displayUrl)) {
-            displayUrl = 'file:///' + displayUrl.replace(/\\/g, '/').replace(/^[A-Z]:/, (m: string) => m.toLowerCase());
+            displayUrl = toFileUrl(displayUrl);
           }
-          showMedia(mediaOverlayContainer, id, n.label || n.id, n.mediaType, displayUrl, n.color || '#5B8FF9', () => {
+          showMedia(mediaOverlayContainer, id, n.label || n.id, n.mediaType, displayUrl, mediaAccentForNode(n, getTheme(focusedPane.graphTheme)), () => {
             const sp = _px.viewport.toScreen(n.x, n.y);
             const rect = _px.app.canvas.getBoundingClientRect();
             return { x: rect.left + sp.x, y: rect.top + sp.y };
           }, () => { _px.viewport.pause = true; }, () => { _px.viewport.pause = false; }, false, () => {
             manuallyOpenedMediaIds.delete(id);
             draw();
-          });
+          }, 'reader', undefined, mediaTextEditorForPane(focusedPane, n, 'mediaUrl'));
           manuallyOpenedMediaIds.add(id);
           draw();
         }});
@@ -10084,30 +9799,35 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       if (!resourceReference && !node?.mediaType && node?.note?.trim()) {
         items.push({ label: '打开内容', action: () => {
           const n = _g.nodes.find(n => n.id === id)!;
-          showMedia(mediaOverlayContainer, id, n.label || n.id, 'md', n.note || '', n.color || '#5B8FF9', () => {
+          showMedia(mediaOverlayContainer, id, n.label || n.id, 'md', n.note || '', mediaAccentForNode(n, getTheme(focusedPane.graphTheme)), () => {
             const sp = _px.viewport.toScreen(n.x, n.y);
             const rect = _px.app.canvas.getBoundingClientRect();
             return { x: rect.left + sp.x, y: rect.top + sp.y };
           }, () => { _px.viewport.pause = true; }, () => { _px.viewport.pause = false; }, false, () => {
             manuallyOpenedMediaIds.delete(id);
             draw();
-          });
+          }, 'reader', undefined, mediaTextEditorForPane(focusedPane, n, 'note'));
           manuallyOpenedMediaIds.add(id);
           draw();
         }});
       }
-      if (isFixedNode(id)) {
-        addItem({ label: '解除固定', action: () => { _unfixNodes([id]); } });
-      } else {
-        addItem({ label: '固定', action: () => { _fixNode(id); } });
+      const pinTarget = _runtimeGraph.nodes.find(n => String(n.id) === String(id));
+      if (pinTarget) {
+        const fixed = Boolean(pinTarget.fixed);
+        addItem({
+          label: fixed ? '解除固定' : '固定',
+          action: () => {
+            if (_runtimeGraph.nodes.includes(pinTarget)) setPaneNodesFixed(focusedPane, [id], !fixed, _g);
+          },
+        });
       }
       const nodeForCollapse = _g.nodes.find(n => n.id === id);
       if (nodeForCollapse && focusedPane.activeMode === 'auto' && !focusedPane.structureView) {
         const visibleAsNode = nodeForCollapse._semanticCard?.form === 'node';
-        const mapMode = (_runtimeGraph.settings?.semanticCardDensity ?? 'mixed') === 'nodes';
+        const mapMode = (_runtimeGraph.settings?.semanticCardDensity ?? DEFAULT_SEMANTIC_CARD_DENSITY) === 'nodes';
         const hasManualForm = Object.prototype.hasOwnProperty.call(_runtimeGraph.settings?.semanticCardForms || {}, id);
         if (mapMode) {
-          addItem({ label: '地图模式：全部收束', disabled: true });
+          addItem({ label: '节点视图：全部收束', disabled: true });
         } else {
           addItem({
             label: visibleAsNode ? '展开为卡片' : '收束为节点',
@@ -10204,65 +9924,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           }
         }
 
-        // 检查当前节点是否有子节点（至少一条以它为 source 的边）
-        const hasChild = _g.edges.some(e => {
-          const src = typeof e.source === 'object' ? e.source.id : e.source;
-          return src === id;
-        });
-        const getDescendants = (nodeId: string): string[] => {
-          const info = bfsDescendants(nodeId);
-          return [...info.keys()].filter(k => k !== nodeId);
-        };
-        const hasCollapsedDescendants = getDescendants(id).some(did => _g.nodes.find((n: any) => n.id === did)?.collapsed);
-
-        if (nodeForCollapse?.collapsed && hasChild) {
-          addItem({ label: '展开一级', action: () => {
-            _saveUndo(); nodeForCollapse.collapsed = false; scheduleSave(); animateExpand(id);
-          }});
-          addItem({ label: '全部展开', action: () => {
-            _saveUndo();
-            const all = [id, ...getDescendants(id)];
-            for (const nid of all) { const n = _g.nodes.find(n => n.id === nid); if (n) n.collapsed = false; }
-            scheduleSave(); animateExpand(id);
-          }});
-        } else if (nodeForCollapse?.collapsed && !hasChild) {
-          nodeForCollapse.collapsed = false;
-        } else if (hasChild) {
-          addItem({ label: '折叠一级', action: () => {
-            _saveUndo(); nodeForCollapse!.collapsed = true; scheduleSave(); animateCollapse(id);
-          }});
-          addItem({ label: '逐级折叠', action: () => {
-            _saveUndo();
-            const all = [id, ...getDescendants(id)];
-            for (const nid of all) { const n = _g.nodes.find(n2 => n2.id === nid); if (n) n.collapsed = true; }
-            scheduleSave(); animateCollapse(id);
-          }});
-          if (hasCollapsedDescendants) {
-            addItem({ label: '展开一级', action: () => {
-              _saveUndo();
-              const descInfo = bfsDescendants(id);
-              const collapsedDesc = [...descInfo.entries()]
-                .filter(([nid]) => nid !== id)
-                .filter(([nid]) => _g.nodes.find(gn => gn.id === nid)?.collapsed)
-                .sort((a, b) => a[1].depth - b[1].depth);
-              if (collapsedDesc.length > 0) {
-                const minDepth = collapsedDesc[0][1].depth;
-                const targets = collapsedDesc.filter(([, info]) => info.depth === minDepth).map(([nid]) => nid);
-                for (const nid of targets) {
-                  const n = _g.nodes.find(gn => gn.id === nid);
-                  if (n) n.collapsed = false;
-                }
-                scheduleSave();
-                for (const nid of targets) animateExpand(nid);
-                draw();
-              }
-            }});
-            addItem({ label: '全部展开', action: () => {
-              _saveUndo();
-              const all = [id, ...getDescendants(id)];
-              for (const nid of all) { const n = _g.nodes.find(n2 => n2.id === nid); if (n) n.collapsed = false; }
-              scheduleSave(); animateExpand(id);
-            }});
+        if (nodeForCollapse && !focusedPane.localContextProjection) {
+          const actions = getHierarchyFoldActions(_g, id);
+          const labels = {
+            collapse: '折叠一级', collapseAll: '逐级折叠', expand: '展开一级', expandAll: '全部展开',
+          };
+          for (const action of Object.keys(labels) as HierarchyFoldAction[]) {
+            if (!actions.has(action)) continue;
+            addItem({
+              label: labels[action],
+              action: () => applyHierarchyFoldForPane(focusedPane, _runtime, _g, id, action),
+            });
           }
         }
       }
@@ -10283,12 +9955,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         draw();
         syncFocusedCommands();
       } });
-      items.push({ label: '删除', action: () => { deleteNodesForPane(focusedPane, [id]); } });
+      items.push({ label: '删除', icon: 'delete', destructive: true, action: () => { deleteNodesForPane(focusedPane, [id]); } });
       // 多媒体节点：其余操作收入"更多"子菜单
       if (isMedia && moreItems.length > 0) {
         items.push({ label: '更多', children: moreItems, action: () => {} });
       }
-      const highFrequencyLabels = new Set(['快速预览', '进入引用', '编辑', '新建子节点', '提升层级', '降低层级', '打开链接']);
+      const highFrequencyLabels = new Set(['快速预览', '进入引用', '重命名', '编辑属性', '新建子节点', '提升层级', '降低层级', '打开链接']);
       const isStructureAction = (label = '') =>
         label.startsWith('收束为结构') || label.startsWith('展开结构') || label.startsWith('移出「') || label === '加入展开结构' || label === '进入结构' || label === '收束结构' ||
         label === '解散结构' || label === '展开一级' || label === '全部展开' ||
@@ -10314,8 +9986,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         items.push({ label: '只读入口（退出内部视图后编辑）', disabled: true });
         items.push({ label: '返回整图', action: () => exitStructureForPane(focusedPane, true) });
       } else {
-        items.push({ label: '编辑', action: () => { fillEdge(originalIndex); } });
-        items.push({ label: '交换方向', action: () => {
+        items.push({ label: '编辑', icon: 'edit', action: () => { fillEdge(originalIndex); } });
+        items.push({ label: '交换方向', icon: 'swap', action: () => {
           const edge = _runtimeGraph.edges[originalIndex];
           if (!edge) return;
           _saveUndo();
@@ -10325,12 +9997,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           fillEdge(originalIndex);
           draw();
         } });
-        items.push({ label: '删除', action: () => { deleteEdgesForPane(focusedPane, [projectedIndex]); } });
+        items.push({ label: '删除', icon: 'delete', destructive: true, action: () => { deleteEdgesForPane(focusedPane, [projectedIndex]); } });
       }
     } else if (type === 'group' && id) {
-      items.push({ label: '编辑', action: () => { fillGroup(id); } });
+      items.push({ label: '编辑', icon: 'edit', action: () => { fillGroup(id); } });
     }
-    if (items.length > 0) showContextMenu(appShell, mx, my, items);
+    presentMenu();
   };
 
   const handleLinkTap = (x: number, y: number, pi?: PaneState): boolean => {
@@ -10363,6 +10035,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         setTimeout(() => sim.alphaTarget(0), 3000);
       }
       draw();
+    } else {
+      createChildNodeForPane(ls, pi?.index === PANE_LEFT ? null : pi, { x, y });
     }
     finishCurrentLinkMode();
     return true;
@@ -10375,27 +10049,23 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   appShell.addEventListener('dragover', (e) => { e.preventDefault(); });
   appShell.addEventListener('drop', (e) => {
     e.preventDefault();
-    const file = e.dataTransfer?.files?.[0];
-    if (!file || !pixi) return;
-    const vp = pixi.viewport;
-    const rect = pixi.app.canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-    const wp = vp.toWorld(sx, sy);
-    const id = 'n_' + Date.now();
-    let mediaType = 'md';
-    if (/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(file.name)) mediaType = 'image';
-    else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) mediaType = 'audio';
-    else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) mediaType = 'video';
-    const url = URL.createObjectURL(file);
-    const node = { id, label: file.name, radius: 12, headingLevel: 4, tags: [], x: wp.x, y: wp.y, mediaType, mediaUrl: url, _blobUrl: true };
-    assignCreatedOrder(node, graph.nodes);
-    saveUndo(); graph.nodes.push(node);
-    scheduleSave(); simManager.initSim(); draw();
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (!files.length) return;
+    const owner = allPaneOwners().find(pane => panePixi(pane)?.app.canvas === e.target);
+    if (!owner) return;
+    const px = panePixi(owner)!;
+    const rect = px.app.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const point = px.viewport.toWorld((e.clientX - rect.left) * px.viewport.screenWidth / rect.width,
+      (e.clientY - rect.top) * px.viewport.screenHeight / rect.height);
+    const session = captureMediaImport(owner, point);
+    if (!session) return;
+    switchFocusedPane(owner.index);
+    void importBrowserFiles(session, files);
   });
 
   await pixiReady;
-  // Pane 1 事件在懒加载时绑定（见 onSplitTab）
+  // Pane 1 事件在首次开启分屏时绑定。
   // 不在这里绑定，因为 pixi1 尚未初始化
   // Pane 1 点击聚焦
   // 点击任意分屏 → 聚焦
@@ -10405,16 +10075,8 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
   });
 
-  // 光晕滤镜
-  const blurF = new BlurFilter({ strength: 14, quality: 4 });
-  const updateBlobFilters = () => {
-    const apply = glowAppearance ? [blurF] : [];
-    pixi!.blobLayer.filters = apply;
-    for (const ep of extraPanes) {
-      if (ep.pixi) ep.pixi.blobLayer.filters = apply;
-    }
-  };
-  updateBlobFilters();
+  const darkNodeGlow = new BlurFilter({ strength: 14, quality: 4 });
+  const lightNodeGlow = new BlurFilter({ strength: 10, quality: 4 });
   // 标记图加载完成后才允许 viewport 事件触发绘制
   let readyToDraw = false;
 
@@ -10450,7 +10112,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     const showReadOnlyHint = (kind: 'node' | 'edge') => showToast(
       isVaultProjection()
         ? (kind === 'node'
-          ? '这是 Vault 原文的投影卡片；单击可阅读，编辑请回到 Obsidian'
+          ? '这是 Vault 原文的投影卡片，右键可查看编辑与阅读操作'
           : runtimeGraph().edges[pi.selEdge ?? -1]?._obsidianLink
             ? '这是 Obsidian 原文中的显式链接；它比算法观察到的相似关系更权威'
             : '这条关系来自 Markdown 标题层级')
@@ -10476,6 +10138,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     getCanvas: () => px.app.canvas as any,
     captureMagnifierRegion: (region: Parameters<PixiLayers['captureMagnifierRegion']>[0]) => px.captureMagnifierRegion(region),
     getNodeExpand: () => pi.nodeExpand, getLineExpand: () => pi.lineExpand,
+    getNodeTitleBounds: (node: any, x?: number, y?: number) => renderedNodeTitleHitBounds(sprites.get(node.id), px.viewport, x, y),
     getSemanticEdgeRouting: () => pi.activeMode === 'auto' || pi.activeMode === 'tree',
     getDraggingNode: () => pi.draggingNode, setDraggingNode: (v: any) => { pi.draggingNode = v; },
     getWasDragged: () => pi.wasDragged, setWasDragged: (v: boolean) => { pi.wasDragged = v; },
@@ -10491,14 +10154,27 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       || isSpaceReferenceNode(runtimeGraph().nodes.find(node => node.id === id))
       || isCrossSpaceProxyNode(effectiveNode(id)),
     ),
+    onNodeTitleTap: (id: string) => {
+      if (!isVaultProjection()) return beginNodeTitleEditForPane(pi, id);
+      const node = effectiveNode(id);
+      if (markdownProjectionTarget(pi, node)?.kind !== 'section') return false;
+      void openMarkdownSourceEditor(pi, node, 'title');
+      return true;
+    },
+    beginNodeNoteEdit: (id: string) => noteEditSessionForPane(pi, id),
+    onNodeTitleDoubleClick: (id: string) => {
+      const node = effectiveNode(id);
+      if (!node || isStructureNode(node) || isSpaceReferenceNode(node) || isResourceReferenceNode(node)) return false;
+      return beginNodeTitleEditForPane(pi, id);
+    },
     onNodeDoubleClick: (id: string) => enterStructureForPane(pi, id),
-    fixNode: (id: string) => { if (isReadOnlyNode(id)) { showReadOnlyHint('node'); return; } const n = runtimeGraph().nodes.find(gn => gn.id === id); if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; } const sim = getSM().getSim(); if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); } scheduleSave(); draw(); },
-    isFixedNode: (id: string) => { const n = runtimeGraph().nodes.find(gn => gn.id === id); return n?.fixed || false; },
+    isFixedNode: (id: string) => Boolean(runtimeGraph().nodes.find(node => String(node.id) === String(id))?.fixed),
     selectionBox,
     getBoxSelectMode: () => boxSelectMode,
     setBoxSelectMode: (value: boolean) => { boxSelectMode = value; syncFocusedCommands(); },
-    fixNodes: (ids: string[]) => { for (const id of ids) { const n = runtimeGraph().nodes.find(gn => gn.id === id); if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; } const sim = getSM().getSim(); if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } } } scheduleSave(); draw(); },
-    unfixNodes: (ids: string[]) => { const sim = getSM().getSim(); for (const id of ids) { const n = runtimeGraph().nodes.find(gn => gn.id === id); if (n) { n.fixed = false; n.fx = null; n.fy = null; } if (sim) { const sn = sim.nodes().find((sn2: any) => sn2.id === id); if (sn) { sn.fixed = false; sn.fx = null; sn.fy = null; } } } if (sim) { sim.nodes(sim.nodes()); sim.alpha(Math.max(sim.alpha(), 0.01)).restart(); } scheduleSave(); draw(); },
+    registerBoxSelectionReader: (read: () => CanvasBoxSelection) => paneBoxSelection.set(pi, read),
+    fixNodes: (ids: string[]) => setPaneNodesFixed(pi, ids, true),
+    unfixNodes: (ids: string[]) => setPaneNodesFixed(pi, ids, false),
     appShell, triggerSave: () => scheduleSave(),
     onDragStart: (id: string) => { getSM().setDragNode(id); lastDragId.v = id; dragCount++; appShell.classList.add('is-dragging-node'); },
     onNodeMembershipDragStart: (id: string, x: number, y: number) => beginMembershipDrag(pi, id, x, y),
@@ -10518,9 +10194,12 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         const sn = getSM().getSim()?.nodes()?.find((n2: any) => n2.id === draggedId);
         if (sn && (pi.gridSnapEnabled || sn.fixed)) {
           const [sx, sy] = snapPosToGrid(sn.x, sn.y, pi.gridSp);
-          sn.x = sx; sn.y = sy; sn.fx = sx; sn.fy = sy;
-          const gn = runtimeGraph().nodes.find((gn2: any) => gn2.id === draggedId);
-          if (gn) { gn.x = sx; gn.y = sy; gn.fx = sx; gn.fy = sy; }
+          sn.x = sx; sn.y = sy;
+          if (sn.fixed) { sn.fx = sx; sn.fy = sy; }
+          if (draggedGraphNode && !pi.structureView && !pi.localContextProjection) {
+            draggedGraphNode.x = sx; draggedGraphNode.y = sy;
+            if (draggedGraphNode.fixed) { draggedGraphNode.fx = sx; draggedGraphNode.fy = sy; }
+          }
         }
       }
       if (draggedId) {
@@ -10609,7 +10288,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       if (pi.linkMode && !pi.linkSrc) {
         const ns = (getSM().getSim()?.nodes() || []).filter((node: any) => !pi.structureBoundaryShapes.has(node.id));
         const hit = ns.find((nd: any) => nodeContainsPoint(nd, x, y, pi.nodeExpand));
-        if (hit) { pi.linkSrc = hit.id; showToast(`源: ${hit.label || hit.id}，请点击目标节点`, 'info', 2000); return; }
+        if (hit) { pi.linkSrc = hit.id; showToast(`从「${hit.label || hit.id}」连接 · 选节点或点击空白处`, 'info', 2600); return; }
       }
       const nodes = (getSM().getSim()?.nodes() || []).filter((node: any) => !pi.structureBoundaryShapes.has(node.id));
       const n = nodes.find((nd: any) => nodeContainsPoint(nd, x, y, pi.nodeExpand));
@@ -10659,9 +10338,9 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           if (sn) {
             let displayUrl = gn.mediaUrl;
             if (displayUrl && /^[A-Z]:[\\/]/.test(displayUrl)) {
-              displayUrl = 'file:///' + displayUrl.replace(/\\/g, '/').replace(/^[A-Z]:/, (m: string) => m.toLowerCase());
+              displayUrl = toFileUrl(displayUrl);
             }
-            showMedia(mediaOverlayContainer, nodeId, gn.label || nodeId, gn.mediaType, displayUrl, gn.color || '#5B8FF9', () => {
+            showMedia(mediaOverlayContainer, nodeId, gn.label || nodeId, gn.mediaType, displayUrl, mediaAccentForNode(gn, getTheme(pi.graphTheme)), () => {
               const sp = vp.toScreen(sn.x, sn.y);
               const rect = pi.pixi?.app.canvas.getBoundingClientRect() || pixi!.app.canvas.getBoundingClientRect();
               return { x: rect.left + sp.x, y: rect.top + sp.y };
@@ -10676,6 +10355,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
         hideMedia(hoveredMediaId);
         hoveredMediaId = '';
       }
+    },
+    onCreateLinkedNode: (sourceId: string, x: number, y: number, shiftKey?: boolean) => {
+      if (pi.structureView || isReadOnlyNode(sourceId)) return;
+      switchFocusedPane(pi.index);
+      createChildNodeForPane(sourceId, pi.index === PANE_LEFT ? null : pi, { x, y, dashed: shiftKey });
     },
     onCreateEdge: (sourceId: string, targetId: string, shiftKey?: boolean) => {
       if (pi.structureView || isReadOnlyNode(sourceId) || isReadOnlyNode(targetId)) {
@@ -10722,96 +10406,90 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   const getDemoEnabled = () => localStorage.getItem(DEMO_ENABLED_KEY) !== 'false';
   let demoEnabled = getDemoEnabled();
 
-  // 恢复上次打开的标签页（保证三个内置图始终存在）
-  // 恢复上次打开的标签页（演示关闭时跳过内置演示图）
+  // Resolve the physical mount before restoring relative graph IDs or local recovery.
+  const safDir = safIsAvailable() ? await safRestoreDirectory() : null;
+  const ea2 = (window as any).electronAPI;
+  if (safDir) {
+    fileSystemMountPath = safDir.name;
+    mountedStorageScope = `saf:${safDir.path}`;
+  } else if (ea2) {
+    const config = await ea2.configRead();
+    const savedPath = typeof config.folderPath === 'string' ? config.folderPath : '';
+    configuredGraphFolderRelative = typeof config.graphFolderRelative === 'string' ? config.graphFolderRelative : null;
+    // Restore permission before fs-exists, which is guarded by the selected directories.
+    const permission = savedPath ? await ea2.addAllowedDir(savedPath) : null;
+    if (savedPath && permission?.ok && await ea2.exists(savedPath)) {
+      fileSystemMountPath = savedPath;
+      const index = await refreshVaultIndex();
+      const root = (graphStorageMountPath || savedPath).replace(/\\/g, '/').replace(/\/+$/, '');
+      mountedStorageScope = `electron:${/^(?:[a-z]:|\/\/)/i.test(root) ? root.toLowerCase() : root}`;
+      if (index?.isObsidianVault && config.graphFolderRelative !== index.graphRootRelative) {
+        await ea2.configWrite({ folderPath: savedPath, graphFolderRelative: index.graphRootRelative });
+      }
+    }
+  } else if (capApp) {
+    fileSystemMountPath = 'graphs';
+  } else {
+    const savedFolder = await loadFolderSelection();
+    if (savedFolder && await restoreFolder(savedFolder.handle)) {
+      const id = savedFolder.id ?? crypto.randomUUID();
+      if (savedFolder.id || await saveFolderHandle(savedFolder.handle, id)) {
+        fileSystemMountPath = savedFolder.handle.name;
+        mountedStorageScope = `fsa:${id}`;
+      }
+    }
+  }
+  await refreshFileTree();
+  workbenchHistory = createWorkbenchHistory(localStorage, mountedStorageScope);
+  // Capacitor may initialize its file plugin after the initial listing.
+  if (capApp && !safDir && _flatTreePaths.length === 0) {
+    [500, 1500, 3000, 4500].forEach(delay => setTimeout(() => { void refreshFileTree(); }, delay));
+  }
+
+  // A new external mount should not inherit unsaved tabs or seed demo files.
+  const eligibleTab = (name: string) => name !== 'demo' && (mountedStorageScope === null
+    || _flatTreePaths.includes(name) || graphRecovery(name).hasUnsynced()
+    || (isVaultLocationTabId(name) && Boolean(vaultIndex)));
   const restored = restoreTabs();
-  const defaultOpen = demoEnabled ? [...BUILTIN_NAMES] : [] as string[];
-  if (restored && restored.tabs.length > 0) {
-    openTabs = restored.tabs.filter((t: string) => t !== 'demo');
-    if (demoEnabled) {
-      for (let i = BUILTIN_NAMES.length - 1; i >= 0; i--) {
-        const name = BUILTIN_NAMES[i];
+  const defaultOpen = demoEnabled ? BUILTIN_NAMES.filter(eligibleTab) : [];
+  const restoredTabs = restored?.tabs.filter(eligibleTab) ?? [];
+  if (restored && restoredTabs.length > 0) {
+    openTabs = restoredTabs;
+    if (defaultOpen.length) {
+      for (let i = defaultOpen.length - 1; i >= 0; i--) {
+        const name = defaultOpen[i];
         if (!openTabs.includes(name)) openTabs.unshift(name);
       }
     }
     activeTab = (restored.active && restored.active !== 'demo' && openTabs.includes(restored.active)) ? restored.active : (openTabs[0] || '');
   } else {
-    openTabs = [...defaultOpen];
-    activeTab = defaultOpen[0] || '';
-    if (!demoEnabled) {
-      // 演示关闭且无历史标签 → 创建空白起始页
-      openTabs = ['未命名'];
-      activeTab = '未命名';
-    }
+    openTabs = defaultOpen.length ? [...defaultOpen] : [_flatTreePaths[0] ?? '未命名.json'];
+    activeTab = openTabs[0];
   }
   // 恢复 pane1 标签
-  const fallbackFirst = demoEnabled ? BUILTIN_NAMES[0] : '';
+  const fallbackFirst = defaultOpen[0] ?? '';
   try {
-    const p1tabs = JSON.parse(localStorage.getItem(TABS_KEY + '-p1') || '[]');
-    const p1active = localStorage.getItem(ACTIVE_KEY + '-p1') || fallbackFirst;
+    const panelKey = (key: string) => localStorage.getItem(workspaceStateKey(key + '-ep0'))
+      ?? (mountedStorageScope === null ? localStorage.getItem(key + '-p1') : null);
+    const p1tabs = (JSON.parse(panelKey(TABS_KEY) || '[]') as string[]).filter(eligibleTab);
+    const p1active = panelKey(ACTIVE_KEY) || fallbackFirst;
     if (p1tabs.length > 0) {
       pane1.openTabs = p1tabs.filter((t: string) => t !== 'demo');
       if (demoEnabled) {
-        for (const name of BUILTIN_NAMES) {
+        for (const name of defaultOpen) {
           if (!pane1.openTabs.includes(name)) pane1.openTabs.unshift(name);
         }
       }
       pane1.activeTab = (p1active && p1active !== 'demo' && pane1.openTabs.includes(p1active)) ? p1active : (pane1.openTabs[0] || fallbackFirst);
     } else {
-      pane1.openTabs = [...(demoEnabled ? BUILTIN_NAMES : [])];
+      pane1.openTabs = [...defaultOpen];
       pane1.activeTab = fallbackFirst;
     }
   } catch {
-    pane1.openTabs = [...(demoEnabled ? BUILTIN_NAMES : [])];
+    pane1.openTabs = [...defaultOpen];
     pane1.activeTab = fallbackFirst;
   }
-  renderAllTabs();
-
-  // 尝试恢复文件夹（优先级: SAF > showDirectoryPicker > Capacitor > localStorage）
-  const safDir = safIsAvailable() ? await safRestoreDirectory() : null;
-  if (safDir) {
-    fileSystemMountPath = safDir.name;
-    await refreshFileTree();
-  } else {
-    fileSystemMountPath = capApp ? 'graphs' : null;
-  await refreshFileTree();
-  // Capacitor 可能还没初始化 → 延迟重试几次
-  let _retry = 0;
-  const _retryRefresh = () => {
-    if (_retry++ > 4) return;
-    setTimeout(async () => { await refreshFileTree(); }, _retry === 1 ? 500 : 1500);
-  };
-  try {
-    const r = await adapter.listFiles();
-    if (r.ok && r.value.length === 0) _retryRefresh();
-  } catch { _retryRefresh(); }
-  // Electron / 桌面模式：有额外文件夹恢复路径
-  const ea2 = (window as any).electronAPI;
-  if (ea2) {
-    const config = await ea2.configRead();
-    const savedPath = typeof config.folderPath === 'string' ? config.folderPath : '';
-    configuredGraphFolderRelative = typeof config.graphFolderRelative === 'string'
-      ? config.graphFolderRelative
-      : null;
-    // Permission must be restored before fs-exists; otherwise the path guard
-    // rejects the very existence check used to decide whether to restore it.
-    const permission = savedPath ? await ea2.addAllowedDir(savedPath) : null;
-    if (savedPath && permission?.ok && await ea2.exists(savedPath)) {
-      fileSystemMountPath = savedPath;
-      const index = await refreshVaultIndex();
-      if (index?.isObsidianVault && config.graphFolderRelative !== index.graphRootRelative) {
-        await ea2.configWrite({ folderPath: savedPath, graphFolderRelative: index.graphRootRelative });
-      }
-      await refreshFileTree();
-    }
-  } else {
-    const savedHandle = await loadFolderHandle();
-    if (savedHandle) {
-      const ok = await restoreFolder(savedHandle);
-      if (ok) { fileSystemMountPath = savedHandle.name; await refreshFileTree(); }
-    }
-  }
-  } // end else (SAF not available or not restored)
+  syncSpaceNavigation();
 
   // 在 loadGraphData（触发模拟）之前就把原点屏中
   {
@@ -10821,7 +10499,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }
   }
   if (activeTab) { try { await loadGraphData(activeTab); } catch (e) { console.error('init load error:', e); } }
-  loadLayouts(); renderModeBar();
+  renderModeBar();
   updateGwGh();
   // Pane 1 加载内置图（演示关闭时跳过）
   if (demoEnabled && pane1.activeTab) {
@@ -10846,8 +10524,519 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // 首次打开立即同步绘制（模拟切标签后的行为）
   draw();
 
+  let workbenchCoverRevision = 0;
+  let workbenchCoverQueue: readonly WorkbenchSpace[] | null = null;
+  let loadingWorkbenchCovers = false;
+  const loadedWorkbenchCovers = new Set<string>();
+  type CoverSnapshot = { cover: WorkbenchCover; palette: WorkbenchCoverPalette };
+  const workbenchCoverCache = createWorkbenchCoverCache<CoverSnapshot>();
+  const preparedWorkbenchCovers = new Map<string, CoverSnapshot>();
+  let workbenchCoverSourceEpoch = 0;
+  const invalidateWorkbenchCovers = () => {
+    workbenchCoverSourceEpoch++;
+    preparedWorkbenchCovers.clear();
+    loadedWorkbenchCovers.clear();
+  };
+  const vaultCoverLinks = new WeakMap<VaultIndex, Map<string, string[]>>();
+  const coverFingerprint = (value: string) => {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 0x01000193);
+    return `${value.length}:${hash >>> 0}`;
+  };
+  const vaultCoverVersion = (index: VaultIndex, path: string, resource: VaultResource) => {
+    let byPath = vaultCoverLinks.get(index);
+    const pathKey = (value: string) => normalizeVaultPath(value).toLocaleLowerCase('zh-CN');
+    if (!byPath) {
+      const links = new Map<string, string[]>();
+      const append = (path: string, details: unknown[]) => {
+        const key = pathKey(path);
+        let values = links.get(key);
+        if (!values) links.set(key, values = []);
+        values.push(JSON.stringify(details));
+      };
+      for (const note of index.notes) {
+        for (const link of note.links ?? []) {
+          const resolved = resolveObsidianLink(index, note.path, link);
+          append(note.path, ['to', resolved.status, resolved.resource?.path, resolved.displayLabel]);
+          if (resolved.resource?.kind === 'markdown') {
+            append(resolved.resource.path, ['from', note.path, link.line, link.heading, link.sourceHeading, link.block]);
+          }
+        }
+      }
+      vaultCoverLinks.set(index, byPath = links);
+    }
+    return `${resource.size}:${resource.mtime}:${coverFingerprint((byPath.get(pathKey(path)) || []).slice().sort().join('\n'))}`;
+  };
+  let workbenchOrder: string[] = [];
+  let workbenchOrderAdapter: FileAdapter | null = null;
+  let workbenchVaultPath: string | null = null;
+  let openingGraphFromWall = false;
+  const isWorkbenchSpace = (id: string) => Boolean(id) && !isBuiltin(id) && !isVaultLocationTabId(id);
+  const workbenchSpace = (id: string): WorkbenchSpace => {
+    const separator = id.lastIndexOf('/');
+    return { id, title: graphTabLabel(id.slice(separator + 1)), detail: separator >= 0 ? id.slice(0, separator) : undefined };
+  };
+  const updateWorkbench = () => {
+    const pane = focusedPaneState();
+    const id = paneLoadedTab(pane);
+    const available = new Set(fileTreeAdapter === adapter ? _flatTreePaths.filter(isWorkbenchSpace) : []);
+    const retained = workbenchOrderAdapter === adapter ? workbenchOrder.filter(path => available.has(path)) : [];
+    workbenchOrderAdapter = adapter;
+    const newPaths = [...available].sort((a, b) => a.localeCompare(b));
+    workbenchOrder = [...new Set([...retained, ...newPaths])];
+    const library = vaultIndex?.isObsidianVault ? vaultIndex : null;
+    const wallOptions = { omitGraphIds: available };
+    if (!library) workbenchVaultPath = null;
+    let folder = library && workbenchVaultPath !== null ? getVaultWallFolder(library, workbenchVaultPath, wallOptions) : null;
+    while (library && workbenchVaultPath !== null && !folder) {
+      workbenchVaultPath = workbenchVaultPath ? workbenchVaultPath.split('/').slice(0, -1).join('/') : null;
+      folder = workbenchVaultPath !== null ? getVaultWallFolder(library, workbenchVaultPath, wallOptions) : null;
+    }
+    const spaces: WorkbenchSpace[] = folder
+      ? folder.entries.map(entry => entry.kind === 'graph'
+        ? { id: entry.id, title: entry.title }
+        : { id: entry.id, title: entry.title, kind: entry.kind === 'folder' ? 'folder' : 'resource', detail: entry.detail })
+      : workbenchOrder.map(workbenchSpace);
+    if (!folder && library) spaces.unshift({ id: vaultSpaceTabId(), title: library.name || 'Obsidian 资料库', kind: 'library' });
+    if (!folder && !spaces.length && demoEnabled) {
+      for (const name of BUILTIN_NAMES) spaces.push({ ...workbenchSpace(name), example: true });
+    }
+    const current = spaces.find(space => space.id === id) ?? null;
+    const { headingColors } = getTheme(pane.graphTheme);
+    for (let level = 1; level <= 6; level++) {
+      const property = `--ns-wall-h${level}`;
+      const color = headingColors?.[level - 1];
+      if (color) workbenchHome.element.style.setProperty(property, color);
+      else workbenchHome.element.style.removeProperty(property);
+    }
+    workbenchHome.update({
+      current,
+      spaces,
+      location: folder ? {
+        id: vaultSpaceTabId(folder.path), title: folder.title, parentTitle: folder.parentTitle ?? '主界面',
+      } : null,
+      recoveryAvailable: true,
+      showAtStartup: workbenchHistory.showAtStartup,
+    });
+  };
+
+  const navigateWorkbenchVault = (path: string | null) => {
+    if (path === workbenchVaultPath) return;
+    workbenchVaultPath = path;
+    workbenchCoverRevision++;
+    workbenchCoverQueue = null;
+    loadedWorkbenchCovers.clear();
+    updateWorkbench();
+  };
+
+  const dismissWorkbench = (restorePreviousFocus = true, animateDeparture = false) => {
+    workbenchCoverRevision++;
+    workbenchCoverQueue = null;
+    workbenchHome.setVisible(false, restorePreviousFocus, animateDeparture);
+  };
+
+  const revealActiveSpace = () => {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    focusedPaneState().canvasContainer.animate([{ opacity: 0.68 }, { opacity: 1 }], { duration: 165, easing: 'ease-out' });
+  };
+
+  const createWorkbenchHandoff = (anchor: WorkbenchCoverAnchor | undefined, pane: PaneState) => {
+    if (!anchor || document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    const bounds = pane.canvasContainer.getBoundingClientRect();
+    if (!bounds.width || !bounds.height || !anchor.rect.width || !anchor.rect.height) return null;
+    const layer = document.createElement('div');
+    layer.className = 'fg-workbench-handoff';
+    const cover = document.createElement('div');
+    cover.className = 'fg-workbench-handoff-cover';
+    cover.setAttribute('aria-hidden', 'true');
+    const palette = getComputedStyle(anchor.artwork);
+    const wallBackground = palette.getPropertyValue('--ns-home-field').trim();
+    cover.style.backgroundColor = palette.getPropertyValue('--ns-cover-surface').trim() || wallBackground;
+    cover.style.color = palette.color;
+    for (const property of ['--ns-cover-edge', '--ns-wall-h1', '--ns-wall-h2', '--ns-wall-h3', '--ns-wall-h4', '--ns-wall-h5', '--ns-wall-h6']) {
+      const value = palette.getPropertyValue(property).trim();
+      if (value) cover.style.setProperty(property, value);
+    }
+    cover.append(anchor.artwork.cloneNode(true));
+    const status = document.createElement('div');
+    status.className = 'fg-workbench-handoff-status';
+    status.setAttribute('role', 'status');
+    status.style.color = palette.getPropertyValue('--ns-cover-ink').trim() || palette.color;
+    status.style.backgroundColor = cover.style.backgroundColor;
+    layer.append(cover, status);
+    const frame = (rect: DOMRectReadOnly): Keyframe => ({
+      left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`,
+    });
+    const expansion = cover.animate([frame(anchor.rect), frame(bounds)], {
+      duration: WORKBENCH_MORPH_DURATION, easing: 'cubic-bezier(.2,.7,.25,1)', fill: 'both',
+    });
+    expansion.pause();
+    expansion.currentTime = 0;
+    layer.animate([{ backgroundColor: 'transparent' }, { backgroundColor: cover.style.backgroundColor }], {
+      duration: 190, fill: 'forwards',
+    });
+    appShell.append(layer);
+    return { layer, cover, expansion, status };
+  };
+
+  const workbenchNodeDestinations = (pane: PaneState, anchor: WorkbenchCoverAnchor) => {
+    const px = panePixi(pane);
+    const sprites = pane.index === PANE_LEFT ? nodeSprites : extraSprites[pane.index - 1];
+    if (!px || !sprites || !anchor.cover) return null;
+    const canvas = px.app.canvas.getBoundingClientRect();
+    const viewport = px.viewport;
+    if (!canvas.width || !canvas.height || !viewport.screenWidth || !viewport.screenHeight) return null;
+    const scaleX = canvas.width / viewport.screenWidth;
+    const scaleY = canvas.height / viewport.screenHeight;
+    const ids = new Set(anchor.cover.points.map(point => point.id));
+    const targets = new Map<string, NodeSprite>();
+    for (const [id, sprite] of sprites) {
+      if (ids.has(String(id))) targets.set(String(id), sprite);
+    }
+    return (id: string): ScreenNode | null => {
+      const sprite = targets.get(id);
+      if (!sprite || sprite.container.destroyed || !sprite.container.visible) return null;
+      const screen = viewport.toScreen(sprite.container.x, sprite.container.y);
+      const x = canvas.left + screen.x * scaleX;
+      const y = canvas.top + screen.y * scaleY;
+      if (!Number.isFinite(x) || !Number.isFinite(y)
+        || x < canvas.left || x > canvas.right || y < canvas.top || y > canvas.bottom) return null;
+      const radius = sprite.radius * Math.abs(sprite.container.scale.x * viewport.scale.x) * scaleX;
+      return { x, y, radius: Number.isFinite(radius) ? Math.max(.5, radius) : 1 };
+    };
+  };
+
+  const enterWorkbenchSpace = async (anchor: WorkbenchCoverAnchor | undefined, fileName?: string) => {
+    if (openingGraphFromWall || blockForTextDraft('切换空间')) return;
+    openingGraphFromWall = true;
+    let handoff: ReturnType<typeof createWorkbenchHandoff> = null;
+    let loadingNotice: number | undefined;
+    try {
+      const pane = focusedPaneState();
+      handoff = createWorkbenchHandoff(anchor, pane);
+      dismissWorkbench(true, Boolean(handoff));
+      if (handoff && fileName) {
+        const { status } = handoff;
+        loadingNotice = window.setTimeout(() => { status.textContent = '正在打开…'; }, 650);
+      }
+      if (fileName) await openTab(fileName);
+      window.clearTimeout(loadingNotice);
+      if (handoff && anchor) {
+        await transitionPaint();
+        const destination = (!fileName || paneLoadedTab(pane) === fileName) && workbenchNodeDestinations(pane, anchor);
+        const movement = destination
+          ? animateWorkbenchCoverNodes(handoff.layer, handoff.cover, anchor.cover, destination, handoff.expansion)
+          : null;
+        handoff.expansion.play();
+        const fade = movement
+          ? handoff.layer.animate([{ opacity: 1 }, { opacity: 1, offset: .48 }, { opacity: 0 }], {
+            duration: WORKBENCH_MORPH_DURATION, fill: 'forwards',
+          })
+          : handoff.layer.animate([{ opacity: 1 }, { opacity: 0 }], {
+            delay: 225, duration: 150, easing: 'ease-out', fill: 'forwards',
+          });
+        await Promise.all([movement, fade.finished]);
+      } else revealActiveSpace();
+    } finally {
+      window.clearTimeout(loadingNotice);
+      handoff?.layer.remove();
+      openingGraphFromWall = false;
+    }
+  };
+
+  const createWorkbenchSpace = async (name: string, capture?: { title?: string }) => {
+    const destination = adapter;
+    const origin = focusedPaneState();
+    const originatingTab = paneLoadedTab(origin);
+    const path = await findAvailableSpacePath(backupFileStem(name), destination, isNewGraphPathReserved);
+    const nodes: GraphData['nodes'] = [];
+    if (capture) {
+      const node = { id: createNodeId(nodes), label: capture.title || '新记录', x: 0, y: 0, headingLevel: 6, tags: [] };
+      assignCreatedOrder(node, nodes);
+      nodes.push(node);
+    }
+    await writeNewGraph(destination, path, { nodes, edges: [], groups: [], settings: { ...DEFAULT_SETTINGS, ...presetDefaults } });
+    try {
+      if (destination !== adapter) return;
+      await refreshFileTree();
+      if (destination === adapter && focusedPaneState() === origin && paneLoadedTab(origin) === originatingTab
+        && !blockForTextDraft('打开新空间')) await openTab(path);
+      workbenchHistory.visit(path);
+      showToast(`已新建「${graphTabLabel(path)}」`, 'success');
+    } catch {
+      showToast(`已新建「${graphTabLabel(path)}」，可从侧栏打开`, 'warning');
+    }
+  };
+
+  const loadWorkbenchCovers = async (spaces: readonly WorkbenchSpace[]) => {
+    const paintCover = (id: string, { cover, palette }: CoverSnapshot) => {
+      workbenchHome.setCover(id, cover, palette);
+      loadedWorkbenchCovers.add(id);
+    };
+    const restorePrepared = (space: WorkbenchSpace) => {
+      if (loadedWorkbenchCovers.has(space.id)) return false;
+      const prepared = preparedWorkbenchCovers.get(space.id);
+      if (!prepared) return true;
+      paintCover(space.id, prepared);
+      return false;
+    };
+    workbenchCoverRevision++;
+    workbenchCoverQueue = spaces.filter(restorePrepared);
+    if (loadingWorkbenchCovers) return;
+    loadingWorkbenchCovers = true;
+    try {
+      while (workbenchCoverQueue && workbenchHome.element.open) {
+        const visible = workbenchCoverQueue.filter(space => space.kind !== 'library' && space.kind !== 'folder'
+          && (space.kind !== 'resource' || /\.md$/i.test(vaultPathFromTabId(space.id) || '')) && restorePrepared(space));
+        workbenchCoverQueue = null;
+        const revision = workbenchCoverRevision;
+        const destination = adapter;
+        const epoch = workbenchCoverSourceEpoch;
+        const scope = mountedStorageScope ?? 'local';
+        const isCurrent = () => revision === workbenchCoverRevision && destination === adapter && workbenchHome.element.open;
+        const rememberCover = (id: string, snapshot: CoverSnapshot) => {
+          if (epoch !== workbenchCoverSourceEpoch || destination !== adapter) return;
+          if (preparedWorkbenchCovers.size >= 512 && !preparedWorkbenchCovers.has(id)) {
+            const oldest = preparedWorkbenchCovers.keys().next();
+            if (!oldest.done) preparedWorkbenchCovers.delete(oldest.value);
+          }
+          preparedWorkbenchCovers.set(id, snapshot);
+          if (isCurrent()) paintCover(id, snapshot);
+        };
+        const loadCover = async (space: WorkbenchSpace) => {
+          try {
+            const pane = focusedPaneState();
+            const focusedTheme = paneLoadedTab(pane) === space.id ? pane.graphTheme : undefined;
+            const runtime = runtimeRegistry.get(space.id);
+            const useDraft = !!(runtime?.dirty || runtime?.savePending || runtime?.externalConflict);
+            const vaultFile = space.kind === 'resource' ? vaultPathFromTabId(space.id) : null;
+            const index = vaultIndex;
+            const vaultResource = vaultFile ? vaultResourceForPath(vaultFile) : null;
+            let raw: string | null = null;
+            const readRaw = async () => {
+              const result = await destination.readFile(space.id);
+              return result.ok && result.value && result.value.length <= 8 * 1024 * 1024 ? result.value : null;
+            };
+            const readVersion = async () => {
+              if (space.example) return 'builtin';
+              if (vaultFile) {
+                if (!index || !vaultResource || index !== vaultIndex) return undefined;
+                const stat = await (window as any).electronAPI?.stat?.(joinVaultPath(index.rootPath, vaultFile));
+                return !stat?.isDir && typeof stat?.size === 'number' && typeof stat.mtime === 'number'
+                  ? `${stat.size}:${stat.mtime}:${stat.ctime ?? ''}:${vaultCoverVersion(index, vaultFile, vaultResource)}`
+                  : undefined;
+              }
+              const stat = await destination.statFile?.(space.id);
+              return stat?.ok && stat.value ? `${stat.value.size}:${stat.value.mtime}:${stat.value.ctime ?? ''}` : undefined;
+            };
+            let version = useDraft ? undefined : await readVersion();
+            const verifyMetadata = version !== undefined && !space.example;
+            if (!useDraft && version === undefined && !vaultFile && !space.example && !destination.statFile) {
+              raw = await readRaw();
+              if (raw) version = coverFingerprint(raw);
+            }
+            const cacheKey = version === undefined ? null : {
+              scope, id: space.id, version,
+              theme: JSON.stringify([1, focusedTheme, vaultFile ? presetDefaults.graphTheme : null,
+                vaultFile ? presetDefaults.nodeColorStyle : null]),
+            };
+            const cached = cacheKey ? await workbenchCoverCache.get(cacheKey) : undefined;
+            if (cached) {
+              rememberCover(space.id, cached);
+              return;
+            }
+            let source: GraphData | null | undefined;
+            if (useDraft) source = runtime?.graph;
+            else if (space.example) source = BUILTIN_GRAPHS[space.id];
+            else if (vaultFile) source = await readVaultGraphData(space.id);
+            else {
+              raw ??= await readRaw();
+              if (raw) source = JSON.parse(raw) as GraphData;
+            }
+            if (source && destination === adapter) {
+              const themeName = focusedTheme || source.settings?.graphTheme || DEFAULT_GRAPH_THEME;
+              const theme = getTheme(themeName);
+              const dark = isThemeDark(theme);
+              const hex = (color: number) => '#' + color.toString(16).padStart(6, '0');
+              const accent = hex(getAccentColorsForTheme(themeName).accent);
+              const colorStyle = source.settings?.nodeColorStyle || DEFAULT_SETTINGS.nodeColorStyle;
+              const levels = Array.from({ length: 6 }, (_, i) => {
+                const level = i + 1;
+                if (colorStyle === 'uniform') return theme.nodeDefaultColor;
+                if (colorStyle === 'spectrum') return hex(getSpectrumColor(level, dark, accent));
+                if (colorStyle === 'spectrum-narrow') return hex(getNarrowSpectrumColor(level, dark, accent));
+                return theme.headingColors?.[i] ?? hex(getHeadingColor(level, accent, dark));
+              });
+              const cover = buildWorkbenchCover(source);
+              const palette = {
+                background: theme.canvasBackground,
+                ink: theme.labelColor,
+                accent,
+                edge: theme.edgeColors?.explicit ?? theme.labelColor,
+                levels,
+              };
+              rememberCover(space.id, { cover, palette });
+              if (cacheKey && (!verifyMetadata || await readVersion() === version)) {
+                workbenchCoverCache.set(cacheKey, { cover, palette });
+              }
+            }
+          } catch {
+            // A preview can fail independently of opening the graph.
+          }
+        };
+        for (let index = 0; index < visible.length && isCurrent(); index += 2) {
+          await Promise.all(visible.slice(index, index + 2).map(loadCover));
+        }
+      }
+    } finally {
+      loadingWorkbenchCovers = false;
+    }
+  };
+
+  let workbenchFileActionPending = false;
+  const runWorkbenchFileAction = (action: () => Promise<void>) => {
+    if (workbenchFileActionPending) return;
+    workbenchFileActionPending = true;
+    void action().catch(reportWorkbenchActionError).finally(() => { workbenchFileActionPending = false; });
+  };
+
+  const workbenchHome = createWorkbenchHome({
+    onContinue: anchor => { void enterWorkbenchSpace(anchor).catch(reportWorkbenchActionError); },
+    onOpen: (space, anchor) => {
+      if (space.kind === 'library' || space.kind === 'folder') {
+        const path = vaultSpacePathFromTabId(space.id);
+        if (path !== null) navigateWorkbenchVault(path);
+        return;
+      }
+      void enterWorkbenchSpace(anchor, space.id).catch(reportWorkbenchActionError);
+    },
+    onBack: () => {
+      const path = workbenchVaultPath;
+      navigateWorkbenchVault(path ? path.split('/').slice(0, -1).join('/') : null);
+    },
+    onVisibleSpaces: spaces => { void loadWorkbenchCovers(spaces); },
+    onNewSpace: () => runWorkbenchFileAction(async () => {
+      if (blockForTextDraft('新建空间')) return;
+      const name = await safePrompt('空间名称', '未命名空间');
+      if (!name?.trim()) return;
+      await createWorkbenchSpace(name);
+      dismissWorkbench(false);
+    }),
+    onRenameSpace: space => runWorkbenchFileAction(async () => {
+      const destination = adapter;
+      const name = await safePrompt('重命名空间', space.title);
+      if (name === null || destination !== adapter) return;
+      if (await renameSpaceFile(space.id, name)) {
+        if (vaultIndex?.isObsidianVault) await refreshVaultIndex();
+        showToast('空间已重命名', 'success');
+      }
+    }),
+    onDuplicateSpace: space => runWorkbenchFileAction(async () => {
+      const newPath = await copySpaceFile(space.id);
+      if (vaultIndex?.isObsidianVault) await refreshVaultIndex();
+      showToast(`已创建「${graphTabLabel(newPath)}」`, 'success');
+    }),
+    onDeleteSpace: space => runWorkbenchFileAction(async () => {
+      const destination = adapter;
+      const original = await destination.readFile(space.id);
+      if (!original.ok || original.value === null) throw new Error('无法读取要删除的空间');
+      const confirmed = await confirmAction(`删除空间「${space.title}」？`, { confirm: '删除' });
+      if (confirmed && destination === adapter && await deleteSpaceFile(space.id, original.value)) {
+        if (vaultIndex?.isObsidianVault) await refreshVaultIndex();
+        showToast(`已删除「${space.title}」`, 'success');
+      }
+    }),
+    onOpenLibrary: () => {
+      if (vaultIndex?.isObsidianVault) {
+        navigateWorkbenchVault('');
+        return;
+      }
+      if (mountedStorageScope === null) {
+        void openWorkspaceFolder().catch(reportWorkbenchActionError);
+        return;
+      }
+      dismissWorkbench(false);
+      sidebar.open();
+    },
+    onRestore: () => {
+      dismissWorkbench();
+      restoreBackupButton.click();
+    },
+    onRecord: () => runWorkbenchFileAction(async () => {
+      if (blockForTextDraft('记录想法')) return;
+      const title = (await safePrompt('记录一个想法'))?.trim();
+      if (!title) return;
+      const pane = focusedPaneState();
+      dismissWorkbench(false);
+      if (isWorkbenchSpace(paneLoadedTab(pane)) && canMutateCanvasPane(pane)
+        && !pane.structureView && !pane.localContextProjection) {
+        createNodeInFocusedPane(title);
+        return;
+      }
+      await createWorkbenchSpace('随手记', { title });
+    }),
+    onShowAtStartupChange: value => workbenchHistory.setShowAtStartup(value),
+    onDismiss: () => { dismissWorkbench(); revealActiveSpace(); },
+  }, windowControls);
+  appShell.appendChild(workbenchHome.element);
+  updateOpenWorkbench = invalidateCovers => {
+    if (!workbenchHome.element.open) return;
+    if (invalidateCovers) invalidateWorkbenchCovers();
+    updateWorkbench();
+    if (invalidateCovers) workbenchHome.refreshCovers();
+  };
+  let showingWorkbench = false;
+  showWorkbench = async () => {
+    if (showingWorkbench || workbenchHome.element.open || openingGraphFromWall || blockForTextDraft('返回主界面')) return;
+    showingWorkbench = true;
+    try {
+      if (markdownSourceEditor?.isOpen()) {
+        if (!await markdownSourceEditor.requestClose()) return;
+        if (workbenchHome.element.open || openingGraphFromWall || blockForTextDraft('返回主界面')) return;
+      }
+      invalidateWorkbenchCovers();
+      updateWorkbench();
+      workbenchHome.setVisible(true);
+      void refreshFileTree().catch(reportWorkbenchActionError);
+    } catch (error) {
+      reportWorkbenchActionError(error);
+    } finally {
+      showingWorkbench = false;
+    }
+  };
+  const workbenchButton = document.createElement('button');
+  workbenchButton.type = 'button';
+  workbenchButton.className = 'fg-action fg-shell-control fg-shell-view-switch fg-workbench-trigger';
+  workbenchButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5m5-5-5 5 5 5"/></svg><span>主界面</span>';
+  workbenchButton.title = '返回主界面 (Esc)';
+  workbenchButton.setAttribute('aria-haspopup', 'dialog');
+  workbenchButton.onclick = () => { void showWorkbench(); };
+  // Android can deliver the next touch before it resumes synthesizing clicks after a canvas drag.
+  let workbenchTouch: { id: number; x: number; y: number } | null = null;
+  workbenchButton.addEventListener('pointerdown', event => {
+    if (event.pointerType === 'touch' && event.isPrimary) {
+      workbenchTouch = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    }
+  });
+  workbenchButton.addEventListener('pointermove', event => {
+    if (workbenchTouch?.id === event.pointerId
+      && Math.hypot(event.clientX - workbenchTouch.x, event.clientY - workbenchTouch.y) > 8) workbenchTouch = null;
+  });
+  workbenchButton.addEventListener('pointercancel', () => { workbenchTouch = null; });
+  workbenchButton.addEventListener('lostpointercapture', () => { workbenchTouch = null; });
+  workbenchButton.addEventListener('pointerup', event => {
+    const touch = workbenchTouch;
+    if (event.pointerType !== 'touch' || touch?.id !== event.pointerId) return;
+    workbenchTouch = null;
+    if (Math.hypot(event.clientX - touch.x, event.clientY - touch.y) <= 8
+      && workbenchButton.contains(document.elementFromPoint(event.clientX, event.clientY))) void showWorkbench();
+  });
+  editorNavigation.prepend(workbenchButton);
+  if (workbenchHistory.showAtStartup && !document.querySelector('[aria-modal="true"]')) void showWorkbench();
+
   // ===== 键盘快捷键 =====
   document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (workbenchHome.element.open || e.defaultPrevented) return;
     // 输入控件中不处理快捷键
     const tag = (e.target as HTMLElement)?.tagName;
     const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable;
@@ -10870,55 +11059,32 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       } else if (selectedEdge !== null) {
         deleteEdgesForPane(focusedPane, [selectedEdge]);
       } else if (selectedGroup) {
-        const runtimeGraph = paneRuntimeGraph(focusedPane);
-        focusedPane.undoManager.pushSnapshot(runtimeGraph);
-        const groupIndex = runtimeGraph.groups.findIndex(group => group.id === selectedGroup);
-        if (groupIndex >= 0) runtimeGraph.groups.splice(groupIndex, 1);
-        focusedPane.selNode = null; focusedPane.selEdge = null; focusedPane.selGroup = null;
-        if (fp) scheduleSaveForPane(fp); else { clearEd(); scheduleSave(); }
-        draw();
-        showToast('集合已删除', 'info');
+        deleteGroupForPane(focusedPane, selectedGroup);
       }
-    } else if (ctrl && e.key === 'z' && !e.shiftKey) {
+    } else if (ctrl && /^z$/i.test(e.key) && !e.shiftKey) {
       e.preventDefault();
       runFocusedHistory('undo');
-    } else if (ctrl && e.key === 'z' && e.shiftKey) {
+    } else if (ctrl && /^z$/i.test(e.key) && e.shiftKey) {
       e.preventDefault();
       runFocusedHistory('redo');
-    } else if (ctrl && e.key === 's') {
-      e.preventDefault(); saveNow(); showToast('已保存', 'success');
+    } else if (ctrl && /^s$/i.test(e.key)) {
+      e.preventDefault();
+      void saveFocusedGraphWithFeedback();
     } else if (e.key === 'f' && !ctrl) {
       e.preventDefault();
       // F 键：有选中 → 切换固定；无选中 → 回正视口
-      if (isExtra && fp) {
-        if (fp.selNode && !isPaneStructureProxyNode(fp.structureView, fp.selNode)) {
-          const n = paneRuntimeGraph(fp).nodes.find(n2 => n2.id === fp.selNode);
-          if (n) {
-            if (n.fixed) { n.fixed = false; n.fx = null; n.fy = null; }
-            else { n.fixed = true; n.fx = n.x; n.fy = n.y; }
-            const focusedSim = scopedPaneSimulationManager(fp)?.getSim();
-            if (focusedSim) { const sn = focusedSim.nodes().find((s: any) => s.id === fp.selNode); if (sn) { sn.fixed = n.fixed; sn.fx = n.fx ?? null; sn.fy = n.fy ?? null; } focusedSim.nodes(focusedSim.nodes()); focusedSim.alpha(Math.max(focusedSim.alpha(), 0.01)).restart(); }
-          }
-          scheduleSaveForPane(fp); draw();
-        } else {
-          fitFocusedPane();
-        }
-        return;
-      }
-      const boxIds = sharedState.selectedNodeIds;
-      if (boxIds.length >= 2) {
-        const allFixed = boxIds.every(id => isFixedNode(id));
-        if (allFixed) { unfixNodes(boxIds); }
-        else { fixNodes(boxIds); }
-      } else if (selNode) {
-        if (isFixedNode(selNode)) { unfixNodes([selNode]); }
-        else { fixNode(selNode); }
-      } else {
-        fitFocusedPane();
-      }
+      if (e.repeat) return;
+      const focusedPane = fp ?? pane0 as unknown as PaneState;
+      const boxIds = paneBoxSelection.get(focusedPane)?.().nodeIds ?? [];
+      const ids = boxIds.length ? boxIds : focusedPane.selNode ? [focusedPane.selNode] : [];
+      if (ids.length) setPaneNodesFixed(focusedPane, ids);
+      else fitFocusedPane();
     } else if (e.key === 'n' && !ctrl) {
       e.preventDefault();
       createNodeInFocusedPane();
+    } else if (e.key === 'F2' && !ctrl) {
+      const pane = fp ?? pane0 as unknown as PaneState;
+      if (pane.selNode && beginNodeTitleEditForPane(pane, pane.selNode)) e.preventDefault();
     } else if (/^[1-6]$/.test(e.key) && !ctrl && !e.shiftKey && !e.metaKey) {
       // 数字键 1-6：设置选中节点等级（输入框/可编辑元素聚焦时跳过）
       const activeEl = document.activeElement;
@@ -10953,33 +11119,18 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       }
     } else if (ctrl && e.key === 'd') {
       e.preventDefault();
-      if (isExtra && fp?.selNode && !isPaneStructureProxyNode(fp.structureView, fp.selNode)) {
-        const g = paneRuntimeGraph(fp); const orig = g.nodes.find(n => n.id === fp.selNode);
-        if (orig) {
-          const newId = 'n_' + Date.now();
-          const copy = sanitizeCopiedNode(orig);
-          copy.id = newId; copy.x = (orig.x || 0) + 60; copy.y = (orig.y || 0) + 40;
-          delete copy.fx; delete copy.fy; delete copy.fixed;
-          assignCreatedOrder(copy, g.nodes);
-          fp.undoManager.pushSnapshot(g); g.nodes.push(copy);
-          scheduleSaveForPane(fp); reinitializeRuntimeViews(fp.runtime); draw(); fillNode(newId);
-          showToast('节点已复制', 'success');
-        }
-      } else if (selNode) {
-        const orig = graph.nodes.find(n => n.id === selNode);
-        if (orig) {
-          const newId = 'n_' + Date.now();
-          const copy = sanitizeCopiedNode(orig);
-          copy.id = newId; copy.x = (orig.x || 0) + 60; copy.y = (orig.y || 0) + 40;
-          delete copy.fx; delete copy.fy; delete copy.fixed;
-          assignCreatedOrder(copy, graph.nodes);
-          saveUndo(); graph.nodes.push(copy);
-          scheduleSave(); simManager.initSim(); draw(); fillNode(newId);
-          showToast('节点已复制', 'success');
-        }
-      }
+      const owner = fp ?? pane0 as unknown as PaneState;
+      const selectedId = owner.selNode;
+      if (selectedId && !isPaneStructureProxyNode(owner.structureView, selectedId)
+        && duplicateNodeForPane(owner, selectedId)) showToast('节点已复制', 'success');
     } else if (e.key === 'Escape') {
+      if (document.querySelector('[aria-modal="true"]')) return;
+      const box = paneBoxSelection.get(fp ?? pane0 as unknown as PaneState)?.();
       if (sharedState.rightDragLink) { sharedState.rightDragLink = null; draw(); }
+      else if (box?.nodeIds.length || box?.edges?.size) {
+        e.preventDefault();
+        sharedState.clearSelection?.();
+      }
       else if (focusedLinkActive()) {
         finishLinkMode(fp);
         showToast('已退出连线模式', 'info');
@@ -10991,29 +11142,38 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       else if (exitStructureForPane(fp ?? pane0 as unknown as PaneState, true)) {
         e.preventDefault();
       }
-      else if (isExtra && fp) {
-        if (fp.selNode || fp.selEdge !== null || fp.selGroup) {
-          fp.selNode = null; fp.selEdge = null; fp.selGroup = null;
-          clearEd(); draw();
-        }
+      else if (fp && (fp.selNode || fp.selEdge !== null || fp.selGroup)) {
+        fp.selNode = null; fp.selEdge = null; fp.selGroup = null;
+        clearEd(); draw();
       }
-      else if (selNode || selEdge !== null || selGroup) { clearEd(); }
-    } else if (e.key === 'Tab' && !ctrl && !e.metaKey) {
+      else if (!isExtra && (selNode || selEdge !== null || selGroup)) { clearEd(); }
+      else if (toolbarDropdownDetails.some(details => details.open)) {
+        for (const details of toolbarDropdownDetails) details.open = false;
+      }
+      else {
+        e.preventDefault();
+        void showWorkbench();
+      }
+    } else if (e.key === 'Tab' && !ctrl && !e.altKey) {
+      if (e.target instanceof Element && e.target.closest('button, summary, a[href], [role="button"], [role="menuitem"]')) return;
+      const pane = fp ?? pane0 as unknown as PaneState;
+      const selected = fp ? fp.selNode : selNode;
+      if (!selected || isPaneStructureProxyNode(pane.structureView, selected)
+        || hasActiveTextDraft() || !canMutateCanvasPane(pane)) return;
       e.preventDefault();
       if (isExtra && fp) {
-        if (!fp.selNode || isPaneStructureProxyNode(fp.structureView, fp.selNode)) return;
         const isShift2 = e.shiftKey;
         const _g = paneRuntimeGraph(fp);
         if (isShift2) {
-          const parentEdge = _g.edges.find(ed => (typeof ed.target === "object" ? ed.target.id : ed.target) === fp.selNode);
+          const parentEdge = _g.edges.find(ed => (typeof ed.target === "object" ? ed.target.id : ed.target) === selected);
           const parentId = parentEdge ? (typeof parentEdge.source === 'object' ? parentEdge.source.id : parentEdge.source) : null;
           const parent2 = parentId ? _g.nodes.find(n => n.id === parentId) : null;
-          const siblingId = 'n_' + Date.now();
-          const sel2 = _g.nodes.find(n => n.id === fp.selNode);
+          const siblingId = createNodeId(_g.nodes);
+          const sel2 = _g.nodes.find(n => n.id === selected);
           const siblingLevel = sel2?.headingLevel || 6;
           const simNodesSib = scopedPaneSimulationManager(fp)?.getSim()?.nodes();
           const simParentSib = parent2 ? simNodesSib?.find((n: any) => n.id === parent2.id) : null;
-          const simSelSib = simNodesSib?.find((n: any) => n.id === fp.selNode);
+          const simSelSib = simNodesSib?.find((n: any) => n.id === selected);
           const cx = simParentSib ? simParentSib.x : (simSelSib?.x ?? sel2?.x ?? 200);
           const cy = simParentSib ? simParentSib.y : (simSelSib?.y ?? sel2?.y ?? 200);
           const sibling = { id: siblingId, label: '子节点', headingLevel: siblingLevel, tags: [], x: cx + 120, y: cy + 30, _isNew: true };
@@ -11025,24 +11185,24 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           fp.selNode = siblingId;
           fillNode(siblingId);
           draw();
+          beginNodeTitleEditForPane(fp, siblingId, true);
         } else {
-          createChildNodeForPane(fp.selNode, fp);
+          createChildNodeForPane(selected, fp);
         }
         return;
       }
-      if (!selNode) return;
       const isShift = e.shiftKey;
       if (isShift) {
         // Shift+Tab：给选中节点的父级新建子节点（同级节点）
-        const parentEdge = graph.edges.find(ed => (typeof ed.target === "object" ? ed.target.id : ed.target) === selNode);
-        const parentId = parentEdge?.source;
+        const parentEdge = graph.edges.find(ed => (typeof ed.target === "object" ? ed.target.id : ed.target) === selected);
+        const parentId = parentEdge ? (typeof parentEdge.source === 'object' ? parentEdge.source.id : parentEdge.source) : null;
         const parent = parentId ? graph.nodes.find(n => n.id === parentId) : null;
-        const siblingId = 'n_' + Date.now();
-        const sel = graph.nodes.find(n => n.id === selNode);
+        const siblingId = createNodeId(graph.nodes);
+        const sel = graph.nodes.find(n => n.id === selected);
         const siblingLevel = sel?.headingLevel || 6;
         const simNodes3 = getSim()?.nodes();
         const simPar = parent ? simNodes3?.find((n: any) => n.id === parent.id) : null;
-        const simSel = simNodes3?.find((n: any) => n.id === selNode);
+        const simSel = simNodes3?.find((n: any) => n.id === selected);
         const cx = simPar?.x ?? (simSel?.x ?? sel?.x ?? 200);
         const cy = simPar?.y ?? (simSel?.y ?? sel?.y ?? 200);
         const sibling = { id: siblingId, label: '子节点', headingLevel: siblingLevel, tags: [], x: cx + 120, y: cy + 30, _isNew: true };
@@ -11052,33 +11212,25 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
           graph.edges.push({ source: parentId, target: siblingId, label: '', color: '#BFBFBF', arrow: defArrow, _createdAt: performance.now() });
         }
         scheduleSave(); addNodeToSim(sibling); draw(); fillNode(siblingId);
+        beginNodeTitleEditForPane(pane0 as unknown as PaneState, siblingId, true);
       } else {
         // Tab：给选中节点新建子节点
-        createChildNodeForPane(selNode, null);
+        createChildNodeForPane(selected, null);
       }
+      return;
     }
 
     // ═══ 方向键：沿线跳转节点 ═══
-    // ═══ Shift+方向键：左右切换标签页，上下导航文件树 ═══
+    // ═══ Shift+上下：导航文件树 ═══
     if (e.shiftKey && !e.ctrlKey && !e.altKey) {
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        e.preventDefault();
-        const step = e.key === 'ArrowRight' ? 1 : -1;
-        const idx = openTabs.indexOf(activeTab);
-        if (idx >= 0 && openTabs.length > 1) {
-          const newIdx = (idx + step + openTabs.length) % openTabs.length;
-          switchTab(openTabs[newIdx]);
-        }
-        return;
-      }
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault();
         const files = _flatTreePaths;
         if (files.length > 1) {
-          const idx = files.indexOf(activeTab);
+          const idx = files.indexOf(paneLoadedTab(focusedPaneState()));
           const step = e.key === 'ArrowDown' ? 1 : -1;
           const newIdx = idx < 0 ? 0 : ((idx + step + files.length) % files.length);
-          switchTab(files[newIdx]);
+          if (!blockForTextDraft('切换文件')) void openTab(files[newIdx]);
         }
         return;
       }
@@ -11194,9 +11346,11 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     if (cardBoundsRefreshFrame != null) cancelAnimationFrame(cardBoundsRefreshFrame);
     cardBoundsRefreshFrame = requestAnimationFrame(() => {
       cardBoundsRefreshFrame = null;
+      const shellBottom = syncEditorShellGeometry().bottom;
+      const breadcrumb = floatingTop.getBoundingClientRect();
       document.documentElement.style.setProperty(
         '--fg-floating-top-bottom',
-        `${Math.ceil(floatingTop.getBoundingClientRect().bottom + 8)}px`,
+        `${Math.ceil(Math.max(shellBottom, breadcrumb.height > 0 ? breadcrumb.bottom : 0) + 8)}px`,
       );
       const panesWithLayouts = [pane0, ...extraPanes];
       for (const pane of panesWithLayouts) {
@@ -11206,14 +11360,10 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
   };
   const cardUiResizeObserver = new ResizeObserver(refreshCardLayoutBounds);
+  cardUiResizeObserver.observe(editorShell);
   cardUiResizeObserver.observe(floatingTop);
 
-  window.addEventListener('sidebar-toggle', ((e: CustomEvent) => {
-    const collapsed = e.detail?.collapsed;
-    const newLeft = collapsed ? `${sidebarCollapsedLeft()}px` : `${sidebarExpandedLeft()}px`;
-    floatingTop.style.left = newLeft;
-    refreshCardLayoutBounds();
-  }) as EventListener);
+  window.addEventListener('sidebar-toggle', refreshCardLayoutBounds);
 
   // 响应式窗口大小调整（移动端横竖屏切换）
   let resizeDebounceTimer: ReturnType<typeof setTimeout>;
@@ -11224,8 +11374,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       // 仅在展开状态下更新侧边栏宽度
       if (sidebar.sidebar.style.width !== `${SIDEBAR_COLLAPSED_WIDTH}px`) {
         sidebar.sidebar.style.width = `${newWidth}px`;
-        const newLeft = `${sidebarExpandedLeft()}px`;
-        floatingTop.style.left = newLeft;
       }
       // Resize without discarding the current spatial context.
       if (pixi) {
@@ -11274,25 +11422,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     }, 16);
   });
 
-  // The initial frame may run after resource restoration; do not overwrite a
-  // remembered Vault location with a generic screen-centre transform.
-  requestAnimationFrame(() => {
-    if (pixi) {
-      const cw0 = pixi.app.canvas.clientWidth;
-      const ch0 = pixi.app.canvas.clientHeight;
-      if (cw0 > 0 && ch0 > 0 && !restoreVaultViewportForPane(pane0 as unknown as PaneState, activeTab)) {
-        pixi.viewport.position.set(cw0 / 2, ch0 / 2);
-      }
-    }
-    if (pixi1) {
-      const cw1 = pixi1.app.canvas.clientWidth;
-      const ch1 = pixi1.app.canvas.clientHeight;
-      if (cw1 > 0 && ch1 > 0 && !restoreVaultViewportForPane(pane1, pane1.activeTab)) {
-        pixi1.viewport.position.set(cw1 / 2, ch1 / 2);
-      }
-    }
-    if (readyToDraw) draw();
-  });
   // 首帧强刷：连刷 5 次取保，消除时序导致的部分元素不渲染问题
   let _initDraws = 5;
   const _forceInitDraw = () => {
@@ -11327,23 +11456,17 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
     });
   }, 3000);
 
-  const flushAllGraphs = async (): Promise<boolean> => {
+  async function flushAllGraphs(): Promise<boolean> {
     let allSaved = true;
     for (const runtime of runtimeRegistry.values()) {
-      if (!runtime.dirty && !runtime.externalConflict) continue;
+      if (!runtime.dirty && !runtime.externalConflict && !runtime.savePending && !runtime.fileOperationActive) continue;
       const saved = await saveRuntimeNow(runtime, collectRuntimeSettings(runtime));
-      if (!saved) {
-        allSaved = false;
-        continue;
-      }
-      dirtyTabs.delete(runtime.fileName);
-      for (const pane of extraPanes) {
-        if (pane.runtime === runtime) pane.dirtyTabs.delete(runtime.fileName);
-      }
+      if (!saved) allSaved = false;
     }
-    renderAllTabs();
-    return allSaved;
-  };
+    syncSpaceNavigation();
+    return allSaved && !runtimeRegistry.values().some(runtime =>
+      runtime.dirty || runtime.externalConflict || runtime.savePending || runtime.fileOperationActive);
+  }
 
   const electronApi = (window as any).electronAPI;
   electronApi?.onBeforeClose?.(async () => {
@@ -11370,12 +11493,6 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
 
   // Web/Android 页面关闭无法等待异步写盘；同步更新恢复缓存作为最后防线。
   window.addEventListener('beforeunload', event => {
-    disposePane0CanvasEvents?.();
-    disposePane0CanvasEvents = null;
-    for (const pane of extraPanes) {
-      pane.disposeCanvasEvents?.();
-      pane.disposeCanvasEvents = null;
-    }
     if (markdownSourceEditor?.hasDraft()) {
       event.preventDefault();
       event.returnValue = '';
@@ -11387,12 +11504,19 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
       event.returnValue = '';
       return;
     }
+    disposePane0CanvasEvents?.();
+    disposePane0CanvasEvents = null;
+    for (const pane of extraPanes) {
+      pane.disposeCanvasEvents?.();
+      pane.disposeCanvasEvents = null;
+    }
     try {
       for (const runtime of runtimeRegistry.values()) {
         if (!runtime.fileName || !runtime.graph?.nodes) continue;
         const snapshot = serializeGraphSnapshot(runtime.graph, collectRuntimeSettings(runtime));
-        createRecoveryStorage(runtime.fileName).writeSnapshot(snapshot);
-        if (runtime.dirty) createRecoveryStorage(runtime.fileName).markUnsynced();
+        const recovery = graphRecovery(runtime.fileName);
+        recovery.writeSnapshot(snapshot);
+        if (runtime.dirty) recovery.markUnsynced();
       }
     } catch {}
   });
@@ -11400,7 +11524,7 @@ function renderPane(px: PixiLayers, g: GraphData, sm: any, sp: Map<string, NodeS
   // ---- Vite HMR：监听数据目录的文件变更（开发模式） ----
   if (import.meta.hot) {
     import.meta.hot.on('graph-external-change', (data: { graph: string }) => {
-      handleExternalGraphChange(data.graph);
+      handleExternalGraphChange(data.graph, true);
     });
   }
 }

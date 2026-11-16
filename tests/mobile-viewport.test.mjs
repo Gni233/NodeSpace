@@ -52,7 +52,14 @@ test('remembered viewport height covers WebViews that shrink innerHeight while t
     editableFocused: true,
   });
   assert.equal(metrics.keyboardOpen, true);
-  assert.equal(metrics.bottomInset, 320);
+  assert.equal(metrics.bottomInset, 0);
+});
+
+test('layout resizing and visual panning apply only the remaining keyboard inset', async () => {
+  const { resolveMobileViewportMetrics } = await loadViewportModule();
+  assert.deepEqual(resolveMobileViewportMetrics({
+    layoutHeight: 500, visualHeight: 400, offsetTop: 36, largestVisualHeight: 820, editableFocused: true,
+  }), { visualHeight: 400, visualTop: 36, bottomInset: 64, keyboardOpen: true });
 });
 
 test('mobile shell wiring shares viewport variables across editors, menus, and feedback', async () => {
@@ -73,7 +80,8 @@ test('mobile shell wiring shares viewport variables across editors, menus, and f
   assert.match(contextMenu, /data-menu', 'context-submenu'/);
   assert.match(styles, /--ns-mobile-dock-clearance/);
   assert.match(styles, /is-mobile-keyboard-open/);
-  assert.match(styles, /\.fg-tab:not\(\.is-active\) \[data-tab-close\]/);
+  assert.match(styles, /\.fg-tab:not\(\.is-active\):not\(:focus-within\) \[data-tab-close\]/);
+  assert.match(styles, /\.fg-tab \.fg-tab-close \{ width: 44px !important; height: 44px !important/);
   assert.match(styles, /\.fg-context-menu\[data-menu='context'\]/);
   assert.match(styles, /\.ns-md-editor[\s\S]*?--ns-visual-bottom/);
   assert.match(index, /height: 100vh; height: 100dvh/);

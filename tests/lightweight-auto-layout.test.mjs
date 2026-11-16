@@ -42,6 +42,48 @@ test('static simulation retains only the supplied node array and no force state'
   assert.equal(simulation.nodes(), replacement);
 });
 
+test('creating a node in a static view never duplicates document nodes or starts force timers', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
+  const insertion = main.match(/^  const addNodeToSim = [\s\S]*?^  \};/m)?.[0];
+  assert.ok(insertion);
+  const output = ts.transpileModule(`${insertion}\nreturn addNodeToSim;`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const { createStaticSimulation } = await importTypeScriptModule(path.join(root, 'src', 'static-simulation.ts'));
+  const added = { id: 'new', label: '新记录', x: 20, y: 30 };
+  const nodes = [{ id: 'existing', x: 0, y: 0 }, added];
+  const simulation = createStaticSimulation(nodes);
+  let refreshes = 0;
+  const simManager = { getSim: () => simulation, isStaticMode: () => true, initStatic: () => { refreshes++; } };
+  const noTimer = () => { throw new Error('Static insertion must not start a force release timer'); };
+  const insert = new Function('simManager', 'temporaryNodeAnchors', 'setTimeout', 'requestAnimationFrame', output)(
+    simManager, new WeakSet(), noTimer, noTimer,
+  );
+  insert(added);
+  assert.equal(refreshes, 1);
+  assert.equal(nodes.length, 2);
+  assert.equal(nodes.filter(node => node.id === 'new').length, 1);
+  assert.equal(nodes[1], added);
+
+  // Force mode still receives a separate simulation node and its release timer.
+  const forceNodes = [{ id: 'existing' }];
+  const forceSimulation = {
+    nodes: value => value ? forceSimulation : forceNodes,
+    alpha: () => forceSimulation,
+    alphaTarget: () => forceSimulation,
+    restart: () => forceSimulation,
+  };
+  let releases = 0;
+  const forceInsert = new Function('simManager', 'temporaryNodeAnchors', 'setTimeout', 'requestAnimationFrame', output)(
+    { getSim: () => forceSimulation, isStaticMode: () => false }, new WeakSet(), () => { releases++; }, noTimer,
+  );
+  forceInsert(added);
+  assert.equal(forceNodes.length, 2);
+  assert.notEqual(forceNodes[1], added);
+  assert.equal(releases, 1);
+  assert.equal(nodes.length, 2);
+});
+
 test('automatic and card layouts use static graph runtimes while Pixi renders on demand', async () => {
   const [main, graphSim, pixiApp] = await Promise.all([
     readFile(path.join(root, 'src', 'main.ts'), 'utf8'),
@@ -106,7 +148,7 @@ test('live layout choice survives graph and Vault refreshes and every mode switc
   const applyEnd = main.indexOf('const renderModeBar =', applyStart);
   const applySection = main.slice(applyStart, applyEnd);
   const selectedAt = applySection.indexOf('activeMode = mode');
-  const persistedAt = applySection.indexOf('scheduleSaveForRuntime(targetRuntime)', selectedAt);
+  const persistedAt = applySection.indexOf('scheduleSaveForRuntime(targetRuntime, settings)', selectedAt);
   const branchAt = applySection.indexOf("if (mode === 'auto')", selectedAt);
   assert.ok(selectedAt >= 0 && persistedAt > selectedAt && persistedAt < branchAt);
 });

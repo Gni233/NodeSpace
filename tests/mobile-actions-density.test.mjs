@@ -58,9 +58,9 @@ test('mobile toolbar exposes contextual child creation and heading actions in it
 test('main integrates focused-pane child creation and hierarchy actions', async () => {
   const source = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
 
-  assert.match(source, /const createChildNodeForPane = \(parentId: string, targetPane = focusedExtraPane\(\)\)/);
+  assert.match(source, /const createChildNodeForPane = \(parentId: string, targetPane = focusedExtraPane\(\), placement\?/);
   assert.match(source, /childLevel = Math\.min\(6, \(parent\.headingLevel \|\| 6\) \+ 1\)/);
-  assert.match(source, /lineStyle: 'solid'/);
+  assert.match(source, /lineStyle: placement\?\.dashed \? 'dash-2' : 'solid'/);
   assert.match(source, /assignCreatedOrder\(child, targetGraph\.nodes\)/);
   assert.match(source, /selectAndEditFocusedNode\(childId, targetPane\)/);
   assert.match(source, /reinitializeRuntimeViews\(targetPane\?\.runtime \?\? primaryRuntime\)/);

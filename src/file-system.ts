@@ -106,6 +106,13 @@ function validateFileName(name: string): boolean {
   return !name.includes('..') && !name.includes('/') && !name.includes('\\');
 }
 
+async function openGraphFile(parts: string[], root: FileSystemDirectoryHandle): Promise<File> {
+  let parent = root;
+  for (const directory of parts.slice(0, -1)) parent = await parent.getDirectoryHandle(directory);
+  const handle = await parent.getFileHandle(parts[parts.length - 1]);
+  return handle.getFile();
+}
+
 /** 读取 JSON 文件（支持路径如 subdir/file.json） */
 export async function readGraphFile(filePath: string, dh?: FileSystemDirectoryHandle): Promise<any | null> {
   const h = dh || dirHandle;
@@ -118,12 +125,7 @@ export async function readGraphFile(filePath: string, dh?: FileSystemDirectoryHa
     }
   }
   try {
-    let current = h;
-    for (let i = 0; i < parts.length - 1; i++) {
-      current = await current.getDirectoryHandle(parts[i]) as any;
-    }
-    const fh = await current.getFileHandle(parts[parts.length - 1]);
-    const file = await fh.getFile();
+    const file = await openGraphFile(parts, h);
     const text = await file.text();
     return JSON.parse(text);
   } catch {
@@ -206,7 +208,7 @@ export async function renameFile(oldPath: string, newName: string, dh?: FileSyst
 }
 
 // ---- FileAdapter 工厂 ----
-import { FileAdapter, Result, joinPath, ok, err, replacePathName } from './file-adapter';
+import { FileAdapter, Result, isRelativeFilePath, joinPath, ok, err, replacePathName } from './file-adapter';
 
 export function createFSAAdapter(getDH: () => FileSystemDirectoryHandle | null): FileAdapter {
   const buildCopyName = async (baseName: string, dh: FileSystemDirectoryHandle): Promise<string> => {
@@ -235,6 +237,20 @@ export function createFSAAdapter(getDH: () => FileSystemDirectoryHandle | null):
         const data = await readGraphFile(fileName, dh);
         return ok(data ? JSON.stringify(data) : null);
       } catch (e: any) { return err(e.message); }
+    },
+    async statFile(fileName) {
+      const dh = getDH();
+      if (!dh) return err('No directory handle');
+      const parts = fileName.split('/');
+      if (!isRelativeFilePath(fileName) || !parts.every(validateFileName)) return err('Invalid file path');
+      try {
+        const file = await openGraphFile(parts, dh);
+        if (!Number.isFinite(file.size) || !Number.isFinite(file.lastModified)) return err('File metadata unavailable');
+        return ok({ size: file.size, mtime: file.lastModified });
+      } catch (error) {
+        return error instanceof Error && (error.name === 'NotFoundError' || error.name === 'TypeMismatchError')
+          ? ok(null) : err('Unable to inspect file');
+      }
     },
     async writeFile(fileName, data) {
       const dh = getDH();

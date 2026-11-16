@@ -10,6 +10,7 @@ import { clearStructureBoundaries, destroyStructureBoundaries } from './pixi-str
 import type { LocalContextState } from './local-context';
 import type { LocalContextNavigator } from './local-context-navigation';
 import type { CrossSpaceContextProjection } from './cross-space-context';
+import { DEFAULT_GRAPH_THEME, DEFAULT_CANVAS_FONT } from './theme';
 
 /**
  * Maximum number of simultaneous split panes (left + right).
@@ -155,6 +156,8 @@ export interface PaneState {
   centerMode: boolean;
   selectedTooltip: boolean;
   glowAppearance: boolean;
+  edgeColorGradient: boolean;
+  edgeWidthByLevel: boolean;
   categoryLayout: boolean;
   layoutMode: string;
   gridSnapEnabled: boolean;
@@ -236,11 +239,12 @@ const P_DEFAULTS = {
   useRAFL: true, nodeExpand: 8, lineExpand: 6,
   showGLabels: true, glMin: 10, glMax: 28,
   gridVis: true, gridMode: 'dot' as 'line' | 'dot', axisVis: false, axisTicks: false,
-  gridSp: 30, gridWidth: 0.5, ar: 0.75, graphTheme: 'nord-dark',
+  gridSp: 30, gridWidth: 0.5, ar: 0.75, graphTheme: DEFAULT_GRAPH_THEME,
   focusMode: false, centerMode: false, selectedTooltip: false, glowAppearance: true, categoryLayout: false,
+  edgeColorGradient: false, edgeWidthByLevel: false,
   layoutMode: 'auto', gridSnapEnabled: false, partialGridSnap: false,
-  nodeColorStyle: 'spectrum-narrow' as const, fixedHollow: true,
-  fontFamily: '"SiYuan Songti", serif',
+  nodeColorStyle: 'hierarchical' as const, fixedHollow: true,
+  fontFamily: DEFAULT_CANVAS_FONT,
   cardBorderStyle: 'straight' as 'straight' | 'rounded',
 };
 
@@ -375,6 +379,7 @@ export function createPaneState(index: number, container: HTMLElement): PaneStat
     gridSp: P_DEFAULTS.gridSp, gridWidth: P_DEFAULTS.gridWidth,
     ar: P_DEFAULTS.ar, graphTheme: P_DEFAULTS.graphTheme,
     focusMode: P_DEFAULTS.focusMode, centerMode: P_DEFAULTS.centerMode, selectedTooltip: P_DEFAULTS.selectedTooltip, glowAppearance: P_DEFAULTS.glowAppearance,
+    edgeColorGradient: P_DEFAULTS.edgeColorGradient, edgeWidthByLevel: P_DEFAULTS.edgeWidthByLevel,
     categoryLayout: P_DEFAULTS.categoryLayout,
     layoutMode: P_DEFAULTS.layoutMode, gridSnapEnabled: P_DEFAULTS.gridSnapEnabled,
     partialGridSnap: P_DEFAULTS.partialGridSnap, nodeColorStyle: P_DEFAULTS.nodeColorStyle,

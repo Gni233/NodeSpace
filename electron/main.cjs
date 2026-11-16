@@ -1,16 +1,21 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell } = require('electron');
+const { randomUUID } = require('node:crypto');
 const path = require('path');
 const fs = require('fs');
-const { isPathAllowed } = require('./path-guard.cjs');
+const { isPathAllowed, isPathInside } = require('./path-guard.cjs');
 const { MEDIA_EXTENSIONS, normalizeRelativePath, scanVault } = require('./vault-service.cjs');
+const { createFilePoller } = require('./file-poller.cjs');
+const { authorizedGraphRoot, createGraphFile } = require('./graph-create.cjs');
 
 // ---- File watching: 检测外部工具（MCP Server 等）修改的文件 ----
 const fileWatchers = new Map(); // dir → FSWatcher
+const watchRetries = new Map();
+let shuttingDown = false;
 let selfWriting = false; // 防止 app 自身写入触发重载
 const pendingExternalChanges = new Map(); // fileName -> timeout
 
 function onFileWatcherEvent(filename) {
-  if (!filename) return;
+  if (shuttingDown || !filename) return;
   if (selfWriting) return;
   const normalized = normalizeRelativePath(filename);
   const extension = path.extname(normalized).toLowerCase();
@@ -34,19 +39,25 @@ function onFileWatcherEvent(filename) {
 }
 
 function watchDir(dirPath) {
-  if (fileWatchers.has(dirPath)) return;
+  if (shuttingDown || fileWatchers.has(dirPath)) return;
+  const retry = () => {
+    if (shuttingDown || watchRetries.has(dirPath)) return;
+    const timer = setTimeout(() => { watchRetries.delete(dirPath); watchDir(dirPath); }, 5000);
+    timer.unref?.();
+    watchRetries.set(dirPath, timer);
+  };
   try {
     const w = fs.watch(dirPath, { recursive: true }, (_eventType, filename) => {
       onFileWatcherEvent(filename);
     });
     w.on('error', () => {
       fileWatchers.delete(dirPath);
-      // 5 秒后重试
-      setTimeout(() => watchDir(dirPath), 5000);
+      w.close();
+      retry();
     });
     fileWatchers.set(dirPath, w);
   } catch {
-    setTimeout(() => watchDir(dirPath), 5000);
+    retry();
   }
 }
 
@@ -57,42 +68,12 @@ function startFileWatcher() {
 }
 
 // ---- Polling fallback：fs.watch 在 Windows 上可能丢事件，用轮询兜底 ----
-const knownMTimes = new Map(); // filePath -> mtimeMs（已知的 mtime，避免把 app 自己的写入当作外部变更）
-
-function pollingFallback() {
-  for (const dir of allowedDirs) {
-    if (!fs.existsSync(dir)) continue;
-    const files = [];
-    const collect = currentDir => {
-      let entries;
-      try { entries = fs.readdirSync(currentDir, { withFileTypes: true }); } catch { return; }
-      for (const entry of entries) {
-        if (entry.isSymbolicLink()) continue;
-        const fp = path.join(currentDir, entry.name);
-        if (entry.isDirectory()) {
-          if (!entry.name.startsWith('.') && entry.name !== 'node_modules') collect(fp);
-          continue;
-        }
-        const extension = path.extname(entry.name).toLowerCase();
-        if (entry.isFile() && (extension === '.json' || extension === '.md' || MEDIA_EXTENSIONS.has(extension))) files.push(fp);
-      }
-    };
-    collect(dir);
-    for (const fp of files) {
-      try {
-        const stat = fs.statSync(fp);
-        const known = knownMTimes.get(fp);
-        // mtime 变了，且不是我们已知的（app 自己写的），才当作外部变更
-        if (known !== undefined && stat.mtimeMs !== known && !selfWriting) {
-          knownMTimes.set(fp, stat.mtimeMs);
-          onFileWatcherEvent(path.relative(dir, fp));
-        } else if (known === undefined) {
-          knownMTimes.set(fp, stat.mtimeMs);
-        }
-      } catch { /* 文件可能在读取瞬间被删除，忽略 */ }
-    }
-  }
-}
+const filePoller = createFilePoller({
+  getRoots: () => allowedDirs,
+  isWriting: () => selfWriting,
+  onChange: filename => onFileWatcherEvent(filename),
+});
+let pollingTimer = null;
 
 // 标记 app 自身正在写入（在 fs-write-file handler 中使用）
 ipcMain.handle('fs-begin-write', () => { selfWriting = true; });
@@ -112,6 +93,7 @@ ipcMain.handle('fs-add-allowed-dir', async (_, dirPath) => {
 // Vite 开发服务器 URL
 const DEV_URL = 'http://localhost:5174';
 let mainWindow = null;
+let windowDrag = null;
 let allowWindowClose = false;
 let closeRequestPending = false;
 
@@ -122,6 +104,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'NodeSpace',
+    icon: process.platform === 'win32' ? path.join(__dirname, '..', app.isPackaged ? 'dist' : 'public', 'icon.ico') : undefined,
     backgroundColor: '#1e1e22',
     frame: false,
     webPreferences: {
@@ -153,6 +136,7 @@ function createWindow() {
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
+    windowDrag = null;
     allowWindowClose = false;
     closeRequestPending = false;
   });
@@ -169,36 +153,71 @@ function isAllowed(filePath) {
   return isPathAllowed(allowedDirs, filePath);
 }
 
+// A file chosen for import grants read access to that exact file, never its folder.
+const selectedReadableFiles = new Set();
+function readableFileKey(filePath) {
+  const resolved = fs.realpathSync(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
 // IPC：文件系统操作（完全脱离浏览器沙箱）
 ipcMain.handle('fs-read-file', async (_, filePath) => {
   try {
-    if (!isAllowed(filePath)) return { error: 'Access denied' };
-    return fs.readFileSync(filePath, 'utf-8');
+    if (!isAllowed(filePath) && !selectedReadableFiles.has(readableFileKey(filePath))) return { error: 'Access denied' };
+    return await fs.promises.readFile(filePath, 'utf-8');
   }
   catch (e) { return { error: e.message }; }
 });
 
-ipcMain.handle('fs-write-file', async (_, filePath, content) => {
+ipcMain.handle('fs-write-file', async (_, filePath, content, expectedContent) => {
+  let stagedPath;
+  let replacing = false;
   try {
     if (!isAllowed(filePath)) return { error: 'Access denied' };
-    selfWriting = true;
-    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-    try {
-      fs.writeFileSync(tempPath, content, 'utf-8');
-      fs.renameSync(tempPath, filePath);
-    } catch (error) {
-      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
-      throw error;
+    if (expectedContent !== undefined && typeof expectedContent !== 'string') return { error: 'Invalid expected file contents' };
+    const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+    const fd = fs.openSync(tempPath, 'wx');
+    stagedPath = tempPath;
+    try { fs.writeFileSync(fd, content, 'utf-8'); }
+    finally { fs.closeSync(fd); }
+
+    if (expectedContent !== undefined) {
+      const diskContent = fs.readFileSync(filePath, 'utf-8');
+      if (diskContent !== expectedContent) return { conflict: true, content: diskContent };
     }
+
+    replacing = true;
+    selfWriting = true;
+    fs.renameSync(tempPath, filePath);
+    stagedPath = undefined;
     // 记录写入后的 mtime，防止 pollingFallback 误判为自己的修改
-    try { knownMTimes.set(filePath, fs.statSync(filePath).mtimeMs); } catch {}
+    try { filePoller.remember(filePath, fs.statSync(filePath)); } catch {}
     // 延迟清除标记，防止后续 fs.watch 事件误判
     setTimeout(() => { selfWriting = false; }, 300);
     return { ok: true };
   }
   catch (e) {
-    selfWriting = false;
+    if (replacing) selfWriting = false;
     return { error: e.message };
+  } finally {
+    if (stagedPath) {
+      try { fs.unlinkSync(stagedPath); } catch {}
+    }
+  }
+});
+
+ipcMain.handle('fs-create-graph', (_, mountPath, fileName, content) => {
+  try {
+    const root = authorizedGraphRoot(allowedDirs, mountPath, readAppConfig());
+    if (!root) return { error: 'Access denied outside the graph directory' };
+    const outcome = createGraphFile([root], mountPath, fileName, content);
+    if (outcome === 'created') {
+      const filePath = path.join(mountPath, fileName);
+      try { filePoller.remember(filePath, fs.statSync(filePath)); } catch {}
+    }
+    return { outcome };
+  } catch (error) {
+    return { error: error.message };
   }
 });
 
@@ -218,20 +237,51 @@ ipcMain.handle('fs-mkdir', async (_, dirPath) => {
   catch (e) { return { error: e.message }; }
 });
 
-ipcMain.handle('fs-delete', async (_, targetPath) => {
+ipcMain.handle('fs-delete', async (_, targetPath, options) => {
   try {
     if (!isAllowed(targetPath)) return { error: 'Access denied' };
-    fs.rmSync(targetPath, { recursive: true }); return { ok: true };
+    if (options?.recursive === false) fs.unlinkSync(targetPath);
+    else fs.rmSync(targetPath, { recursive: true });
+    return { ok: true };
   }
-  catch (e) { return { error: e.message }; }
+  catch (error) {
+    return error.code === 'ENOENT' ? { ok: true } : { error: error.message };
+  }
 });
+
+function renameFileWithoutReplacement(oldPath, newPath) {
+  const source = fs.lstatSync(oldPath, { bigint: true });
+  if (path.resolve(oldPath) === path.resolve(newPath)) return;
+  if (!source.isFile()) throw new Error('Only regular files can be renamed');
+
+  // Publishing with a hard link fails atomically if the new name already exists.
+  fs.linkSync(oldPath, newPath);
+  const bothNamesMatchSource = () => [oldPath, newPath].every(filePath => {
+    const stat = fs.lstatSync(filePath, { bigint: true });
+    return stat.dev === source.dev && stat.ino === source.ino;
+  });
+  try {
+    if (!bothNamesMatchSource()) throw new Error('File changed during rename');
+    fs.unlinkSync(oldPath);
+  } catch (error) {
+    // Roll back only if the original is still present and the target is our link.
+    try { if (bothNamesMatchSource()) fs.unlinkSync(newPath); }
+    catch (cleanupError) {
+      if (cleanupError.code !== 'ENOENT') console.warn('[nodespace] Could not undo failed file rename:', cleanupError.message);
+    }
+    throw error;
+  }
+}
 
 ipcMain.handle('fs-rename', async (_, oldPath, newPath) => {
   try {
     if (!isAllowed(oldPath) || !isAllowed(newPath)) return { error: 'Access denied' };
-    fs.renameSync(oldPath, newPath); return { ok: true };
+    renameFileWithoutReplacement(oldPath, newPath);
+    return { ok: true };
   }
-  catch (e) { return { error: e.message }; }
+  catch (error) {
+    return { error: error.code === 'EEXIST' ? 'Destination already exists' : error.message };
+  }
 });
 
 ipcMain.handle('fs-copy', async (_, src, dst) => {
@@ -244,12 +294,22 @@ ipcMain.handle('fs-copy', async (_, src, dst) => {
 
 ipcMain.handle('fs-exists', async (_, p) => isAllowed(p) && fs.existsSync(p));
 ipcMain.handle('fs-stat', async (_, p) => {
+  if (typeof p !== 'string' || !path.isAbsolute(p)) return { error: 'Access denied' };
+  const candidateRoots = [...allowedDirs].filter(root => isPathInside(root, p));
+  if (!candidateRoots.length) return { error: 'Access denied' };
   try {
-    if (!isAllowed(p)) return { error: 'Access denied' };
-    const s = fs.statSync(p);
-    return { size: s.size, mtime: s.mtimeMs, isDir: s.isDirectory() };
+    const [file, ...roots] = await Promise.all([
+      fs.promises.realpath(p),
+      ...candidateRoots.map(root => fs.promises.realpath(root).catch(() => null)),
+    ]);
+    if (!roots.some(root => root && isPathInside(root, file))) return { error: 'Access denied' };
+    const stat = await fs.promises.lstat(file);
+    if (!stat.isFile() && !stat.isDirectory()) return { error: 'Unsupported file type' };
+    return { size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, isDir: stat.isDirectory() };
   }
-  catch (e) { return { error: e.message }; }
+  catch (error) {
+    return error.code === 'ENOENT' || error.code === 'ENOTDIR' ? null : { error: 'Unable to inspect file' };
+  }
 });
 
 ipcMain.handle('vault-scan', async (_, rootPath, graphFolderRelative) => {
@@ -288,8 +348,11 @@ ipcMain.handle('dialog-open-folder', async () => {
 
 ipcMain.handle('dialog-open-file', async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'] });
-  if (r.canceled) return null;
-  return r.filePaths[0];
+  if (r.canceled || !r.filePaths?.[0]) return null;
+  const filePath = r.filePaths[0];
+  if (!fs.statSync(filePath).isFile()) return null;
+  selectedReadableFiles.add(readableFileKey(filePath));
+  return filePath;
 });
 
 ipcMain.handle('dialog-save-file', async (_, defaultName) => {
@@ -317,6 +380,28 @@ ipcMain.on('window-maximize', () => {
   else mainWindow?.maximize();
 });
 ipcMain.on('window-close', () => mainWindow?.close());
+ipcMain.on('window-drag', ({ sender }, phase) => {
+  const target = mainWindow;
+  if (!target || sender !== target.webContents) return;
+  if (phase === 'end') {
+    windowDrag = null;
+    return;
+  }
+  if (target.isFullScreen()) return;
+  if (phase === 'start') {
+    const cursor = screen.getCursorScreenPoint();
+    const bounds = target.getBounds();
+    const fraction = Math.max(0, Math.min(1, (cursor.x - bounds.x) / bounds.width));
+    windowDrag = { target, offsetX: cursor.x - bounds.x, offsetY: cursor.y - bounds.y, fraction };
+  } else if (phase === 'move' && windowDrag?.target === target) {
+    if (target.isMaximized()) {
+      windowDrag.offsetX = Math.round(target.getNormalBounds().width * windowDrag.fraction);
+      target.unmaximize();
+    }
+    const cursor = screen.getCursorScreenPoint();
+    target.setPosition(cursor.x - windowDrag.offsetX, cursor.y - windowDrag.offsetY);
+  }
+});
 ipcMain.on('window-close-ready', () => {
   if (!mainWindow) return;
   allowWindowClose = true;
@@ -332,14 +417,15 @@ ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() ?? false);
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'config.json');
 }
-ipcMain.handle('config-read', () => {
-  try { return JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8')); }
+function readAppConfig() {
+  try { return JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8')) || {}; }
   catch { return {}; }
-});
+}
+ipcMain.handle('config-read', readAppConfig);
 ipcMain.handle('config-write', (_, updates) => {
   try {
     const cp = getConfigPath();
-    const current = (() => { try { return JSON.parse(fs.readFileSync(cp, 'utf-8')); } catch { return {}; } })();
+    const current = readAppConfig();
     Object.assign(current, updates);
     fs.writeFileSync(cp, JSON.stringify(current, null, 2), 'utf-8');
     return { ok: true };
@@ -360,7 +446,23 @@ app.whenReady().then(() => {
   restoreConfiguredFolderAccess();
   createWindow();
   startFileWatcher();
-  setInterval(pollingFallback, 5000);
+  const poll = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) filePoller.poll().catch(error => console.warn('[nodespace] File polling:', error.message));
+  };
+  poll(); // Establish the baseline immediately while the first window loads.
+  pollingTimer = setInterval(poll, 5000);
+  pollingTimer.unref?.();
+});
+app.on('will-quit', () => {
+  shuttingDown = true;
+  if (pollingTimer) clearInterval(pollingTimer);
+  filePoller.stop();
+  for (const watcher of fileWatchers.values()) watcher.close();
+  fileWatchers.clear();
+  for (const timer of watchRetries.values()) clearTimeout(timer);
+  watchRetries.clear();
+  for (const timer of pendingExternalChanges.values()) clearTimeout(timer);
+  pendingExternalChanges.clear();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

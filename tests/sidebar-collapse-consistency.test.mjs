@@ -21,9 +21,8 @@ test('sidebar collapse keeps one stable rail control and synchronizes all conten
     1,
     'the rail must reuse one collapse button',
   );
-  assert.match(source, /collapseBtn\.textContent = '☰';/);
   assert.match(source, /collapseBtn\.setAttribute\('aria-expanded', String\(!collapsed\)\)/);
-  assert.match(source, /const stateLabel = collapsed \? '展开侧边栏' : '折叠侧边栏';/);
+  assert.match(source, /const stateLabel = collapsed \? '文件树' : '收起文件树';/);
 
   for (const sectionClass of [
     'fg-sidebar-new-row fg-sidebar-content-section',
@@ -33,6 +32,7 @@ test('sidebar collapse keeps one stable rail control and synchronizes all conten
     assert.ok(source.includes(sectionClass), `${sectionClass} should share the collapse contract`);
   }
   assert.match(source, /content\.className = 'fg-sidebar-content';/);
+  assert.match(source, /controlDock\.appendChild\(collapseBtn\);/);
   assert.match(source, /content\.appendChild\(newRow\);/);
   assert.match(source, /content\.appendChild\(fileTree\);/);
   assert.match(source, /content\.appendChild\(settingsSection\);/);
@@ -42,6 +42,9 @@ test('sidebar collapse keeps one stable rail control and synchronizes all conten
   assert.doesNotMatch(applyCollapsed[1], /setTimeout/);
   assert.doesNotMatch(source.match(/collapseBtn\.onclick = \(\) => \{([\s\S]*?)\n  \};/)?.[1] ?? '', /setTimeout/);
   assert.match(main, /sidebar\.sidebar\.classList\.add\('fg-glass'\);/);
+  assert.match(main, /\}, editorNavigation\);/);
+  assert.doesNotMatch(main, /createTabBar\(/);
+  assert.match(main, /createVaultSpaceBreadcrumb\(floatingTop,/);
   assert.doesNotMatch(main, /sidebar\.sidebar\.className = 'fg-glass fg-sidebar'/,
     'the application shell must not erase the sidebar collapsed class after construction');
 });
@@ -55,5 +58,6 @@ test('sidebar CSS hides every content section as one non-interactive group', asy
   assert.match(html, /\.fg-sidebar\.is-collapsed \.fg-sidebar-title \{[\s\S]*?width:0;[\s\S]*?opacity:0;[\s\S]*?visibility:hidden;/);
   assert.match(html, /\.fg-sidebar\.is-collapsed \.fg-sidebar-content,[\s\S]*?\.fg-sidebar\.is-collapsed \.fg-sidebar-content-section \{[\s\S]*?opacity:0;[\s\S]*?visibility:hidden;[\s\S]*?pointer-events:none;/);
   assert.match(workspaceCss, /\.fg-inspector\.is-collapsed \{[\s\S]*?width: 44px !important;[\s\S]*?min-width: 44px !important;/);
+  assert.match(workspaceCss, /\.fg-sidebar\.fg-shell-sidebar\.is-collapsed,[\s\S]*?\{ display: none !important; \}/);
   assert.match(workspaceCss, /\.fg-inspector-media-row \{[\s\S]*?grid-template-columns: auto 78px 30px minmax\(76px, 1fr\);/);
 });

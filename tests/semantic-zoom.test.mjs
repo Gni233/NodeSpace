@@ -49,6 +49,18 @@ test('screen-space budgets reveal more cards and annotations by band', async () 
   assert.ok(balanced.edgeLabelCount < reading.edgeLabelCount);
 });
 
+test('compact titles stay near reading size at modest zoom-out with a bounded scale', async () => {
+  const { semanticZoomProfile } = await loadSemanticZoom();
+  for (const zoom of [0.65, 0.7, 0.8, 0.9, 1]) {
+    const scale = semanticZoomProfile(zoom).nodeTitleScale;
+    assert.ok(scale >= 1 && scale <= 1.5);
+    assert.ok(13 * scale * zoom >= 12);
+  }
+  assert.equal(semanticZoomProfile(0.2).nodeTitleScale, 1.5);
+  assert.equal(semanticZoomProfile(1.2).nodeTitleScale, 1);
+  assert.equal(semanticZoomProfile(NaN).nodeTitleScale, 1);
+});
+
 test('automatic rendering wires one budget through cards, relationships, regions, and media detail', async () => {
   const [main, lens, nodes, edges, scene] = await Promise.all([
     readFile(path.join(root, 'src', 'main.ts'), 'utf8'),

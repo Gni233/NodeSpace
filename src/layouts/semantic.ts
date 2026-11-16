@@ -1,10 +1,11 @@
 import type { GraphData } from '../data/storage';
 import type { LayoutController } from '../layout-controller';
+import { getConfiguredNodeRadius } from '../node-radius';
 
 export type SemanticLayoutStrategy = 'layered' | 'radial' | 'semantic' | 'isolated';
 export type SemanticCardKind = 'note' | 'fragment' | 'question' | 'task' | 'private';
 export type SemanticCardForm = 'card' | 'node';
-export type SemanticEchoKind = 'lexical' | 'embedding' | 'hybrid';
+export type SemanticEchoKind = 'lexical';
 
 export interface SemanticCardMetrics {
   width: number;
@@ -60,8 +61,6 @@ export interface SemanticLayoutResult {
   echoes: SemanticEcho[];
 }
 
-export type SemanticLayoutSource = 'lexical' | 'dense';
-
 /**
  * A compact memory of layouts produced by the compositor itself. It deliberately
  * does not read freehand node coordinates, so dragging a card never becomes a
@@ -79,8 +78,10 @@ export interface SemanticLayoutMemoryNode {
 
 export interface SemanticLayoutMemory {
   version: 1;
-  source: SemanticLayoutSource;
+  source: 'lexical';
   nodes: Record<string, SemanticLayoutMemoryNode>;
+  /** Per-component geometry keys keep unchanged compositions fixed on reload. */
+  compositions?: Record<string, string>;
 }
 
 export interface SemanticLayoutStabilization {
@@ -98,8 +99,6 @@ export interface SemanticLayoutOptions {
   componentGap?: number;
   semanticNeighborLimit?: number;
   semanticThreshold?: number;
-  /** Optional vectors supplied by a local embedding model. Lexical analysis remains the fallback. */
-  semanticVectors?: ReadonlyMap<string, readonly number[]>;
   /** Cards listed here are composed and rendered as compact nodes. */
   collapsedNodeIds?: ReadonlySet<string>;
 }
@@ -121,10 +120,6 @@ const STOP_WORDS = new Set([
 
 const PRIVATE_PATTERN = /(?:密码|口令|验证码|恢复码|助记词|私钥|api\s*[_-]?key|access\s*[_-]?token|secret|password|passwd)/i;
 const TASK_PATTERN = /(?:^|[\s【\[])(?:todo|待办|提醒|记得|别忘了|完成后|截止|ddl|\[[ x]\])|(?:今天|明天|周[一二三四五六日天]|星期[一二三四五六日天]|月底|下周).{0,10}(?:交|买|回|发|做|完成|预约|提交)/i;
-
-export function isSensitiveSemanticText(value: unknown): boolean {
-  return PRIVATE_PATTERN.test(String(value ?? ''));
-}
 
 /** Resource previews are transient source text; ordinary cards keep using their editable note. */
 export function semanticNodeBody(node: any): string {
@@ -192,7 +187,7 @@ function segmentWords(text: string): string[] {
   return words;
 }
 
-/** Local, deterministic tokenizer used when no embedding provider is available. */
+/** Local, deterministic tokenizer for grouping related text. */
 export function tokenizeSemanticText(value: unknown): string[] {
   const text = normalizeText(value);
   const tokens: string[] = [];
@@ -231,8 +226,7 @@ function computeCardMetrics(node: any, collapsed = false): SemanticCardMetrics {
   const combined = `${label}\n${note}`.trim();
   const kind = cardKind(node, combined);
   if (collapsed) {
-    const level = clamp(Math.round(finite(node.headingLevel, 6)), 1, 6);
-    const nodeRadius = [22, 19, 16, 13, 10, 7][level - 1];
+    const nodeRadius = getConfiguredNodeRadius(node);
     // The circle contracts to the legacy hierarchy radius, while its compact
     // title still owns enough layout space to avoid the label collisions that
     // a force-directed view could tolerate but a composed view should not.
@@ -259,7 +253,7 @@ function computeCardMetrics(node: any, collapsed = false): SemanticCardMetrics {
   const titleCapacity = Math.max(8, Math.floor((width - 48) / 16));
   const titleLines = clamp(Math.ceil(titleLength / titleCapacity), 1, 2);
   const availableChars = Math.max(11, Math.floor((width - 30) / 13));
-  const excerpt = kind === 'private' ? '敏感内容不参与语义分析' : truncateExcerpt(note, availableChars * 3);
+  const excerpt = kind === 'private' ? '摘要已隐藏' : truncateExcerpt(note, availableChars * 3);
   const bodyLines = excerpt ? clamp(Math.ceil(excerpt.length / availableChars), 1, 3) : 0;
   const height = clamp(58 + (titleLines - 1) * 19 + bodyLines * 18 + (kind === 'task' ? 5 : 0), 64, 145);
   return { width: Math.round(width), height: Math.round(height), titleLines, excerpt, kind, form: 'card' };
@@ -284,8 +278,6 @@ interface SemanticAffinity {
   source: string;
   target: string;
   similarity: number;
-  lexicalSimilarity: number;
-  denseSimilarity: number;
   /** Both endpoints selected each other as locally useful neighbors. */
   mutual: boolean;
 }
@@ -295,23 +287,10 @@ interface TextAnalysis {
   affinities: SemanticAffinity[];
 }
 
-function cosineDense(a: readonly number[] | undefined, b: readonly number[] | undefined): number {
-  if (!a || !b || a.length === 0 || a.length !== b.length) return 0;
-  let dot = 0, aa = 0, bb = 0;
-  for (let index = 0; index < a.length; index++) {
-    const av = finite(a[index]);
-    const bv = finite(b[index]);
-    dot += av * bv;
-    aa += av * av;
-    bb += bv * bv;
-  }
-  return aa > 0 && bb > 0 ? dot / Math.sqrt(aa * bb) : 0;
-}
-
 function buildTextAnalysis(
   indexed: IndexedNode[],
   edges: any[],
-  options: Required<Omit<SemanticLayoutOptions, 'semanticVectors' | 'collapsedNodeIds'>> & Pick<SemanticLayoutOptions, 'semanticVectors'>,
+  options: Required<Omit<SemanticLayoutOptions, 'collapsedNodeIds'>>,
 ): TextAnalysis {
   const edgeTextByNode = new Map(indexed.map(item => [item.id, [] as string[]]));
   for (const edge of edges) {
@@ -384,28 +363,6 @@ function buildTextAnalysis(
     }
   }
 
-  const lexicalScores = new Map(pairScores);
-  const denseScores = new Map<string, number>();
-
-  if (options.semanticVectors && indexed.length <= 600) {
-    for (let left = 0; left < indexed.length; left++) {
-      for (let right = left + 1; right < indexed.length; right++) {
-        const a = indexed[left].id, b = indexed[right].id;
-        if (profiles.get(a)?.sensitive || profiles.get(b)?.sensitive) continue;
-        const dense = Math.max(0, cosineDense(options.semanticVectors.get(a), options.semanticVectors.get(b)));
-        // Small embedding models have a noticeable positive cosine baseline for
-        // unrelated short notes. Remove it before blending so "both are Chinese
-        // sentences" does not become a visual relationship.
-        const denseSignal = clamp((dense - 0.28) / 0.62, 0, 1);
-        if (denseSignal <= 0) continue;
-        const key = pairKey(a, b);
-        denseScores.set(key, denseSignal);
-        const lexical = pairScores.get(key) || 0;
-        pairScores.set(key, lexical > 0 ? lexical * 0.36 + denseSignal * 0.64 : denseSignal * 0.72);
-      }
-    }
-  }
-
   const neighbors = new Map(indexed.map(item => [item.id, [] as { id: string; score: number }[]]));
   for (const [key, score] of pairScores) {
     if (score < options.semanticThreshold) continue;
@@ -430,8 +387,6 @@ function buildTextAnalysis(
       source,
       target,
       similarity,
-      lexicalSimilarity: lexicalScores.get(key) || 0,
-      denseSimilarity: denseScores.get(key) || 0,
       mutual: !!mutual,
     });
   }
@@ -572,7 +527,7 @@ function layoutComponent(
   explicitAdjacency: Map<string, Set<string>>,
   incoming: Map<string, number>,
   byId: Map<string, IndexedNode>,
-  options: Required<Omit<SemanticLayoutOptions, 'semanticVectors' | 'collapsedNodeIds'>>,
+  options: Required<Omit<SemanticLayoutOptions, 'collapsedNodeIds'>>,
 ): ComponentLayout {
   const minOrder = Math.min(...ids.map(id => byId.get(id)!.order));
   const cohesion = componentAffinities.length
@@ -639,15 +594,29 @@ function layoutComponent(
     }
   } else {
     local.set(root, { x: 0, y: 0, rank: 0 });
+    const compact = ids.every(id => byId.get(id)!.card.form === 'node');
+    const preferredStep = options.levelSpacing * (compact ? 0.42 : 1);
+    const rootCard = byId.get(root)!.card;
+    let previousRadius = 0;
+    let previousHalfDiagonal = Math.hypot(rootCard.width, rootCard.height) / 2;
     for (const [rank, rankIds] of [...byRank].sort((a, b) => a[0] - b[0])) {
       const members = rankIds.filter(id => id !== root);
       if (members.length === 0) continue;
       const maxDiagonal = Math.max(...members.map(id => Math.hypot(byId.get(id)!.card.width, byId.get(id)!.card.height)));
-      const radius = Math.max(options.levelSpacing, (members.length * (maxDiagonal + options.nodeSpacing)) / (2 * Math.PI));
+      // Compact circles should not inherit a full card's orbit. Each later
+      // topology rank also needs its own ring; sharing one radius piles chains
+      // on top of each other and leaves collision correction to invent a shape.
+      const ringStep = Math.max(preferredStep, previousHalfDiagonal + maxDiagonal / 2 + options.nodeSpacing);
+      const neighborRadius = members.length > 1
+        ? (maxDiagonal + options.nodeSpacing) / (2 * Math.sin(Math.PI / members.length))
+        : 0;
+      const radius = Math.max(previousRadius + ringStep, neighborRadius);
       members.forEach((id, index) => {
         const angle = index / members.length * Math.PI * 2 - Math.PI / 2;
         local.set(id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, rank });
       });
+      previousRadius = radius;
+      previousHalfDiagonal = maxDiagonal / 2;
     }
   }
   return { ids, local, strategy, minOrder, cohesion, ...computeBounds(ids, local, byId) };
@@ -665,7 +634,7 @@ function partitionSemanticTopics(
   affinities: readonly SemanticAffinity[],
   edges: readonly any[],
   byId: ReadonlyMap<string, IndexedNode>,
-  options: Required<Omit<SemanticLayoutOptions, 'semanticVectors' | 'collapsedNodeIds'>>,
+  options: Required<Omit<SemanticLayoutOptions, 'collapsedNodeIds'>>,
 ): string[][] {
   const orderedIds = [...ids].sort((a, b) => byId.get(a)!.order - byId.get(b)!.order || a.localeCompare(b));
   if (orderedIds.length < 4) return [orderedIds];
@@ -876,6 +845,7 @@ function semanticFingerprints(graph: GraphData): Map<string, string> {
       note: semanticNodeBody(node),
       tags: [...(node.tags || [])].map(String).sort(),
       headingLevel: node.headingLevel ?? null,
+      radius: getConfiguredNodeRadius(node),
       structureParentId: node.structureParentId == null ? null : String(node.structureParentId),
       fixed: !!node.fixed,
       relations: (relations.get(id) || []).sort(),
@@ -1085,21 +1055,14 @@ export function computeSemanticLayout(graph: GraphData, options?: SemanticLayout
       .map(([term]) => term.replace(/^[wc]:/, ''))
       .filter((term, index, all) => all.indexOf(term) === index)
       .slice(0, 3);
-    const hasLexical = affinity.lexicalSimilarity >= Math.max(0.035, opts.semanticThreshold * 0.45);
-    const hasDense = affinity.denseSimilarity > 0;
-    const kind: SemanticEchoKind = hasLexical && hasDense ? 'hybrid' : hasDense ? 'embedding' : 'lexical';
     const reason = terms.length > 0
       ? `共同线索 · ${terms.join(' / ')}`
-      : kind === 'hybrid'
-        ? '文字线索与语义都接近'
-        : kind === 'embedding'
-          ? '语义向量近邻'
-          : '文字脉络相近';
+      : '文字脉络相近';
     return [{
       source: affinity.source,
       target: affinity.target,
       score: affinity.similarity,
-      kind,
+      kind: 'lexical' as const,
       reason,
       terms,
     }];
@@ -1115,14 +1078,14 @@ export function computeSemanticLayout(graph: GraphData, options?: SemanticLayout
 
 /**
  * Pull an ideal semantic composition toward its own previous result. Components
- * keep their old centroid, stable cards act as anchors, and changed/new cards
- * absorb most collision correction. Manual graph x/y values are never read.
+ * keep their old centroid and orientation, stable cards act as anchors, and
+ * changed/new cards absorb most collision correction. Manual graph x/y values
+ * are never read.
  */
 export function stabilizeSemanticLayout(
   graph: GraphData,
   ideal: SemanticLayoutResult,
   previous: SemanticLayoutMemory | undefined,
-  source: SemanticLayoutSource = 'lexical',
 ): SemanticLayoutStabilization {
   const indexed = (graph.nodes || []).map((node, sourceIndex): IndexedNode => ({
     node,
@@ -1157,10 +1120,25 @@ export function stabilizeSemanticLayout(
     componentIds.get(point.component)!.push(id);
   }
   const componentKeys = new Map<number, string>();
+  const compositions: Record<string, string> = {};
+  const previousComponentSizes = new Map<string, number>();
+  for (const entry of Object.values(previousNodes)) {
+    if (entry?.componentKey) previousComponentSizes.set(entry.componentKey, (previousComponentSizes.get(entry.componentKey) || 0) + 1);
+  }
   let membershipNoveltySum = 0;
   for (const [component, ids] of componentIds) {
     const key = componentKey(ids, indexedById);
     componentKeys.set(component, key);
+    const orderedIds = [...ids].sort();
+    const anchor = ideal.positions.get(orderedIds[0])!;
+    // Relative geometry ignores component packing translations. A different
+    // card size or explicit spacing option still invalidates the composition.
+    const shape = orderedIds.map(id => {
+      const point = ideal.positions.get(id)!;
+      return [id, Math.round((point.x - anchor.x) * 1000), Math.round((point.y - anchor.y) * 1000),
+        point.card.width, point.card.height, point.card.form, point.strategy, point.rank];
+    });
+    compositions[key] = stableHash(JSON.stringify(shape)).toString(36);
     const previousKeyCounts = new Map<string, number>();
     for (const id of ids) {
       const previousKey = previousNodes[id]?.componentKey;
@@ -1171,7 +1149,6 @@ export function stabilizeSemanticLayout(
   }
   const membershipNovelty = membershipNoveltySum / Math.max(1, indexed.length);
   const globalReframe = !!validPrevious && Math.max(changeRatio, membershipNovelty) > 0.42;
-  const sourceUpgrade = validPrevious?.source === 'lexical' && source === 'dense';
 
   if (validPrevious) {
     const changed = new Set(changedNodeIds);
@@ -1182,6 +1159,24 @@ export function stabilizeSemanticLayout(
         return entry && Number.isFinite(entry.x) && Number.isFinite(entry.y);
       });
       if (retained.length === 0) continue;
+      const key = componentKeys.get(component)!;
+      const unchanged = retained.length === ids.length && previousComponentSizes.get(key) === ids.length
+        && validPrevious.compositions?.[key] === compositions[key]
+        && ids.every(id => {
+          const point = resultPositions.get(id)!, entry = previousNodes[id];
+          return !changed.has(id) && entry.componentKey === key
+            && (!point.pinned || (point.x === entry.x && point.y === entry.y));
+        });
+      if (unchanged) {
+        // Reopening a file or restoring history is not another editing step.
+        // Preserve its settled composition instead of slowly pulling it back
+        // toward the canonical grid every time the compositor runs.
+        for (const id of ids) {
+          const target = resultPositions.get(id)!, entry = previousNodes[id];
+          target.x = entry.x; target.y = entry.y;
+        }
+        continue;
+      }
 
       let oldCenterX = 0, oldCenterY = 0, idealCenterX = 0, idealCenterY = 0;
       for (const id of retained) {
@@ -1192,8 +1187,22 @@ export function stabilizeSemanticLayout(
       }
       oldCenterX /= retained.length; oldCenterY /= retained.length;
       idealCenterX /= retained.length; idealCenterY /= retained.length;
-      const translateX = oldCenterX - idealCenterX;
-      const translateY = oldCenterY - idealCenterY;
+      let cos = 1, sin = 0;
+      if (retained.length > 1 && !ids.some(id => resultPositions.get(id)!.pinned)) {
+        // A new hub can change the compositor's root and reverse a tiny graph.
+        // Align the new composition to its own memory before applying inertia;
+        // explicit pins retain the compositor's anchored coordinate system.
+        let dot = 0, cross = 0;
+        for (const id of retained) {
+          const point = ideal.positions.get(id)!;
+          const ix = point.x - idealCenterX, iy = point.y - idealCenterY;
+          const ox = previousNodes[id].x - oldCenterX, oy = previousNodes[id].y - oldCenterY;
+          dot += ix * ox + iy * oy;
+          cross += ix * oy - iy * ox;
+        }
+        const magnitude = Math.hypot(dot, cross);
+        if (magnitude > 0.0001) { cos = dot / magnitude; sin = cross / magnitude; }
+      }
       const dominantCounts = new Map<string, number>();
       for (const id of retained) {
         const key = previousNodes[id].componentKey;
@@ -1206,10 +1215,13 @@ export function stabilizeSemanticLayout(
       for (const id of ids) {
         const target = resultPositions.get(id)!;
         if (target.pinned) continue;
+        const dx = target.x - idealCenterX, dy = target.y - idealCenterY;
+        const alignedX = oldCenterX + dx * cos - dy * sin;
+        const alignedY = oldCenterY + dx * sin + dy * cos;
         const entry = previousNodes[id];
         if (!entry) {
-          target.x += translateX;
-          target.y += translateY;
+          target.x = alignedX;
+          target.y = alignedY;
           continue;
         }
         const stableBonus = Math.min(0.06, Math.max(0, entry.stability) * 0.006);
@@ -1217,11 +1229,8 @@ export function stabilizeSemanticLayout(
           ? 0.28
           : clamp(0.88 + stableBonus - componentNovelty * 0.42 - localChangedRatio * 0.24, 0.42, 0.94);
         if (changed.has(id)) inertia = Math.min(inertia, globalReframe ? 0.18 : 0.38);
-        if (sourceUpgrade) inertia = Math.min(inertia, entry.stability <= 0 ? 0.2 : 0.68);
-        const translatedX = target.x + translateX;
-        const translatedY = target.y + translateY;
-        target.x = entry.x * inertia + translatedX * (1 - inertia);
-        target.y = entry.y * inertia + translatedY * (1 - inertia);
+        target.x = entry.x * inertia + alignedX * (1 - inertia);
+        target.y = entry.y * inertia + alignedY * (1 - inertia);
       }
     }
 
@@ -1265,7 +1274,7 @@ export function stabilizeSemanticLayout(
   };
   return {
     result,
-    memory: { version: 1, source, nodes: memoryNodes },
+    memory: { version: 1, source: 'lexical', nodes: memoryNodes, compositions },
     changedNodeIds,
     newNodeIds,
     movedNodeIds,
@@ -1280,6 +1289,7 @@ export function semanticGraphSignature(graph: GraphData): string {
     label: String(node.label || ''),
     note: semanticNodeBody(node),
     headingLevel: node.headingLevel ?? null,
+    radius: getConfiguredNodeRadius(node),
     tags: [...(node.tags || [])].sort(),
     structureParentId: node.structureParentId ?? null,
     fixed: !!node.fixed,
@@ -1327,6 +1337,18 @@ export class SemanticLayoutController implements LayoutController {
       this.timer = null;
       if (this.active) this.apply();
     }, this.delay);
+  }
+
+  /** Explicit framing needs the latest composition, not a pending edit timer. */
+  flush(): boolean {
+    if (!this.active) return false;
+    const next = semanticGraphSignature(this.getGraph());
+    if (this.timer === null && next === this.signature) return false;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    this.signature = next;
+    this.apply();
+    return true;
   }
 
   markApplied(): void {

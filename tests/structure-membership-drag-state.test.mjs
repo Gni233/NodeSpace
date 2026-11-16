@@ -36,10 +36,18 @@ function propertyName(node) {
 }
 
 const gesture = await importTypeScript(path.join(root, 'src', 'canvas-gesture-state.ts'));
+const eventsFile = parse(await readFile(path.join(root, 'src', 'ui-events.ts'), 'utf8'), 'ui-events.ts');
+const canvasSetup = visit(eventsFile, node => ts.isFunctionDeclaration(node) && node.name?.text === 'setupCanvasEvents');
+const canvasSetupCode = ts.transpileModule(canvasSetup.getText(eventsFile).replace(/^export /, ''), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
 const renderer = await importTypeScript(path.join(root, 'src', 'pixi-structure-boundaries.ts'), {
   'pixi.js': 'export class Container {}; export class Graphics {}; export class Text {};',
 });
 const paneState = await importTypeScript(path.join(root, 'src', 'pane-state.ts'), {
+  './theme': ts.transpileModule(await readFile(path.join(root, 'src', 'theme.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText,
   './undo-redo': 'export class UndoManager {}',
   './layout-controller': 'export class LayoutSlot {}',
   './graph-runtime': 'export class GraphRuntime { constructor(_tab, graph, undoManager) { this.graph = graph; this.undoManager = undoManager; this.simManager = null; this.saveTimeout = null; } attach() {} }',
@@ -64,6 +72,96 @@ test('membership drag lifecycle begins after the gesture threshold and ends once
   assert.deepEqual(membership.end(20, 16, false), { nodeId: 'node-a', x: 20, y: 16, cancelled: false });
   assert.equal(membership.cancel(), null);
   assert.equal(membership.end(20, 16, true), null);
+});
+
+function pointerFixture(t, sourceMode, readOnly) {
+  const target = () => {
+    const handlers = new Map();
+    return {
+      addEventListener: (type, handler) => handlers.set(type, handler),
+      removeEventListener: type => handlers.delete(type),
+      fire: (type, event) => handlers.get(type)?.(event),
+    };
+  };
+  const pointer = (clientX, clientY, pointerId = 1) => ({
+    clientX, clientY, pointerId, pointerType: 'mouse', button: 0, buttons: 1,
+    preventDefault() {}, stopImmediatePropagation() {},
+  });
+  const canvas = { ...target(), style: {}, getBoundingClientRect: () => ({ left: 0, top: 0 }),
+    setPointerCapture() {}, releasePointerCapture() {} };
+  const window = target();
+  const node = { id: 'folder', x: 30, y: 40 };
+  const viewport = { pause: false, x: 0, toWorld: (x, y) => ({ x: x - viewport.x, y }), on() {}, off() {} };
+  const env = {
+    ...gesture, window, document: { ...target(), body: {} },
+    sharedState: { registerSelectionHandlers: () => () => {} },
+    hitTestNode: (x, y, nodes) => nodes.find(node => Math.hypot(x - node.x, y - node.y) < 10),
+    closeContextMenu() {}, createNodeNotePreview: () => ({ hide() {}, destroy() {} }),
+    createCanvasMagnifier: () => ({ destroy() {} }),
+    DRAG_THRESHOLD: 3, TOUCH_DRAG_THRESHOLD: 10, LONG_PRESS_DURATION: 500,
+  };
+  let dragged = null;
+  const calls = [];
+  const ctx = {
+    graph: { nodes: [node], edges: [], groups: [], settings: { sourceMode } },
+    viewport, isReadOnlyNode: () => readOnly, isFixedNode: () => true,
+    getSelNode: () => null, getNodeExpand: () => 0, getTransform: () => ({ k: 1 }),
+    getVisibleNodes: () => [node], getSimulation: () => null,
+    getDraggingNode: () => dragged, setDraggingNode: value => { dragged = value; },
+    setWasDragged() {}, draw() {},
+    onTap: (_x, _y, id) => calls.push(['tap', id]),
+    onDragStart: () => calls.push('edit'), onDragEnd: () => calls.push('end'), triggerSave: () => calls.push('save'),
+    onNodeMembershipDragStart: () => calls.push('membership'),
+  };
+  const setup = new Function(...Object.keys(env), `${canvasSetupCode}\nreturn setupCanvasEvents;`)(...Object.values(env));
+  const dispose = setup(canvas, ctx);
+  t.after(dispose);
+  return {
+    canvas, window, viewport, pointer, node, calls, dispose,
+    move(x, y, pointerId) {
+      // The viewport recognizer runs alongside the canvas listener and is free
+      // to pan only when the card recognizer did not take the gesture.
+      if (!viewport.pause) viewport.x += 13;
+      canvas.fire('pointermove', pointer(x, y, pointerId));
+    },
+  };
+}
+
+test('a Vault projection card owns its drag and releases the viewport on drop, cancel or disposal', t => {
+  for (const end of ['drop', 'cancel', 'dispose']) {
+    const { canvas, window, viewport, pointer, node, calls, move, dispose } = pointerFixture(t, 'vault-readonly', true);
+    canvas.fire('pointerdown', pointer(30, 40));
+    assert.equal(viewport.pause, true, end);
+    move(55, 60);
+    assert.deepEqual(node, { id: 'folder', x: 55, y: 60 }, end);
+    assert.equal(viewport.x, 0, end);
+    move(90, 90, 9);
+    assert.deepEqual(node, { id: 'folder', x: 55, y: 60 }, end);
+    if (end === 'drop') window.fire('pointerup', pointer(55, 60));
+    if (end === 'cancel') canvas.fire('pointercancel', pointer(55, 60));
+    if (end === 'dispose') dispose();
+    assert.equal(viewport.pause, false, end);
+    assert.deepEqual(node, { id: 'folder', x: 30, y: 40 }, end);
+    assert.deepEqual(calls, [], end);
+  }
+});
+
+test('a projection card can still be tapped and blank space or a read-only proxy can pan', t => {
+  const projection = pointerFixture(t, 'vault-readonly', true);
+  projection.canvas.fire('pointerdown', projection.pointer(30, 40));
+  projection.window.fire('pointerup', projection.pointer(30, 40));
+  assert.deepEqual(projection.calls, [['tap', 'folder']]);
+  projection.canvas.fire('pointerdown', projection.pointer(100, 100));
+  projection.move(130, 100);
+  assert.equal(projection.viewport.x, 13);
+  projection.window.fire('pointerup', projection.pointer(130, 100));
+
+  const proxy = pointerFixture(t, undefined, true);
+  proxy.canvas.fire('pointerdown', proxy.pointer(30, 40));
+  proxy.move(55, 60);
+  assert.equal(proxy.viewport.x, 13);
+  assert.deepEqual(proxy.node, { id: 'folder', x: 30, y: 40 });
+  assert.deepEqual(proxy.calls, []);
 });
 
 test('pointer event API only wires membership callbacks to real node drag lifecycle', async () => {

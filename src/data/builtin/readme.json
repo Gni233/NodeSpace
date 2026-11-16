@@ -41,7 +41,7 @@
       "label": "来源必须可辨认",
       "headingLevel": 2,
       "tags": [],
-      "note": "用户建立的关系、Obsidian 原文引用、结构归属和算法发现的回声使用不同线条。自动推断不会改写成用户事实。",
+      "note": "用户建立的关系、Obsidian 原文引用和结构归属分别呈现。阅读与自适应视图可以显示文字匹配的共同线索，它们不会被写成真实连线。",
       "x": 280,
       "y": 100,
       "fixed": false,
@@ -61,11 +61,11 @@
       "radiusMode": "level"
     },
     {
-      "id": "guide-intelligence",
-      "label": "当前自动整理的边界",
+      "id": "guide-layout",
+      "label": "自动排布在本机完成",
       "headingLevel": 3,
       "tags": [],
-      "note": "当前系统使用确定性算法，并可选用本地 embedding 改善语义距离。它是实用的应用能力，不等同于未来可能持续生长的认知架构。",
+      "note": "自动排布只使用连线、层级和本机文字匹配，无需启动任何模型服务。节点视图保持简洁；切换其他视图不会改变笔记与明确关系。",
       "x": 560,
       "y": 100,
       "fixed": false,
@@ -78,7 +78,7 @@
     { "source": "guide-purpose", "target": "guide-view", "label": "原则", "arrow": true, "lineStyle": "solid" },
     { "source": "guide-purpose", "target": "guide-relations", "label": "原则", "arrow": true, "lineStyle": "solid" },
     { "source": "guide-purpose", "target": "guide-obsidian", "label": "来源", "arrow": true, "lineStyle": "solid" },
-    { "source": "guide-relations", "target": "guide-intelligence", "label": "边界", "arrow": true, "lineStyle": "solid" }
+    { "source": "guide-relations", "target": "guide-layout", "label": "排布", "arrow": true, "lineStyle": "solid" }
   ],
   "groups": [],
   "settings": {
@@ -100,7 +100,7 @@
     "glMax": 28,
     "layoutMode": "auto",
     "semanticCardDensity": "full",
-    "graphTheme": "nord-dark",
+    "graphTheme": "paper-light",
     "gridVis": true,
     "gridMode": "dot",
     "axisVis": false,
@@ -111,8 +111,8 @@
     "focusMode": false,
     "glowAppearance": true,
     "categoryLayout": false,
-    "nodeColorStyle": "spectrum-narrow",
-    "fontFamily": "\"SiYuan Songti\", serif",
+    "nodeColorStyle": "hierarchical",
+    "fontFamily": "system-ui, -apple-system, sans-serif",
     "cardBorderStyle": "straight"
   }
 }

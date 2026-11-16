@@ -4,6 +4,17 @@ import { getGroupRegion } from "./geometry/hit";
 import { getStructureProjection } from './structure-nodes';
 import { isNodeInGroup } from './group-membership';
 
+export function getSimulationLinks(edges: any[], nodeIds: Set<string>) {
+  return edges.flatMap(edge => {
+    if (!edge || edge._conflict || edge._dyingAt) return [];
+    if ((edge.lineStyle || 'solid') !== 'solid' && !edge._structureMembership) return [];
+    const source = typeof edge.source === 'object' ? edge.source?.id : edge.source;
+    const target = typeof edge.target === 'object' ? edge.target?.id : edge.target;
+    if (!nodeIds.has(source) || !nodeIds.has(target)) return [];
+    return [{ ...edge, source, target, lineStyle: 'solid' }];
+  });
+}
+
 export function initSimulation(
   graph: GraphData,
   params: {
@@ -44,21 +55,7 @@ export function initSimulation(
       return node;
     });
 
-  const simulationEdges = projection.edges
-    .filter(e => {
-      if ((e.lineStyle || 'solid') !== 'solid' && !(e as any)._structureMembership) return false;
-      if ((e as any)._conflict || (e as any)._dyingAt) return false;
-      const src = typeof e.source === 'object' ? e.source.id : e.source;
-      const tgt = typeof e.target === 'object' ? e.target.id : e.target;
-      if (excluded.has(src) || excluded.has(tgt)) return false;
-      return true;
-    })
-    .map(e => ({
-      ...e,
-      source: typeof e.source === 'object' ? (e.source as any).id ?? e.source : e.source,
-      target: typeof e.target === 'object' ? (e.target as any).id ?? e.target : e.target,
-      lineStyle: 'solid'
-    }));
+  const simulationEdges = getSimulationLinks(projection.edges, new Set(nodes.map(node => node.id)));
 
   const simulation = d3.forceSimulation(nodes)
     .force("link", d3.forceLink(simulationEdges).id((d: any) => d.id).distance(linkDist).strength(linkStr))

@@ -1,5 +1,5 @@
 import * as d3 from 'd3';
-import { initSimulation } from "./simulation";
+import { getSimulationLinks, initSimulation } from "./simulation";
 import { GraphData } from "./data/storage";
 import { getStructureProjection } from './structure-nodes';
 import { createStaticSimulation, isStaticSimulation } from './static-simulation';
@@ -131,6 +131,25 @@ export function createSimManager(
 
   function getSim() { return simulation; }
 
+  /** Update a folded branch in place so the other nodes keep their coordinates. */
+  function refreshHierarchyNodes(hidden: ReadonlySet<string>, retained?: ReadonlySet<string>) {
+    if (!simulation) return;
+    const { nodes, edges, hiddenNodeIds } = getStructureProjection(graph);
+    const current = new Map<string, any>(simulation.nodes().map((node: any) => [node.id, node]));
+    const remaining = nodes.filter(node => !hiddenNodeIds.has(node.id) && (!hidden.has(node.id) || retained?.has(node.id)));
+    if (isStaticSimulation(simulation)) {
+      simulation.nodes(remaining.map(node => current.get(node.id) ?? node));
+      return;
+    }
+    const next = remaining.map(node => current.get(node.id) ?? { ...node });
+    const links = getSimulationLinks(edges, new Set(remaining.map(node => node.id)));
+    clearHeatTimer();
+    // Clear the old link force before setting nodes. Its endpoints may refer to removed nodes.
+    simulation.stop().alphaTarget(0).force('link', null);
+    simulation.nodes(next);
+    simulation.force('link', d3.forceLink(links).id((node: any) => node.id).distance(getLinkDist()).strength(getLinkStr()));
+  }
+
   function setStaticMode(value: boolean) {
     staticMode = value;
   }
@@ -146,5 +165,5 @@ export function createSimManager(
     dragNodeId = null;
   }
 
-  return { initSim, initStatic, updateCenter, getSim, setStaticMode, isStaticMode, setDragNode, getDragNode, dispose };
+  return { initSim, initStatic, updateCenter, getSim, refreshHierarchyNodes, setStaticMode, isStaticMode, setDragNode, getDragNode, dispose };
 }

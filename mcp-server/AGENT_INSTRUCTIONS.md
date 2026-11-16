@@ -18,6 +18,7 @@ file: <name>.json
 ```
 
 - **Groups match nodes by tag** — a group with `label: "AI"` automatically wraps all nodes that have `"AI"` in their `tags` array.
+- **Colors follow the existing theme system.** Omit a color for theme inheritance, or pass an empty string to `update_node` / `update_edge` to reset it. Explicit tool colors are marked with `colorMode: "custom"`, so black nodes and grey edges remain valid choices despite legacy placeholder colors. When editing JSON directly, preserve this marker for explicit colors; remove both `color` and `colorMode` to restore theme inheritance.
 
 ## Workflow
 

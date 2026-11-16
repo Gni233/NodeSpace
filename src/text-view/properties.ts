@@ -8,6 +8,7 @@ export const KEY_ALIASES: Record<string, string> = {
   标签: 'tags',
   笔记: 'note',
   颜色: 'color',
+  颜色模式: 'colorMode',
   半径: 'radius',
   半径模式: 'radiusMode',
   固定: 'fixed',

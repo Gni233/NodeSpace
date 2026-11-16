@@ -2,6 +2,7 @@ import {
   isVaultLocationTabId,
   isVaultSpaceTabId,
   normalizeVaultPath,
+  vaultDisplayName,
   vaultSpacePathFromTabId,
   vaultSpaceTabId,
   vaultPathFromTabId,
@@ -51,7 +52,7 @@ export function vaultLocationCrumbs(index: VaultIndex, tabId: string): VaultLoca
     const resource = resourceForPath(index, resourcePath);
     const fallback = parts[parts.length - 1] || resourcePath;
     crumbs.push({
-      label: resource?.title || fallback.replace(/\.[^.]+$/, ''),
+      label: resource?.kind === 'markdown' ? vaultDisplayName(tabId) : (resource?.title || fallback.replace(/\.[^.]+$/, '')),
       tabId,
       kind: 'resource',
       current: true,

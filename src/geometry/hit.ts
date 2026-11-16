@@ -1,4 +1,5 @@
 import { isNodeInGroup } from '../group-membership';
+import { getNodeVisualRadius } from '../node-radius';
 
 export interface Transform {
   x: number;
@@ -29,22 +30,48 @@ export function nodeContainsPoint(n: any, x: number, y: number, expand: number =
   const card = n?._semanticCard;
   if (card && Number.isFinite(card.width) && Number.isFinite(card.height)) {
     if (card.form === 'node') {
-      const radius = (Number(card.nodeRadius) || card.width / 2) + expand;
+      const radius = getNodeVisualRadius(n) + expand;
       const dx = n.x - x, dy = n.y - y;
       return dx * dx + dy * dy <= radius * radius;
     }
     return Math.abs(n.x - x) <= card.width / 2 + expand
       && Math.abs(n.y - y) <= card.height / 2 + expand;
   }
-  const r = (n.radius || 9) + expand;
+  const r = getNodeVisualRadius(n) + expand;
   const dx = n.x - x, dy = n.y - y;
   return dx * dx + dy * dy <= r * r;
 }
 
-export function hitTestNode(x: number, y: number, nodes: any[], expand: number = 0): any | null {
+/** Actual rendered title rectangle in world coordinates, not the layout cell. */
+export interface NodeTitleHitBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  visible: boolean;
+  /** Effective opacity including the sprite and its ancestors. */
+  alpha: number;
+}
+
+export interface NodeHitTestOptions {
+  /** Return null for destroyed, hidden, empty, or noninteractive labels. */
+  titleBounds?: (node: any, worldX: number, worldY: number) => NodeTitleHitBounds | null | undefined;
+}
+
+export function hitTestNode(x: number, y: number, nodes: any[], expand: number = 0, options: NodeHitTestOptions = {}): any | null {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  // Every solid node/card wins over any title, including titles drawn above it.
   for (let index = nodes.length - 1; index >= 0; index--) {
     const n = nodes[index];
     if (nodeContainsPoint(n, x, y, expand)) return n;
+  }
+  if (options.titleBounds) for (let index = nodes.length - 1; index >= 0; index--) {
+    const node = nodes[index];
+    const bounds = options.titleBounds(node, x, y);
+    if (!bounds?.visible || !Number.isFinite(bounds.alpha) || bounds.alpha < 0.1) continue;
+    if (![bounds.left, bounds.top, bounds.right, bounds.bottom].every(Number.isFinite)
+      || bounds.right <= bounds.left || bounds.bottom <= bounds.top) continue;
+    if (x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom) return node;
   }
   return null;
 }

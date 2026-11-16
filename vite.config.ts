@@ -35,46 +35,56 @@ function getElectronConfigDir(): string | null {
   return null;
 }
 
-const DATA_DIR = process.env.NODESPACE_DATA_DIR
-  || getElectronConfigDir()
-  || path.join(os.homedir(), 'Documents', 'NodeSpace');
-
-console.log(`[nodespace] Data dir: ${DATA_DIR}`);
-
-// 确保数据目录存在
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
 function nodespaceFileWatchPlugin(): Plugin {
   return {
     name: 'nodespace-file-watch',
     configureServer(server) {
+      const dataDir = process.env.NODESPACE_DATA_DIR
+        || getElectronConfigDir()
+        || path.join(os.homedir(), 'Documents', 'NodeSpace');
+      console.log(`[nodespace] Data dir: ${dataDir}`);
+      fs.mkdirSync(dataDir, { recursive: true });
+      const graphRoot = fs.realpathSync(dataDir);
+
       // 1) API 端点：从磁盘读取图数据（让 Vite 模式也能读取 MCP Server 写入的文件）
       server.middlewares.use('/api/graph/', (req, res) => {
-        const raw = decodeURIComponent(req.url!.replace(/^\/api\/graph\//, ''));
-        const name = raw.replace(/\.json$/, '');
-        const fp = path.join(DATA_DIR, name + '.json');
-        // 安全检查：防止路径遍历
-        const resolved = path.resolve(fp);
-        if (!resolved.startsWith(path.resolve(DATA_DIR))) {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        let name: string;
+        try {
+          const route = (req.url ?? '').split('?')[0];
+          name = decodeURIComponent(route.replace(/^\//, '')).replace(/\.json$/, '');
+        } catch {
+          res.statusCode = 400;
+          return res.end('{"error":"Invalid graph name"}');
+        }
+        if (!name || /[\\/:\u0000]/.test(name)) {
           res.statusCode = 403;
-          res.end('{"error":"Access denied"}');
-          return;
+          return res.end('{"error":"Access denied"}');
         }
-        if (fs.existsSync(resolved)) {
-          res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          res.end(fs.readFileSync(resolved, 'utf-8'));
-        } else {
-          res.statusCode = 404;
-          res.end('{"nodes":[],"edges":[],"groups":[]}');
+
+        try {
+          const resolved = fs.realpathSync(path.join(graphRoot, name + '.json'));
+          const relative = path.relative(graphRoot, resolved);
+          if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+            res.statusCode = 403;
+            return res.end('{"error":"Access denied"}');
+          }
+          if (fs.statSync(resolved).isFile()) return res.end(fs.readFileSync(resolved, 'utf-8'));
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+            res.statusCode = code === 'EACCES' || code === 'EPERM' ? 403 : 500;
+            return res.end('{"error":"Unable to read graph"}');
+          }
         }
+        res.statusCode = 404;
+        return res.end('{"nodes":[],"edges":[],"groups":[]}');
       });
 
       // 2) 文件监听 → HMR 推送到浏览器
       const pending = new Map<string, NodeJS.Timeout>();
       try {
-        fs.watch(DATA_DIR, (_event, filename) => {
+        const watcher = fs.watch(graphRoot, (_event, filename) => {
           if (!filename || typeof filename !== 'string') return;
           if (!filename.endsWith('.json')) return;
           const name = filename.replace(/\.json$/, '');
@@ -87,6 +97,11 @@ function nodespaceFileWatchPlugin(): Plugin {
               data: { graph: name },
             });
           }, 500));
+        });
+        watcher.unref();
+        server.httpServer?.once('close', () => {
+          watcher.close();
+          for (const timer of pending.values()) clearTimeout(timer);
         });
       } catch {
         // fs.watch 可能在某些环境下不可用（如 WSL），静默降级

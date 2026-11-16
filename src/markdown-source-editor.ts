@@ -1,3 +1,7 @@
+import { readMarkdownProjection, replaceMarkdownProjection, type MarkdownProjectionTarget } from './markdown-projection-edit';
+
+export type MarkdownProjectionField = 'title' | 'body';
+
 export interface MarkdownSourceTarget {
   path: string;
   absolutePath: string;
@@ -7,6 +11,7 @@ export interface MarkdownSourceTarget {
   block?: string;
   line?: number;
   editable?: boolean;
+  projection?: { target: MarkdownProjectionTarget; field: MarkdownProjectionField };
 }
 
 export type MarkdownSavePlan =
@@ -14,11 +19,9 @@ export type MarkdownSavePlan =
   | { kind: 'conflict'; diskContent: string }
   | { kind: 'write'; content: string };
 
-/**
- * Small, UI-independent edit transaction. The original source stays as the
- * comparison base until a write succeeds, so an outside edit can never be
- * overwritten silently.
- */
+export type MarkdownWriteResult = { ok: true } | { conflict: true; content: string };
+
+/** Compare saves with the last written text while keeping later edits in the draft. */
 export class MarkdownEditSession {
   private base: string;
   private draftValue: string;
@@ -42,18 +45,22 @@ export class MarkdownEditSession {
   planSave(diskContent: string, force = false): MarkdownSavePlan {
     if (!this.dirty) return { kind: 'noop' };
     if (!force && diskContent !== this.base) {
-      this.conflictValue = diskContent;
+      this.recordConflict(diskContent);
       return { kind: 'conflict', diskContent };
     }
     return { kind: 'write', content: this.draftValue };
   }
 
   markExternalChange(diskContent: string): void {
-    if (diskContent !== this.base) this.conflictValue = diskContent;
+    if (diskContent !== this.base) this.recordConflict(diskContent);
   }
 
-  acceptSaved(): void {
-    this.base = this.draftValue;
+  recordConflict(diskContent: string): void {
+    this.conflictValue = diskContent;
+  }
+
+  acceptSaved(writtenContent: string): void {
+    this.base = writtenContent;
     this.conflictValue = null;
   }
 
@@ -62,90 +69,6 @@ export class MarkdownEditSession {
     this.draftValue = diskContent;
     this.conflictValue = null;
   }
-}
-
-const escapeHtml = (value: string): string => value
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;');
-
-const safeLink = (value: string): string | null => {
-  const href = value.trim();
-  return /^(https?:|mailto:)/i.test(href) ? escapeHtml(href) : null;
-};
-
-const inlineMarkdown = (value: string): string => {
-  let rendered = escapeHtml(value);
-  rendered = rendered.replace(/`([^`]+)`/g, '<code>$1</code>');
-  rendered = rendered.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  rendered = rendered.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) => {
-    const safe = safeLink(href);
-    return safe ? `<a href="${safe}" target="_blank" rel="noreferrer">${label}</a>` : label;
-  });
-  rendered = rendered.replace(/!\[([^\]]*)\]\([^)]+\)/g, '<span class="ns-md-editor-embed">附件 · $1</span>');
-  return rendered;
-};
-
-/** A deliberately modest, escaped preview; source editing never normalizes Markdown. */
-export function renderMarkdownSourcePreview(markdown: string): string {
-  const lines = String(markdown || '').split(/\r?\n/);
-  const html: string[] = [];
-  let list: 'ul' | 'ol' | null = null;
-  let fenced = false;
-  const code: string[] = [];
-  const closeList = () => {
-    if (!list) return;
-    html.push(`</${list}>`);
-    list = null;
-  };
-  for (const line of lines) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      closeList();
-      if (fenced) {
-        html.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`);
-        code.length = 0;
-      }
-      fenced = !fenced;
-      continue;
-    }
-    if (fenced) {
-      code.push(line);
-      continue;
-    }
-    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
-    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-    if (heading) {
-      closeList();
-      const level = heading[1].length;
-      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
-    } else if (unordered || ordered) {
-      const wanted = unordered ? 'ul' : 'ol';
-      if (list !== wanted) {
-        closeList();
-        list = wanted;
-        html.push(`<${wanted}>`);
-      }
-      html.push(`<li>${inlineMarkdown((unordered || ordered)![1])}</li>`);
-    } else if (/^\s*>/.test(line)) {
-      closeList();
-      html.push(`<blockquote>${inlineMarkdown(line.replace(/^\s*>\s?/, ''))}</blockquote>`);
-    } else if (!line.trim()) {
-      closeList();
-    } else if (/^\s*---+\s*$/.test(line)) {
-      closeList();
-      html.push('<hr>');
-    } else {
-      closeList();
-      html.push(`<p>${inlineMarkdown(line)}</p>`);
-    }
-  }
-  closeList();
-  if (fenced) html.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`);
-  return html.join('') || '<p class="ns-md-editor-empty">这篇笔记还是空的。</p>';
 }
 
 const lineOffset = (content: string, line: number): number => {
@@ -186,11 +109,19 @@ export function markdownFocusOffset(content: string, target: Pick<MarkdownSource
 
 export interface MarkdownSourceEditorDependencies {
   readFile: (target: MarkdownSourceTarget) => Promise<string>;
-  writeFile: (target: MarkdownSourceTarget, content: string) => Promise<void>;
+  writeFile: (target: MarkdownSourceTarget, content: string, expectedContent: string) => Promise<MarkdownWriteResult>;
   confirmDiscard: (title: string) => Promise<boolean>;
   openInObsidian?: (target: MarkdownSourceTarget) => void;
   onSaved?: (target: MarkdownSourceTarget, content: string) => void | Promise<void>;
   notify?: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+  createLiveInput?: (parent: HTMLElement, onInput: (content: string) => void) => Promise<MarkdownLiveInput>;
+}
+
+export interface MarkdownLiveInput {
+  setValue: (content: string) => void;
+  setReadOnly: (value: boolean) => void;
+  setLabel: (value: string) => void;
+  focusAt: (offset: number) => void;
 }
 
 export interface MarkdownSourceEditor {
@@ -214,27 +145,21 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
     <header class="ns-md-editor-header">
       <div class="ns-md-editor-identity">
         <span class="ns-md-editor-icon">${icon('<path d="M5 3h14v18H5Z"/><path d="m8 15 2-3 2 3 2-3 2 3M8 8h8"/>')}</span>
-        <span class="ns-md-editor-titles"><span class="ns-md-editor-eyebrow">Vault · Markdown 原文</span><strong class="ns-md-editor-title"></strong></span>
+        <span class="ns-md-editor-titles"><span class="ns-md-editor-eyebrow"></span><strong class="ns-md-editor-title"></strong></span>
       </div>
       <div class="ns-md-editor-header-actions">
+        <span class="ns-md-editor-state" data-state="saved"><i></i><span>已保存</span></span>
         <button class="ns-md-editor-obsidian" type="button">Obsidian</button>
         <button class="ns-md-editor-close" type="button" title="关闭 (Esc)" aria-label="关闭">${icon('<path d="m7 7 10 10M17 7 7 17"/>')}</button>
       </div>
     </header>
-    <div class="ns-md-editor-toolbar">
-      <div class="ns-md-editor-tabs" role="tablist">
-        <button type="button" class="is-active" data-mode="edit" role="tab">编辑</button>
-        <button type="button" data-mode="preview" role="tab">预览</button>
-      </div>
-      <span class="ns-md-editor-state" data-state="saved"><i></i><span>已保存</span></span>
-    </div>
     <div class="ns-md-editor-conflict" hidden>
       <div><strong>原文在别处发生了变化</strong><span>你的草稿仍在。请选择重新载入，或确认用当前草稿覆盖。</span></div>
       <div><button type="button" data-action="reload">重新载入</button><button type="button" class="is-danger" data-action="overwrite">仍然覆盖</button></div>
     </div>
     <div class="ns-md-editor-body">
+      <div class="ns-md-editor-live" hidden></div>
       <textarea class="ns-md-editor-textarea" aria-label="Markdown 原文" spellcheck="false"></textarea>
-      <article class="ns-md-editor-preview fg-media-markdown" hidden></article>
     </div>
     <footer class="ns-md-editor-footer">
       <span class="ns-md-editor-hint">Ctrl + S 保存 · Esc 返回画布</span>
@@ -243,26 +168,36 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
   container.appendChild(root);
 
   const title = root.querySelector<HTMLElement>('.ns-md-editor-title')!;
+  const eyebrow = root.querySelector<HTMLElement>('.ns-md-editor-eyebrow')!;
   const textarea = root.querySelector<HTMLTextAreaElement>('.ns-md-editor-textarea')!;
-  const preview = root.querySelector<HTMLElement>('.ns-md-editor-preview')!;
+  const liveHost = root.querySelector<HTMLElement>('.ns-md-editor-live')!;
   const state = root.querySelector<HTMLElement>('.ns-md-editor-state')!;
   const stateText = state.querySelector<HTMLElement>('span')!;
   const conflict = root.querySelector<HTMLElement>('.ns-md-editor-conflict')!;
+  const conflictHint = conflict.querySelector<HTMLElement>('span')!;
+  const overwriteButton = root.querySelector<HTMLButtonElement>('[data-action="overwrite"]')!;
   const saveButton = root.querySelector<HTMLButtonElement>('.ns-md-editor-save')!;
   const obsidianButton = root.querySelector<HTMLButtonElement>('.ns-md-editor-obsidian')!;
-  const modeButtons = [...root.querySelectorAll<HTMLButtonElement>('[data-mode]')];
   let target: MarkdownSourceTarget | null = null;
   let session: MarkdownEditSession | null = null;
-  let mode: 'edit' | 'preview' = 'edit';
+  let projectionSource: string | null = null;
+  let liveInput: MarkdownLiveInput | undefined;
+  let liveInputLoading: Promise<MarkdownLiveInput> | undefined;
   let saving = false;
+  let openRequest = 0;
+  const usesLiveInput = () => !!liveInput && target?.projection?.field !== 'title';
 
-  const setMode = (next: 'edit' | 'preview') => {
-    mode = next;
-    for (const button of modeButtons) button.classList.toggle('is-active', button.dataset.mode === mode);
-    textarea.hidden = mode !== 'edit';
-    preview.hidden = mode !== 'preview';
-    if (mode === 'preview') preview.innerHTML = renderMarkdownSourcePreview(session?.draft || '');
-    else requestAnimationFrame(() => textarea.focus());
+  const draftFromSource = (content: string, source: MarkdownSourceTarget): string => {
+    if (!source.projection) return content;
+    const { target: anchor, field } = source.projection;
+    const value = readMarkdownProjection(content, anchor)?.[field];
+    if (value === undefined) throw new Error('原文中的位置已变化或有重名章节，请打开原文确认');
+    return field === 'body' && !value.trim() ? '' : value.replace(/\r\n?/g, '\n');
+  };
+
+  const showDraft = (value: string) => {
+    if (usesLiveInput()) liveInput!.setValue(value);
+    else textarea.value = value;
   };
 
   const renderState = () => {
@@ -272,28 +207,57 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
     state.dataset.state = nextState;
     stateText.textContent = conflicted ? '外部修改' : dirty ? '未保存' : '已保存';
     conflict.hidden = !conflicted;
+    const readOnly = target?.editable === false || (!!target?.projection && saving);
+    textarea.readOnly = readOnly;
+    if (usesLiveInput()) liveInput!.setReadOnly(readOnly);
     saveButton.disabled = saving || !target?.editable || (!dirty && !conflicted);
     saveButton.textContent = saving ? '正在保存…' : target?.editable === false ? '只读预览' : '保存原文';
   };
 
   const focusTarget = () => {
-    if (!target || !session || mode !== 'edit') return;
-    const offset = markdownFocusOffset(session.draft, target);
+    if (!target || !session) return;
+    const editSession = session;
+    const field = target.projection?.field;
+    const offset = field === 'title' ? editSession.draft.length
+      : field === 'body' ? Math.max(0, editSession.draft.search(/\S/)) : markdownFocusOffset(editSession.draft, target);
     requestAnimationFrame(() => {
+      if (session !== editSession) return;
+      if (usesLiveInput()) {
+        liveInput!.focusAt(offset);
+        return;
+      }
       textarea.focus();
       textarea.setSelectionRange(offset, offset);
-      const ratio = session!.draft.length > 0 ? offset / session!.draft.length : 0;
+      const ratio = editSession.draft.length > 0 ? offset / editSession.draft.length : 0;
       textarea.scrollTop = Math.max(0, textarea.scrollHeight * ratio - textarea.clientHeight * .28);
     });
   };
 
   const save = async (force = false) => {
     if (!target || !session || saving || target.editable === false) return;
+    const editTarget = target;
+    const editSession = session;
+    const projection = editTarget.projection;
+    if (projection && (force || !editSession.dirty)) return;
     saving = true;
     renderState();
     try {
-      const diskContent = await dependencies.readFile(target);
-      const plan = session.planSave(diskContent, force);
+      const diskContent = await dependencies.readFile(editTarget);
+      if (session !== editSession) return;
+      const draft = editSession.draft;
+      let plan: MarkdownSavePlan;
+      if (projection) {
+        if (diskContent !== projectionSource) {
+          editSession.recordConflict(diskContent);
+          plan = { kind: 'conflict', diskContent };
+        } else {
+          const content = replaceMarkdownProjection(diskContent, projection.target, { [projection.field]: draft });
+          if (content === null) throw new Error(projection.field === 'title' ? '章节标题需要保留一行非空文字' : '找不到对应的正文，请重新打开投影');
+          plan = { kind: 'write', content };
+        }
+      } else {
+        plan = editSession.planSave(diskContent, force);
+      }
       if (plan.kind === 'noop') {
         renderState();
         return;
@@ -303,11 +267,24 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
         renderState();
         return;
       }
-      await dependencies.writeFile(target, plan.content);
-      session.acceptSaved();
-      renderState();
-      dependencies.notify?.(`已保存“${target.title}”`, 'success');
-      await dependencies.onSaved?.(target, plan.content);
+      const result = await dependencies.writeFile(editTarget, plan.content, diskContent);
+      if ('conflict' in result) {
+        if (session === editSession) {
+          editSession.recordConflict(result.content);
+          dependencies.notify?.('原文在写入前已改变；你的草稿没有丢失', 'warning');
+          renderState();
+        }
+        return;
+      }
+      editSession.acceptSaved(projection ? draft : plan.content);
+      if (projection && session === editSession) closeNow();
+      else renderState();
+      dependencies.notify?.(projection ? '已保存到 Obsidian 原文' : `已保存“${editTarget.title}”`, 'success');
+      try {
+        await dependencies.onSaved?.(editTarget, plan.content);
+      } catch {
+        dependencies.notify?.('原文已保存，暂时无法刷新图投影', 'warning');
+      }
     } catch (error) {
       dependencies.notify?.(`保存失败：${error instanceof Error ? error.message : String(error)}`, 'error');
     } finally {
@@ -317,12 +294,19 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
   };
 
   const reload = async () => {
-    if (!target || !session) return;
+    if (!target || !session || saving) return;
+    const editTarget = target;
+    const editSession = session;
+    const draft = editSession.draft;
+    if (editSession.dirty && !await dependencies.confirmDiscard(editTarget.title)) return;
+    if (session !== editSession || saving || editSession.draft !== draft) return;
     try {
-      const content = session.externalContent ?? await dependencies.readFile(target);
-      session.reload(content);
-      textarea.value = content;
-      preview.innerHTML = renderMarkdownSourcePreview(content);
+      const content = await dependencies.readFile(editTarget);
+      if (session !== editSession || saving || editSession.draft !== draft) return;
+      const latest = draftFromSource(content, editTarget);
+      projectionSource = editTarget.projection ? content : null;
+      editSession.reload(latest);
+      showDraft(latest);
       renderState();
       focusTarget();
       dependencies.notify?.('已载入磁盘上的最新原文', 'info');
@@ -332,34 +316,41 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
   };
 
   const closeNow = () => {
+    openRequest++;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && root.contains(active)) active.blur();
     root.hidden = true;
     root.classList.remove('is-visible');
     container.classList.remove('is-markdown-editor-open');
     target = null;
     session = null;
+    projectionSource = null;
   };
 
   const requestClose = async (): Promise<boolean> => {
-    if (!session?.dirty || await dependencies.confirmDiscard(target?.title || '这篇笔记')) {
-      closeNow();
-      return true;
-    }
-    return false;
+    if (saving) return false;
+    const editSession = session;
+    if (editSession?.dirty && !await dependencies.confirmDiscard(target?.title || '这篇笔记')) return false;
+    if (saving || session !== editSession) return false;
+    closeNow();
+    return true;
   };
 
-  textarea.addEventListener('input', () => {
-    session?.updateDraft(textarea.value);
-    if (mode === 'preview') preview.innerHTML = renderMarkdownSourcePreview(textarea.value);
+  const updateDraft = (content: string) => {
+    if (saving && target?.projection) return;
+    session?.updateDraft(content);
     renderState();
-  });
-  for (const button of modeButtons) button.addEventListener('click', () => setMode(button.dataset.mode === 'preview' ? 'preview' : 'edit'));
+  };
+  textarea.addEventListener('input', () => updateDraft(textarea.value));
   root.querySelector('.ns-md-editor-close')?.addEventListener('click', () => { void requestClose(); });
   root.querySelector('[data-action="reload"]')?.addEventListener('click', () => { void reload(); });
   root.querySelector('[data-action="overwrite"]')?.addEventListener('click', () => { void save(true); });
   saveButton.addEventListener('click', () => { void save(); });
   obsidianButton.addEventListener('click', () => { if (target) dependencies.openInObsidian?.(target); });
   root.addEventListener('keydown', event => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    if (event.isComposing || event.keyCode === 229) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's'
+      || event.key === 'Enter' && target?.projection?.field === 'title' && event.target === textarea) {
       event.preventDefault();
       void save();
     } else if (event.key === 'Escape') {
@@ -370,22 +361,46 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
 
   return {
     async open(nextTarget) {
-      const sameTarget = target?.path === nextTarget.path;
+      if (saving) return false;
+      const request = ++openRequest;
+      const sameTarget = target?.absolutePath === nextTarget.absolutePath
+        && JSON.stringify(target.projection) === JSON.stringify(nextTarget.projection);
       if (session?.dirty && !sameTarget && !await dependencies.confirmDiscard(target?.title || '这篇笔记')) return false;
+      if (request !== openRequest) return false;
       try {
+        let draft: string | undefined;
         if (!sameTarget || !session) {
           const content = await dependencies.readFile(nextTarget);
-          session = new MarkdownEditSession(content);
-          textarea.value = content;
-          preview.innerHTML = renderMarkdownSourcePreview(content);
+          if (request !== openRequest || saving) return false;
+          draft = draftFromSource(content, nextTarget);
+          if (nextTarget.projection?.field !== 'title' && !liveInput && dependencies.createLiveInput) {
+            liveInputLoading ??= dependencies.createLiveInput(liveHost, updateDraft).finally(() => { liveInputLoading = undefined; });
+            liveInput = await liveInputLoading;
+            if (request !== openRequest || saving) return false;
+          }
+          session = new MarkdownEditSession(draft);
+          projectionSource = nextTarget.projection ? content : null;
         }
         target = nextTarget;
+        const field = target.projection?.field;
+        const name = field === 'title' ? '修改章节标题' : field === 'body' ? '修改正文' : 'Markdown 原文';
+        root.dataset.projectionField = field || '';
+        root.setAttribute('aria-label', name);
+        eyebrow.textContent = name;
+        textarea.setAttribute('aria-label', name);
+        liveHost.hidden = !usesLiveInput();
+        textarea.hidden = usesLiveInput();
+        if (usesLiveInput()) liveInput!.setLabel(name);
+        if (draft !== undefined) showDraft(draft);
+        overwriteButton.hidden = Boolean(field);
+        conflictHint.textContent = field
+          ? '草稿仍在。你可以复制草稿，再载入最新版。'
+          : '你的草稿仍在。请选择重新载入，或确认用当前草稿覆盖。';
         title.textContent = nextTarget.title;
         obsidianButton.hidden = !dependencies.openInObsidian;
         root.hidden = false;
         container.classList.add('is-markdown-editor-open');
         requestAnimationFrame(() => root.classList.add('is-visible'));
-        setMode(nextTarget.editable === false ? 'preview' : 'edit');
         renderState();
         focusTarget();
         return true;
@@ -401,15 +416,20 @@ export function createMarkdownSourceEditor(container: HTMLElement, dependencies:
     activePath: () => target?.path || null,
     async handleExternalChange(path) {
       if (!target || !session || target.path !== path) return;
+      const editSession = session;
+      const editTarget = target;
+      const baseline = projectionSource ?? editSession.baseContent;
       try {
-        const diskContent = await dependencies.readFile(target);
-        if (session.dirty) {
-          session.markExternalChange(diskContent);
-          if (session.conflicted) dependencies.notify?.('正在编辑的原文已在外部改变；草稿已保留', 'warning');
+        const diskContent = await dependencies.readFile(editTarget);
+        if (session !== editSession || saving || (projectionSource ?? editSession.baseContent) !== baseline) return;
+        if (editSession.dirty) {
+          if (diskContent !== baseline) editSession.recordConflict(diskContent);
+          if (editSession.conflicted) dependencies.notify?.('正在编辑的原文已在外部改变；草稿已保留', 'warning');
         } else {
-          session.reload(diskContent);
-          textarea.value = diskContent;
-          preview.innerHTML = renderMarkdownSourcePreview(diskContent);
+          const draft = draftFromSource(diskContent, editTarget);
+          projectionSource = editTarget.projection ? diskContent : null;
+          editSession.reload(draft);
+          showDraft(draft);
         }
         renderState();
       } catch {

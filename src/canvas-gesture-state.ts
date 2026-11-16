@@ -87,9 +87,10 @@ export class CanvasGestureState {
     targetNodeId: string | null,
     boxSelect: boolean,
     threshold: number,
+    canDragNode = true,
   ): void {
     this.active = { pointerId, startX: x, startY: y, threshold, targetNodeId };
-    this.currentMode = boxSelect ? 'box-select' : targetNodeId ? 'pending-node' : 'viewport-pan';
+    this.currentMode = boxSelect ? 'box-select' : targetNodeId && canDragNode ? 'pending-node' : 'viewport-pan';
     this.hasMoved = false;
   }
 

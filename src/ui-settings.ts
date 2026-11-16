@@ -1,5 +1,6 @@
 import { THEMES, getThemeLabel } from "./theme";
 import { V } from "./layout-constants";
+import { hasHuawenCanvasFont, HUAWEN_CANVAS_FONT } from "./local-canvas-font";
 import {
   applyForceDensityPreset,
   detectForceDensityPreset,
@@ -7,6 +8,36 @@ import {
   ForceDensityPreset,
   ForceDensitySettings,
 } from "./force-density-presets";
+
+let settingControlId = 0;
+function connectLabel(label: HTMLLabelElement, control: HTMLElement, key: string) {
+  control.id = 'ns-setting-' + ++settingControlId;
+  label.htmlFor = control.id;
+  control.dataset.settingKey = key;
+}
+
+function makeSelect(parent: HTMLElement, label: string, key: string, value: string,
+  options: [string, string, boolean?][], onChange: (value: string) => void) {
+  const row = document.createElement('div');
+  row.className = 'fg-setting-row fg-setting-select-row';
+  const caption = document.createElement('label');
+  caption.className = 'fg-setting-label'; caption.textContent = label;
+  const select = document.createElement('select');
+  select.className = 'fg-setting-select';
+  connectLabel(caption, select, key);
+  const entries: typeof options = options.some(([entry]) => entry === value) ? options : [...options, [value, '自定义：' + value]];
+  for (const [entry, title, disabled] of entries) {
+    const option = document.createElement('option');
+    option.value = entry;
+    option.textContent = title;
+    option.disabled = Boolean(disabled);
+    select.appendChild(option);
+  }
+  select.value = value;
+  select.addEventListener('change', () => onChange(select.value));
+  row.append(caption, select); parent.appendChild(row);
+  return select;
+}
 
 interface SliderHandle {
   set: (v: number) => void;
@@ -24,7 +55,7 @@ function makeSlider(
   const row = document.createElement("div");
   row.className = 'fg-setting-row fg-setting-slider-row';
   row.style.cssText = "display:flex;gap:8px;align-items:center;margin:3px 0;";
-  const lb = document.createElement("span");
+  const lb = document.createElement("label");
   lb.className = 'fg-setting-label';
   lb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
   lb.textContent = label;
@@ -32,6 +63,7 @@ function makeSlider(
   const range = document.createElement("input");
   range.className = 'fg-setting-range';
   range.type = "range";
+  connectLabel(lb, range, label + ":range");
   range.min = String(min);
   range.max = String(max);
   range.step = String(step);
@@ -40,32 +72,30 @@ function makeSlider(
   const num = document.createElement("input");
   num.className = 'fg-setting-number';
   num.type = "number";
+  num.dataset.settingKey = label + ":number";
+  num.setAttribute("aria-label", label + "，数值");
   num.min = String(min);
   num.max = String(max);
   num.step = String(step);
   num.value = String(val);
   num.style.cssText = `width:${V('--fg-input-number-width', '55px')};font-size:${V('--fg-font-md', '0.85em')};text-align:right;`;
   const round = step < 1 ? Math.max(0, -Math.floor(Math.log10(step))) : 0;
-  range.addEventListener("input", () => {
-    const v = parseFloat(range.value);
+  let current = val;
+  const commit = (raw: number) => {
+    const clamped = Number.isFinite(raw) ? Math.max(min, Math.min(max, raw)) : current;
+    const v = Number((min + Math.round((clamped - min) / step) * step).toFixed(round));
+    current = v;
+    range.value = String(v);
     num.value = round > 0 ? v.toFixed(round) : String(Math.round(v));
     onChange(v);
-  });
-  num.addEventListener("change", () => {
-    const v = parseFloat(num.value);
-    if (!isNaN(v)) { range.value = String(v); onChange(v); }
-  });
-  num.addEventListener("input", () => {
-    const v = parseFloat(num.value);
-    if (!isNaN(v)) {
-      const clamped = Math.max(min, Math.min(max, v));
-      if (clamped !== v) { num.value = round > 0 ? clamped.toFixed(round) : String(Math.round(clamped)); }
-    }
-  });
+  };
+  range.addEventListener('input', () => commit(Number(range.value)));
+  num.addEventListener('change', () => commit(num.value.trim() === '' ? NaN : Number(num.value)));
+
   row.appendChild(range);
   row.appendChild(num);
   parent.appendChild(row);
-  return { set: (v: number) => { range.value = String(v); num.value = round > 0 ? v.toFixed(round) : String(Math.round(v)); onChange(v); } };
+  return { set: commit };
 }
 
 function makeCheckbox(
@@ -79,6 +109,7 @@ function makeCheckbox(
   row.style.cssText = "display:flex;gap:6px;align-items:center;margin:3px 0;cursor:pointer;";
   const cb = document.createElement("input");
   cb.type = "checkbox";
+  cb.dataset.settingKey = label;
   cb.checked = checked;
   cb.addEventListener("change", () => onChange(cb.checked));
   row.appendChild(cb);
@@ -104,7 +135,6 @@ export function buildSettings(
     getHeatingTime: () => number; setHeatingTime: (v: number) => void;
     getAlphaTarget: () => number; setAlphaTarget: (v: number) => void;
     getEditPanelOpacity: () => number; setEditPanelOpacity: (v: number) => void;
-    getUseRAFL: () => boolean; setUseRAFL: (v: boolean) => void;
     getNodeExpand: () => number; setNodeExpand: (v: number) => void;
     getLineExpand: () => number; setLineExpand: (v: number) => void;
     getShowGLabels: () => boolean; setShowGLabels: (v: boolean) => void;
@@ -114,14 +144,9 @@ export function buildSettings(
     getAxisVis: () => boolean; setAxisVis: (v: boolean) => void;
     getAxisTicks: () => boolean; setAxisTicks: (v: boolean) => void;
     getGridSp: () => number; setGridSp: (v: number) => void;
-    getAr: () => number; setAr: (v: number) => void;
-    getSimulation: () => any;
-    getGw: () => number;
-    getGh: () => number;
     draw: () => void;
     getInitSim: () => () => void;
     getSaveData: () => () => Promise<void>;
-    graph: any;
     getGraphTheme: () => string;
     setGraphTheme: (v: string) => void;
     getDefaultValues: () => Record<string, number | boolean | string>;
@@ -155,14 +180,12 @@ export function buildSettings(
     getCollideR, setCollideR, getCenterS, setCenterS,
     getGroupBound, setGroupBound, getHeatingTime, setHeatingTime,
     getAlphaTarget, setAlphaTarget, getEditPanelOpacity, setEditPanelOpacity,
-    getUseRAFL, setUseRAFL,
     getNodeExpand, setNodeExpand, getLineExpand, setLineExpand,
     getShowGLabels, setShowGLabels, getGlMin, setGlMin,
     getGlMax, setGlMax, getGridVis, setGridVis,
     getAxisVis, setAxisVis, getAxisTicks, setAxisTicks,
-    getGridSp, setGridSp, getAr, setAr,
-    getSimulation, getGw, getGh,
-    draw, getInitSim, getSaveData, graph,
+    getGridSp, setGridSp,
+    draw, getInitSim, getSaveData,
     getGraphTheme, setGraphTheme, getFocusMode, setFocusMode,
     getCenterMode, setCenterMode,
     getGlowAppearance, setGlowAppearance, getGridWidth, setGridWidth, getDefaultValues,
@@ -178,13 +201,14 @@ export function buildSettings(
   const themeRow = document.createElement("div");
   themeRow.className = 'fg-setting-row fg-setting-select-row fg-setting-theme-row';
   themeRow.style.cssText = "margin-bottom:10px;display:flex;align-items:center;gap:6px;";
-  const themeLabel = document.createElement("span");
+  const themeLabel = document.createElement("label");
   themeLabel.className = 'fg-setting-label';
   themeLabel.textContent = settingsScope === 'defaults' ? '默认主题' : '空间主题';
   themeLabel.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};opacity:0.6;`;
   themeRow.appendChild(themeLabel);
   const themeSelect = document.createElement("select");
   themeSelect.className = 'fg-setting-select';
+  connectLabel(themeLabel, themeSelect, 'theme');
   themeSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
   Object.keys(THEMES).forEach(key => {
     const opt = document.createElement("option");
@@ -192,14 +216,34 @@ export function buildSettings(
     themeSelect.appendChild(opt);
   });
   themeSelect.value = getGraphTheme() || 'default';
+  const headingPalette = document.createElement('div');
+  headingPalette.className = 'fg-setting-heading-palette';
+  headingPalette.setAttribute('role', 'img');
+  headingPalette.setAttribute('aria-label', '节点配色预览，从一级到六级');
+  const updateHeadingPalette = () => {
+    const colors = getNodeColorStyle?.() === 'hierarchical' ? THEMES[getGraphTheme()]?.headingColors : undefined;
+    headingPalette.hidden = !colors;
+    headingPalette.replaceChildren();
+    colors?.forEach((color, index) => {
+      const sample = document.createElement('span');
+      sample.className = 'fg-setting-heading-sample';
+      sample.style.setProperty('--heading-swatch', color);
+      sample.textContent = String(index + 1);
+      sample.title = `第 ${index + 1} 级 · ${color}`;
+      headingPalette.appendChild(sample);
+    });
+  };
   themeSelect.addEventListener('change', () => {
     setGraphTheme(themeSelect.value);
+    updateHeadingPalette();
     getSaveData()();
     draw();
   });
   themeRow.appendChild(themeSelect);
 
   const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.dataset.settingKey = "reset";
   resetBtn.className = 'fg-settings-reset';
   resetBtn.textContent = settingsScope === 'defaults' ? '恢复内置默认值' : '应用默认值到此空间';
   resetBtn.style.cssText = "margin-top:10px;";
@@ -215,10 +259,12 @@ export function buildSettings(
     setHeatingTime(defs.defaultHeatingTime as number);
     setAlphaTarget(defs.defaultAlphaTarget as number);
     setEditPanelOpacity(defs.defaultEditPanelOpacity as number);
-    setUseRAFL(defs.defaultUseRAFL as boolean);
     setFocusMode(defs.defaultFocusMode as boolean);
+    setCenterMode(defs.defaultCenterMode as boolean);
     setGlowAppearance(defs.defaultGlowAppearance as boolean);
     setSelectedTooltip?.((defs.defaultSelectedTooltip as boolean) ?? false);
+    setEdgeColorGradient?.((defs.defaultEdgeColorGradient as boolean) ?? false);
+    setEdgeWidthByLevel?.((defs.defaultEdgeWidthByLevel as boolean) ?? false);
     setGridWidth(defs.defaultGridWidth as number);
     setNodeExpand(defs.defaultNodeExpand as number);
     setLineExpand(defs.defaultLineExpand as number);
@@ -229,35 +275,67 @@ export function buildSettings(
     setAxisVis(defs.defaultAxisVis as boolean);
     setAxisTicks(defs.defaultAxisTicks as boolean);
     setGridSp(defs.defaultGridSpacing as number);
-    setAr(defs.defaultAr as number);
     setGraphTheme(defs.defaultGraphTheme as string);
+    if (typeof defs.defaultNodeColorStyle === 'string') setNodeColorStyle?.(defs.defaultNodeColorStyle);
+    if (typeof defs.defaultFontFamily === 'string') setFontFamily?.(defs.defaultFontFamily);
     setCardBorderStyle?.((defs.defaultCardBorderStyle as string) ?? 'straight');
-    getInitSim()(); getSaveData()(); draw();
+    getInitSim()?.(); getSaveData()(); draw();
     rebuild();
+    status.textContent = settingsScope === 'defaults' ? '已恢复内置默认值' : '已将默认值应用到此空间';
   };
 
-  // 重建函数：用于加载预设后同步所有值
-  function rebuild() {
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
-    buildAll();
-  }
+  const status = document.createElement('p');
+  status.className = 'fg-settings-feedback';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  let simDebounce: ReturnType<typeof setTimeout> | null = null;
+  const debouncedInitSim = () => {
+    if (simDebounce) clearTimeout(simDebounce);
+    // The getter follows the focused pane. Capture its bound manager now,
+    // before a focus change can redirect this delayed layout update.
+    const init = getInitSim();
+    simDebounce = setTimeout(() => { simDebounce = null; init?.(); }, 150);
+  };
+  function rebuild() { buildAll(); }
 
   function buildAll() {
-    let _simDebounce: ReturnType<typeof setTimeout> | null = null;
-    const debouncedInitSim = () => {
-      if (_simDebounce) clearTimeout(_simDebounce);
-      _simDebounce = setTimeout(() => { getInitSim()(); }, 150);
-    };
-    // 先清空再构建，确保无论从哪条路径进入都不会残留旧 DOM
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
-    // 每次重建时刷新当前图主题（复用同一个 select 元素）
+    const oldFocus = document.activeElement as HTMLElement | null;
+    const focusKey = oldFocus && container.contains(oldFocus) ? oldFocus.dataset.settingKey : undefined;
+    const openSections = new Set(Array.from(container.querySelectorAll<HTMLDetailsElement>('details'))
+      .filter(section => section.open).map(section => section.dataset.settingSection));
+    container.replaceChildren();
     themeSelect.value = getGraphTheme();
-    // 主题
-    container.appendChild(themeRow);
+    const scopeNote = document.createElement('p');
+    scopeNote.className = 'fg-settings-scope-note';
+    scopeNote.textContent = settingsScope === 'defaults'
+      ? '新空间默认样式'
+      : '当前空间 · 自动保存';
+    container.appendChild(scopeNote);
+    const look = document.createElement('fieldset');
+    look.className = 'fg-settings-fieldset';
+    const legend = document.createElement('legend');
+    legend.textContent = '主题与文字';
+    look.appendChild(legend);
+    container.appendChild(look);
+    look.appendChild(themeRow);
+    if (getNodeColorStyle && setNodeColorStyle) {
+      makeSelect(look, '节点配色', 'node-color', getNodeColorStyle(), [
+        ['uniform', '统一'], ['hierarchical', '分级'], ['spectrum', '多彩分级'], ['spectrum-narrow', '分级窄'],
+      ], value => { setNodeColorStyle(value); updateHeadingPalette(); getSaveData()(); draw(); });
+      look.appendChild(headingPalette);
+      updateHeadingPalette();
+    }
+    if (getFontFamily && setFontFamily) {
+      const selectedFont = getFontFamily();
+      const fonts: [string, string, boolean?][] = [
+        ['system-ui, -apple-system, sans-serif', '系统默认'], ['"SiYuan Songti", serif', '思源宋体'],
+      ];
+      if (hasHuawenCanvasFont()) fonts.push([HUAWEN_CANVAS_FONT, '华文中宋']);
+      else if (selectedFont === HUAWEN_CANVAS_FONT) fonts.push([HUAWEN_CANVAS_FONT, '华文中宋（未导入）', true]);
+      makeSelect(look, '画布字体', 'font', selectedFont, fonts,
+        value => { setFontFamily(value); getSaveData()(); draw(); });
+    }
+    makeSlider(look, '文字大小', 8, 40, getLabelSize(), 1, value => { setLabelSize(value); getSaveData()(); draw(); });
 
     const getForceDensitySettings = (): ForceDensitySettings => ({
       linkDist: getLinkDist(),
@@ -273,12 +351,13 @@ export function buildSettings(
     const densityRow = document.createElement('div');
     densityRow.className = 'fg-setting-row fg-setting-select-row fg-setting-density-row';
     densityRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin:4px 0 8px;';
-    const densityLabel = document.createElement('span');
+    const densityLabel = document.createElement('label');
     densityLabel.className = 'fg-setting-label';
     densityLabel.textContent = settingsScope === 'defaults' ? '默认疏密' : '节点疏密';
     densityLabel.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
     const densitySelect = document.createElement('select');
     densitySelect.className = 'fg-setting-select';
+    connectLabel(densityLabel, densitySelect, 'density');
     densitySelect.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
     for (const preset of Object.keys(FORCE_DENSITY_PRESETS) as ForceDensityPreset[]) {
       const option = document.createElement('option');
@@ -306,10 +385,11 @@ export function buildSettings(
       getInitSim()?.();
       getSaveData()();
       draw();
+      const selected = densitySelect.value;
       rebuild();
+      status.textContent = '已应用' + selected + '布局';
     });
     densityRow.append(densityLabel, densitySelect);
-    container.appendChild(densityRow);
 
     // 高级设置
     const advancedDetails = document.createElement("details");
@@ -324,17 +404,19 @@ export function buildSettings(
     advancedBody.className = 'fg-settings-details-body';
     advancedBody.style.cssText = "padding:4px 0;";
     const onMechanicsChange = () => { densitySelect.value = detectForceDensityPreset(getForceDensitySettings()); };
+    const refreshAppearance = () => { draw(); getSaveData()(); };
 
     // 力学
     const mechanicsDet = document.createElement("details");
     mechanicsDet.className = 'fg-settings-subdetails';
     const mechSum = document.createElement("summary");
     mechSum.className = 'fg-settings-subsummary';
-    mechSum.textContent = "力学参数";
+    mechSum.textContent = "力导向布局";
     mechSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:6px;`;
     mechanicsDet.appendChild(mechSum);
     const mechBody = document.createElement("div");
     mechBody.className = 'fg-settings-subbody';
+    mechBody.appendChild(densityRow);
     makeSlider(mechBody, "连线距离", 30, 300, getLinkDist(), 1, v => { setLinkDist(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
     makeSlider(mechBody, "节点斥力", -500, -10, getCharge(), 10, v => { setCharge(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
     makeSlider(mechBody, "连线强度", 0, 1, getLinkStr(), 0.05, v => { setLinkStr(v); onMechanicsChange(); debouncedInitSim(); getSaveData()(); });
@@ -351,12 +433,11 @@ export function buildSettings(
     appearDet.className = 'fg-settings-subdetails';
     const appearSum = document.createElement("summary");
     appearSum.className = 'fg-settings-subsummary';
-    appearSum.textContent = "外观效果";
+    appearSum.textContent = "节点、连线与交互";
     appearSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:4px;`;
     appearDet.appendChild(appearSum);
     const appearBody = document.createElement("div");
     appearBody.className = 'fg-settings-subbody';
-    makeSlider(appearBody, "文字大小", 8, 40, getLabelSize(), 1, v => { setLabelSize(v); getSaveData()(); });
     makeSlider(appearBody, "编辑面板透明度", 0, 1, getEditPanelOpacity(), 0.05, v => { setEditPanelOpacity(v); getSaveData()(); });
     makeSlider(appearBody, "节点点击扩展", 0, 20, getNodeExpand(), 1, v => { setNodeExpand(v); getSaveData()(); });
     makeSlider(appearBody, "边点击扩展", 0, 20, getLineExpand(), 1, v => { setLineExpand(v); getSaveData()(); });
@@ -370,13 +451,14 @@ export function buildSettings(
       const cbRow = document.createElement("div");
       cbRow.className = 'fg-setting-row fg-setting-select-row';
       cbRow.style.cssText = "display:flex;gap:6px;align-items:center;margin:3px 0;";
-      const cbLb = document.createElement("span");
+      const cbLb = document.createElement("label");
       cbLb.className = 'fg-setting-label';
       cbLb.textContent = "卡片边框风格";
       cbLb.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};width:${V('--fg-label-width', '110px')};flex-shrink:0;text-align:right;`;
       cbRow.appendChild(cbLb);
       const cbSel = document.createElement("select");
       cbSel.className = 'fg-setting-select';
+      connectLabel(cbLb, cbSel, 'card-border');
       cbSel.style.cssText = `flex:1;font-size:${V('--fg-font-md', '0.85em')};`;
       const opt1 = document.createElement("option"); opt1.value = 'straight'; opt1.textContent = '直线';
       const opt2 = document.createElement("option"); opt2.value = 'rounded'; opt2.textContent = '圆角';
@@ -399,9 +481,9 @@ export function buildSettings(
     groupLabelDet.appendChild(glSum);
     const glBody = document.createElement("div");
     glBody.className = 'fg-settings-subbody';
-    makeCheckbox(glBody, "显示集合标签", getShowGLabels(), v => { setShowGLabels(v); getSaveData()(); });
-    makeSlider(glBody, "最小集合标签", 5, 20, getGlMin(), 1, v => { setGlMin(v); getSaveData()(); });
-    makeSlider(glBody, "最大集合标签", 10, 50, getGlMax(), 1, v => { setGlMax(v); getSaveData()(); });
+    makeCheckbox(glBody, "显示集合标签", getShowGLabels(), v => { setShowGLabels(v); refreshAppearance(); });
+    makeSlider(glBody, "最小集合标签", 5, 20, getGlMin(), 1, v => { setGlMin(v); refreshAppearance(); });
+    makeSlider(glBody, "最大集合标签", 10, 50, getGlMax(), 1, v => { setGlMax(v); refreshAppearance(); });
     groupLabelDet.appendChild(glBody);
     advancedBody.appendChild(groupLabelDet);
 
@@ -415,32 +497,27 @@ export function buildSettings(
     gridDet.appendChild(gridSum);
     const gridBody = document.createElement("div");
     gridBody.className = 'fg-settings-subbody';
-    makeCheckbox(gridBody, "显示网格", getGridVis(), v => { setGridVis(v); getSaveData()(); });
-    makeCheckbox(gridBody, "显示坐标轴", getAxisVis(), v => { setAxisVis(v); getSaveData()(); });
-    makeCheckbox(gridBody, "坐标轴刻度", getAxisTicks(), v => { setAxisTicks(v); getSaveData()(); });
-    makeSlider(gridBody, "网格间距", 10, 100, getGridSp(), 5, v => { setGridSp(v); getSaveData()(); });
-    makeSlider(gridBody, "网格线宽", 0.2, 4, getGridWidth(), 0.1, v => { setGridWidth(v); getSaveData()(); });
+    makeCheckbox(gridBody, "显示网格", getGridVis(), v => { setGridVis(v); refreshAppearance(); });
+    makeCheckbox(gridBody, "显示坐标轴", getAxisVis(), v => { setAxisVis(v); refreshAppearance(); });
+    makeCheckbox(gridBody, "坐标轴刻度", getAxisTicks(), v => { setAxisTicks(v); refreshAppearance(); });
+    makeSlider(gridBody, "网格间距", 10, 100, getGridSp(), 5, v => { setGridSp(v); refreshAppearance(); });
+    makeSlider(gridBody, "网格线宽", 0.2, 4, getGridWidth(), 0.1, v => { setGridWidth(v); refreshAppearance(); });
     gridDet.appendChild(gridBody);
     advancedBody.appendChild(gridDet);
-
-    // 性能
-    const perfDet = document.createElement("details");
-    perfDet.className = 'fg-settings-subdetails';
-    const perfSum = document.createElement("summary");
-    perfSum.className = 'fg-settings-subsummary';
-    perfSum.textContent = "性能";
-    perfSum.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;opacity:0.5;margin-top:4px;`;
-    perfDet.appendChild(perfSum);
-    const perfBody = document.createElement("div");
-    perfBody.className = 'fg-settings-subbody';
-    makeCheckbox(perfBody, "性能模式 (RAF 节流)", getUseRAFL(), v => { setUseRAFL(v); if (getSimulation()) getSimulation()!.alpha(0.3).restart(); getSaveData()(); });
-    makeSlider(perfBody, "图区高宽比", 0.3, 1.5, getAr(), 0.05, v => { setAr(v); getSaveData()(); });
-    perfDet.appendChild(perfBody);
-    advancedBody.appendChild(perfDet);
 
     advancedDetails.appendChild(advancedBody);
     container.appendChild(advancedDetails);
     container.appendChild(resetBtn);
+    container.appendChild(status);
+    for (const detail of Array.from(container.querySelectorAll<HTMLDetailsElement>('details'))) {
+      const summary = detail.querySelector('summary');
+      const key = summary?.textContent ?? '';
+      detail.dataset.settingSection = key;
+      if (summary) summary.dataset.settingKey = 'section:' + key;
+      detail.open = openSections.has(key);
+    }
+    if (focusKey) Array.from(container.querySelectorAll<HTMLElement>('[data-setting-key]'))
+      .find(control => control.dataset.settingKey === focusKey)?.focus({ preventScroll: true });
   }
 
   buildAll();

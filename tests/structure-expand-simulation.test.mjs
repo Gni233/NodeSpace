@@ -4,13 +4,14 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { inlineNodeRadiusModule } from './helpers/node-radius-module.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function transpiledDataUrl(filePath, replacements = new Map()) {
-  let source = await readFile(filePath, 'utf8');
+  let source = inlineNodeRadiusModule(await readFile(filePath, 'utf8'));
   for (const [specifier, replacement] of replacements) {
     source = source
       .replaceAll(`from '${specifier}'`, `from '${replacement}'`)
@@ -22,7 +23,7 @@ async function transpiledDataUrl(filePath, replacements = new Map()) {
   return `data:text/javascript;base64,${Buffer.from(output).toString('base64')}`;
 }
 
-async function importSimulation() {
+async function importSimulation(includeManager = false) {
   const sourceRoot = path.join(root, 'src');
   const nodeOrderUrl = await transpiledDataUrl(path.join(sourceRoot, 'node-order.ts'));
   const structureUrl = await transpiledDataUrl(
@@ -44,7 +45,11 @@ async function importSimulation() {
       [ './group-membership', groupUrl ],
     ]),
   );
-  return import(simulationUrl);
+  if (!includeManager) return import(simulationUrl);
+  const staticSimulationUrl = await transpiledDataUrl(path.join(sourceRoot, 'static-simulation.ts'));
+  return import(await transpiledDataUrl(path.join(sourceRoot, 'graph-sim.ts'), new Map([
+    ['d3', d3Url], ['./simulation', simulationUrl], [ './structure-nodes', structureUrl ], ['./static-simulation', staticSimulationUrl],
+  ])));
 }
 
 async function importGraphVisibility() {
@@ -161,4 +166,113 @@ test('collapsed hierarchy exclusions stay local to their pane graph', async () =
 
   assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(paneWithCollapsedHierarchy), new Set(['child']));
   assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(unrelatedPane), new Set());
+});
+
+test('branch folding hides orphaned descendants and preserves shared paths and upward references', async () => {
+  const { getCollapsedHierarchyHiddenNodeIds } = await importGraphVisibility();
+  const graph = {
+    nodes: [
+      { id: 'upstream', headingLevel: 1, collapsed: true },
+      { id: 'root', headingLevel: 2, collapsed: true },
+      { id: 'hidden-branch', headingLevel: 3 },
+      { id: 'hidden-leaf', headingLevel: 4 },
+      { id: 'open-parent', headingLevel: 2 },
+      { id: 'shared', headingLevel: 3 },
+      { id: 'shared-leaf', headingLevel: 4 },
+    ],
+    edges: [
+      { source: 'root', target: 'upstream' },
+      { source: 'root', target: 'hidden-branch' },
+      { source: 'hidden-branch', target: 'hidden-leaf' },
+      { source: 'root', target: 'shared' },
+      { source: 'open-parent', target: { id: 'shared' } },
+      { source: 'shared', target: 'shared-leaf' },
+      { source: 'missing', target: 'hidden-leaf' },
+    ],
+    groups: [],
+  };
+  assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(graph), new Set(['hidden-branch', 'hidden-leaf']));
+  graph.nodes.find(node => node.id === 'root').collapsed = false;
+  assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(graph), new Set());
+});
+
+test('fold commands keep nested flags and shared branches recoverable without changing the graph during planning', async () => {
+  const { getCollapsedHierarchyHiddenNodeIds, getHierarchyFoldActions } = await importGraphVisibility();
+  const graph = {
+    nodes: ['root', 'inside', 'leaf', 'shared', 'shared-leaf', 'outer'].map(id => ({ id })),
+    edges: [
+      { source: 'root', target: 'inside' }, { source: 'inside', target: 'leaf' },
+      { source: 'root', target: 'shared' }, { source: 'shared', target: 'shared-leaf' },
+      { source: 'outer', target: 'shared' }, { source: 'leaf', target: 'leaf' },
+    ],
+    groups: [],
+  };
+  const apply = action => {
+    const ids = getHierarchyFoldActions(graph, 'root').get(action);
+    for (const node of graph.nodes) {
+      if (ids.includes(node.id)) node.collapsed = action.startsWith('collapse');
+    }
+  };
+  const before = structuredClone(graph);
+  assert.deepEqual(getHierarchyFoldActions(graph, 'root').get('collapseAll'), ['root', 'inside']);
+  assert.equal(getHierarchyFoldActions(graph, 'leaf').size, 0);
+  assert.deepEqual(graph, before);
+  apply('collapseAll');
+  assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(graph), new Set(['inside', 'leaf']));
+  assert.deepEqual(getHierarchyFoldActions(graph, 'root').get('expandAll'), ['root', 'inside']);
+  apply('expand');
+  assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(graph), new Set(['leaf']));
+  apply('expand');
+  assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(graph), new Set());
+});
+
+test('a rootless cycle stays visible and a lifted branch below it can still fold', async () => {
+  const { getCollapsedHierarchyHiddenNodeIds } = await importGraphVisibility();
+  const graph = {
+    nodes: [{ id: 'a', collapsed: true }, { id: 'b', collapsed: true }, { id: 'child' }, { id: 'leaf' }],
+    edges: [
+      { source: 'a', target: 'b' }, { source: 'b', target: 'a' },
+      { source: 'b', target: 'child' }, { source: 'child', target: 'leaf' },
+    ],
+    groups: [],
+  };
+  assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(graph), new Set(['child', 'leaf']));
+  graph.nodes[1].collapsed = false;
+  assert.deepEqual(getCollapsedHierarchyHiddenNodeIds(graph), new Set());
+});
+
+test('static and force simulations reuse visible positions and safely rejoin folded nodes without duplicates', async () => {
+  const { createSimManager } = await importSimulation(true);
+  const { getCollapsedHierarchyHiddenNodeIds } = await importGraphVisibility();
+  for (const staticMode of [true, false]) {
+    const graph = {
+      nodes: [{ id: 'root', x: 40, y: 40 }, { id: 'child', x: 80, y: 90 }],
+      edges: [{ source: 'root', target: 'child' }],
+      groups: [],
+    };
+    const hidden = () => getCollapsedHierarchyHiddenNodeIds(graph);
+    const manager = createSimManager(graph, () => 800, () => 600, () => 100, () => .3, () => -100,
+      () => .02, () => 10, () => .8, () => .01, () => 1, hidden, () => {});
+    manager.setStaticMode(staticMode);
+    manager.initSim();
+    try {
+      const sim = manager.getSim();
+      const [rootNode, childNode] = sim.nodes();
+      graph.nodes[0].collapsed = true;
+      manager.refreshHierarchyNodes(hidden(), new Set(['child']));
+      assert.deepEqual(sim.nodes(), [rootNode, childNode]);
+      manager.refreshHierarchyNodes(hidden());
+      assert.deepEqual(sim.nodes(), [rootNode]);
+      if (!staticMode) assert.equal(sim.force('link').links().length, 0);
+      graph.nodes[0].collapsed = false;
+      manager.refreshHierarchyNodes(hidden());
+      assert.equal(manager.getSim(), sim);
+      assert.equal(sim.nodes()[0], rootNode);
+      assert.deepEqual(sim.nodes().map(node => [node.id, node.x, node.y]), [['root', 40, 40], ['child', 80, 90]]);
+      assert.equal(graph.nodes.length, 2);
+      if (!staticMode) assert.equal(sim.force('link').links().length, 1);
+    } finally {
+      manager.dispose();
+    }
+  }
 });

@@ -36,11 +36,6 @@ function ensureState(layer: Container): SemanticSceneState {
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
-function echoColor(echo: SemanticEcho): number {
-  if (echo.kind === 'hybrid') return 0x88c0d0;
-  if (echo.kind === 'embedding') return 0xb48ead;
-  return 0x5e81ac;
-}
 
 function boundaryOffset(node: any, ux: number, uy: number, padding = 5): number {
   const card = node?._semanticCard;
@@ -247,7 +242,7 @@ export function renderSemanticScene(
       const sign = `${focusNodeId}:${otherId}`.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) % 2 ? 1 : -1;
       const bend = sign * Math.min(44, Math.max(16, length * 0.1));
       const control = { x: (start.x + end.x) / 2 - uy * bend, y: (start.y + end.y) / 2 + ux * bend };
-      const color = echoColor(echo);
+      const color = 0x5e81ac;
       const zoomAlpha = 0.66 + zoomProfile.edgeDetailAlpha * 0.34;
       const alpha = clamp(0.26 + echo.score * 0.34, 0.3, 0.62) * zoomAlpha;
       drawDashedQuadratic(state.surface, start, control, end, color, 1.15 + echo.score * 0.7, alpha);

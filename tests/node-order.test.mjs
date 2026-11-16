@@ -27,6 +27,48 @@ async function importTypeScriptModule(filePath, dependencies = {}) {
 
 const nodeOrderPath = path.join(root, 'src', 'node-order.ts');
 
+test('node identities remain unique for rapid edits within the same millisecond', async () => {
+  const { createNodeId } = await importTypeScriptModule(nodeOrderPath);
+  const originalNow = Date.now;
+  Date.now = () => 12345;
+  try {
+    const nodes = [{ id: 'n_12345' }, { id: 'n_12345_1' }];
+    const before = JSON.stringify(nodes);
+    const next = createNodeId(nodes);
+    assert.equal(next, 'n_12345_2');
+    assert.equal(JSON.stringify(nodes), before);
+    nodes.push({ id: next });
+    assert.equal(createNodeId(nodes), 'n_12345_3');
+    assert.equal(createNodeId([]), 'n_12345');
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('group identities reserve their own namespace during rapid creation', async () => {
+  const { createGroupId } = await importTypeScriptModule(nodeOrderPath);
+  const originalNow = Date.now; Date.now = () => 12345;
+  try {
+    const groups = [{ id: 'g_12345' }, { id: 'g_12345_1' }];
+    assert.equal(createGroupId(groups), 'g_12345_2');
+    assert.equal(createGroupId([{ id: 'n_12345' }]), 'g_12345');
+    assert.equal(groups.length, 2);
+  } finally { Date.now = originalNow; }
+});
+
+test('batch identities fill available names once and remain unique against the complete graph', async () => {
+  const { createNodeIds } = await importTypeScriptModule(nodeOrderPath);
+  const originalNow = Date.now; Date.now = () => 12345;
+  try {
+    const nodes = [{ id: 'n_12345' }, { id: 'n_12345_2' }, { id: 'n_12345_99' }];
+    const before = structuredClone(nodes), ids = createNodeIds(nodes, 5000);
+    assert.deepEqual(ids.slice(0, 3), ['n_12345_1', 'n_12345_3', 'n_12345_4']);
+    assert.equal(new Set([...nodes.map(node => node.id), ...ids]).size, nodes.length + 5000);
+    assert.deepEqual(nodes, before); assert.deepEqual(createNodeIds(nodes, 0), []);
+    for (const count of [-1, 1.5, Infinity, NaN]) assert.throws(() => createNodeIds(nodes, count), RangeError);
+  } finally { Date.now = originalNow; }
+});
+
 test('repairCreatedOrders backfills legacy nodes in array order', async () => {
   const { repairCreatedOrders } = await importTypeScriptModule(nodeOrderPath);
   const nodes = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];

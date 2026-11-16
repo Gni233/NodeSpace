@@ -1,13 +1,15 @@
 /** Electron IPC 文件适配器 — 通过 preload.cjs 暴露的 electronAPI 操作本地文件系统 */
 
-import { FileAdapter, FileEntry, Result, joinPath, ok, err, replacePathName } from './file-adapter';
+import { FileAdapter, FileEntry, CreateFileOutcome, type FileFingerprint, isRelativeFilePath, joinPath, ok, err, replacePathName } from './file-adapter';
 
 interface ElectronAPI {
   readFile(path: string): Promise<string | { error: string }>;
-  writeFile(path: string, content: string): Promise<{ ok?: boolean; error?: string }>;
+  stat?(path: string): Promise<(FileFingerprint & { isDir: boolean }) | { error: string } | null>;
+  writeFile(path: string, content: string, expectedContent?: string): Promise<{ ok?: boolean; error?: string; conflict?: boolean; content?: string }>;
+  createGraphFile(mount: string, fileName: string, content: string): Promise<{ outcome: CreateFileOutcome } | { error: string }>;
   readDir(path: string): Promise<({ name: string; kind: 'file' | 'directory' }[])>;
   mkdir(path: string): Promise<{ ok?: boolean; error?: string }>;
-  delete(path: string): Promise<{ ok?: boolean; error?: string }>;
+  delete(path: string, options?: { recursive?: boolean }): Promise<{ ok?: boolean; error?: string }>;
   rename(oldPath: string, newPath: string): Promise<{ ok?: boolean; error?: string }>;
   copy(src: string, dst: string): Promise<{ ok?: boolean; error?: string }>;
   exists(path: string): Promise<boolean>;
@@ -72,6 +74,23 @@ export function createElectronAdapter(mountPath: string): FileAdapter {
       }
     },
 
+    async statFile(fileName) {
+      if (!isRelativeFilePath(fileName)) return err('Invalid file path');
+      try {
+        const ea = getEA();
+        if (!ea?.stat) return err('File metadata unavailable');
+        const result = await ea.stat(resolve(fileName));
+        if (!result) return ok(null);
+        if ('error' in result) return err(result.error);
+        if (result.isDir) return ok(null);
+        const { size, mtime, ctime } = result;
+        if (!Number.isFinite(size) || !Number.isFinite(mtime)) return err('File metadata unavailable');
+        return ok({ size, mtime, ...(Number.isFinite(ctime) ? { ctime } : {}) });
+      } catch {
+        return err('Unable to inspect file');
+      }
+    },
+
     async writeFile(fileName, data) {
       try {
         const ea = getEA();
@@ -84,14 +103,25 @@ export function createElectronAdapter(mountPath: string): FileAdapter {
       }
     },
 
-    async deleteFile(fileName) {
+    async createFile(fileName, data) {
+      try {
+        const ea = getEA();
+        if (!ea?.createGraphFile) return err('Exclusive graph creation is unavailable in this Electron version');
+        const result = await ea.createGraphFile(mountPath, fileName, data);
+        return 'outcome' in result ? ok(result.outcome) : err(result.error);
+      } catch (error) {
+        return err(error instanceof Error ? error.message : 'Electron create failed');
+      }
+    },
+
+    async deleteFile(fileName, options) {
       try {
         const ea = getEA();
         if (!ea) return err('Electron API not available');
-        await ea.delete(resolve(fileName));
-        return ok(true);
-      } catch {
-        return ok(true); // idempotent
+        const result = await ea.delete(resolve(fileName), options);
+        return result?.ok === true ? ok(true) : err(result?.error || 'Electron delete failed');
+      } catch (error) {
+        return err(error instanceof Error ? error.message : 'Electron delete failed');
       }
     },
 
@@ -101,10 +131,10 @@ export function createElectronAdapter(mountPath: string): FileAdapter {
         if (!ea) return err('Electron API not available');
         const normalizedName = newName.endsWith('.json') ? newName : newName + '.json';
         const newPath = replacePathName(oldPath, normalizedName);
-        await ea.rename(resolve(oldPath), resolve(newPath));
-        return ok(true);
-      } catch (e: any) {
-        return err(e.message || 'Electron rename failed');
+        const result = await ea.rename(resolve(oldPath), resolve(newPath));
+        return result?.ok === true ? ok(true) : err(result?.error || 'Electron rename failed');
+      } catch (error) {
+        return err(error instanceof Error ? error.message : 'Electron rename failed');
       }
     },
 

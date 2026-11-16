@@ -5,13 +5,14 @@ export interface TabCallbacks {
   onSwitchTab: (fileName: string) => void;
   onCloseTab: (fileName: string) => void;
   onNewTab: () => void;
-  onReorder?: (from: number, to: number) => void;
+  onReorder?: (from: number, to: number, paneIndex: number) => void;
   onSplitTab?: (fileName: string) => void;
   onToggleSplit?: () => void;
 }
 
 export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
-  const tabBar = document.createElement('div');
+  const tabBar = document.createElement('nav');
+  tabBar.setAttribute('aria-label', '打开的空间');
   tabBar.className = 'fg-tab-bar';
   tabBar.style.cssText =
     'display:flex;align-items:center;gap:2px;padding:2px 4px;' +
@@ -29,14 +30,22 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
   let splitDivider: HTMLDivElement | null = null;
   container.insertBefore(tabBar, container.firstChild);
 
-  // 自定义拖拽状态
-  let dragEl: HTMLElement | null = null;
-  let dragClone: HTMLElement | null = null;
-  let dragSrcIdx = -1;
-  let dragSrcPaneIdx = -1;
-  let dragStartX = 0;
-  let dragOriginLeft = 0;
-  let dragMoved = false;
+  let cancelDrag: (() => void) | null = null;
+  const switches = () => Array.from(tabsContainer.querySelectorAll<HTMLButtonElement>('[data-tab-switch]'));
+  tabsContainer.addEventListener('keydown', event => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const tab = (event.target as HTMLElement).closest<HTMLElement>('[data-tab-idx]');
+    if (!tab) return;
+    const buttons = switches();
+    const current = buttons.findIndex(button => tab.contains(button));
+    if (current < 0) return;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+      : (current + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+    event.preventDefault();
+    event.stopPropagation();
+    buttons[next]?.focus();
+  });
 
   // 内建渲染
   const renderOne = (tabs: string[], active: string, dirty?: Set<string>, paneIdx?: number) => {
@@ -49,6 +58,7 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       const displayName = vaultDisplayName(fileName);
 
       tab.dataset.tabIdx = String(i);
+      tab.dataset.fileName = fileName;
       if (paneIdx != null) tab.dataset.paneIdx = String(paneIdx);
       tab.style.cssText =
         'display:flex;align-items:center;gap:4px;padding:3px 10px;' +
@@ -67,88 +77,68 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
           : `background:transparent;border:1px solid transparent;` +
             `color:${V('--fg-tab-inactive', 'rgba(255,255,255,0.55)')};`);
 
-      // ── 自定义拖拽排序（限位在标签栏内）──
+      // Native click is the sole activation path; a drag suppresses its trailing click.
+      let suppressPointerClick = false;
       tab.onpointerdown = (e) => {
-        if ((e.target as HTMLElement).closest('[data-tab-close]')) return;
-        if (e.button !== 0) return;
+        if ((e.target as HTMLElement).closest('[data-tab-close]') || e.button !== 0) return;
+        cancelDrag?.();
+        suppressPointerClick = false;
         const ox = e.clientX, oy = e.clientY;
-        let started = false;
-        let dragCloneRect: DOMRect | null = null;
-
-        const onMove = (ev: PointerEvent) => {
-          if (started) {
-            if (!dragClone) return;
-            dragMoved = true;
-            const dx = ev.clientX - dragStartX;
-            let nl = dragOriginLeft + dx;
-            const barW = tabBar.getBoundingClientRect().width;
-            const cw = dragClone.offsetWidth;
-            nl = Math.max(0, Math.min(barW - cw, nl));
-            dragClone.style.left = nl + 'px';
-            dragCloneRect = { left: nl, width: cw } as any;
-            const cx = nl + cw / 2;
-            // 更新指示线（用缓存 rect 避免每帧全量查询）
-            const allTabs = Array.from(tabsContainer.querySelectorAll('[data-tab-idx]')) as HTMLElement[];
-            for (const el of allTabs) el.style.borderLeft = '';
-            for (const sib of allTabs) {
-              const si = parseInt(sib.dataset.tabIdx!);
-              if (si === dragSrcIdx) continue;
-              const sr = sib.getBoundingClientRect();
-              if (cx < sr.left + sr.width / 2) {
-                sib.style.borderLeft = `2px solid var(--fg-accent,#5B8FF9)`;
-                break;
-              }
-            }
-            return;
-          }
-          if (Math.abs(ev.clientX - ox) + Math.abs(ev.clientY - oy) < 4) return;
-          started = true;
-          dragEl = tab; dragSrcIdx = i; dragSrcPaneIdx = paneIdx ?? 0;
-          dragMoved = false;
-          dragClone = tab.cloneNode(true) as HTMLElement;
-          dragClone.style.cssText = tab.style.cssText +
-            'position:absolute;z-index:50;pointer-events:none;opacity:0.85;' +
-            'box-shadow:0 2px 8px rgba(0,0,0,0.3);';
-          const rect = tab.getBoundingClientRect();
-          const barRect = tabBar.getBoundingClientRect();
-          dragClone.style.left = (rect.left - barRect.left) + 'px';
-          dragClone.style.top = (rect.top - barRect.top) + 'px';
-          dragClone.style.width = rect.width + 'px';
-          dragStartX = ev.clientX;
-          dragOriginLeft = rect.left - barRect.left;
-          tab.style.opacity = '0.3';
-          tabBar.appendChild(dragClone);
-        };
-
-        const onUp = () => {
+        const pointerId = e.pointerId;
+        let clone: HTMLElement | null = null;
+        let center = ox;
+        const siblings = () => Array.from(tabsContainer.querySelectorAll<HTMLElement>('[data-tab-idx]'))
+          .filter(el => el.dataset.paneIdx === String(paneIdx ?? 0));
+        const cleanup = () => {
           window.removeEventListener('pointermove', onMove);
           window.removeEventListener('pointerup', onUp);
-          if (!started) { tab.click(); return; }
-          if (dragClone) { dragClone.remove(); dragClone = null; }
-          const allTabs = Array.from(tabsContainer.querySelectorAll('[data-tab-idx]')) as HTMLElement[];
-          for (const el of allTabs) el.style.borderLeft = '';
-          if (dragEl) { dragEl.style.opacity = '1'; dragEl = null; }
-          if (dragMoved && dragCloneRect) {
-            let ti = dragSrcIdx;
-            const cx = dragCloneRect.left + dragCloneRect.width / 2;
-            for (const sib of allTabs) {
-              const si = parseInt(sib.dataset.tabIdx!);
-              if (si === dragSrcIdx) continue;
-              const sr = sib.getBoundingClientRect();
-              if (cx < sr.left + sr.width / 2) { ti = si; break; }
-              ti = si + 1;
-            }
-            if (ti !== dragSrcIdx) callbacks.onReorder?.(dragSrcIdx, Math.min(ti, tabs.length - 1));
-          }
-          dragSrcIdx = -1; dragSrcPaneIdx = -1;
+          window.removeEventListener('pointercancel', onCancel);
+          clone?.remove();
+          tab.style.opacity = '';
+          for (const el of siblings()) el.style.borderLeft = '';
+          cancelDrag = null;
         };
-
+        const onMove = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
+          if (!clone && Math.abs(ev.clientX - ox) + Math.abs(ev.clientY - oy) < 4) return;
+          if (!clone) {
+            suppressPointerClick = true;
+            clone = tab.cloneNode(true) as HTMLElement;
+            clone.setAttribute('aria-hidden', 'true');
+            clone.inert = true;
+            clone.style.cssText = tab.style.cssText + 'position:absolute;z-index:50;pointer-events:none;opacity:.85;';
+            clone.style.width = tab.getBoundingClientRect().width + 'px';
+            tab.style.opacity = '.3';
+            tabBar.appendChild(clone);
+          }
+          const rect = tab.getBoundingClientRect(), bar = tabBar.getBoundingClientRect();
+          const left = Math.max(0, Math.min(bar.width - rect.width, rect.left - bar.left + ev.clientX - ox));
+          clone.style.left = left + 'px';
+          clone.style.top = (rect.top - bar.top) + 'px';
+          center = bar.left + left + rect.width / 2;
+          const others = siblings().filter(el => el !== tab);
+          for (const el of others) el.style.borderLeft = '';
+          const before = others.find(el => { const r = el.getBoundingClientRect(); return center < r.left + r.width / 2; });
+          if (before) before.style.borderLeft = '2px solid var(--fg-accent)';
+        };
+        const onUp = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
+          const wasDragging = !!clone;
+          const bounds = siblings().map(el => el.getBoundingClientRect());
+          const insidePane = ev.clientX >= Math.min(...bounds.map(r => r.left))
+            && ev.clientX <= Math.max(...bounds.map(r => r.left + r.width));
+          const others = siblings().filter(el => el !== tab);
+          const to = others.filter(el => { const r = el.getBoundingClientRect(); return center >= r.left + r.width / 2; }).length;
+          cleanup();
+          if (wasDragging && insidePane && to !== i) callbacks.onReorder?.(i, to, paneIdx ?? 0);
+        };
+        const onCancel = (ev: PointerEvent) => { if (ev.pointerId === pointerId) cleanup(); };
+        cancelDrag = cleanup;
         window.addEventListener('pointermove', onMove);
-        window.addEventListener('pointerup', onUp, { once: true });
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onCancel);
       };
-      tab.ondragstart = (e) => e.preventDefault(); // 禁用原生拖拽
-
-      tab.onclick = () => { if (!isActive) callbacks.onSwitchTab(fileName); };
+      tab.ondragstart = (e) => e.preventDefault();
 
       // 右键菜单（+ 分屏）
       tab.addEventListener('contextmenu', (e) => {
@@ -192,15 +182,28 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
       });
 
       // 标签名
-      const label = document.createElement('span');
+      const label = document.createElement('button');
+      label.type = 'button';
+      label.className = 'fg-tab-switch';
+      label.dataset.tabSwitch = 'true';
+      label.setAttribute('aria-label', `打开 ${displayName}${isDirty ? '，未保存' : ''}，窗格 ${(paneIdx ?? 0) + 1}`);
+      label.setAttribute('aria-pressed', String(isActive));
+      label.title = displayName;
       label.textContent = displayName + (isDirty ? ' \u25CF' : '');
       label.style.cssText = 'max-width:120px;overflow:hidden;text-overflow:ellipsis;flex-shrink:1;';
       if (isDirty) label.style.color = V('--fg-accent', '#5B8FF9');
-      label.onclick = (e) => { e.stopPropagation(); if (!isActive) callbacks.onSwitchTab(fileName); };
+      label.onclick = (e) => {
+        e.stopPropagation();
+        if (suppressPointerClick && e.detail !== 0) return;
+        if (!isActive) callbacks.onSwitchTab(fileName);
+      };
       tab.appendChild(label);
 
       // 关闭按钮
-      const closeBtn = document.createElement('span');
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'fg-tab-close';
+      closeBtn.setAttribute('aria-label', `关闭 ${displayName}，窗格 ${(paneIdx ?? 0) + 1}`);
       closeBtn.textContent = '\u2715';
       closeBtn.title = '关闭页面';
       closeBtn.dataset.tabClose = 'true';
@@ -217,13 +220,20 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
         closeBtn.style.color = V('--fg-text-muted', 'rgba(255,255,255,0.4)');
         closeBtn.style.background = 'transparent';
       };
+      let closing = false;
       closeBtn.onclick = async (e) => {
         e.stopPropagation();
+        if (closing) return;
+        closing = true;
         if (isDirty) {
           const confirmed = await confirmAction(`"${displayName}" 有未保存的更改，确定关闭？`);
-          if (!confirmed) return;
+          if (!confirmed) { closing = false; closeBtn.focus(); return; }
         }
+        // The confirmation dialog may have owned focus; restore the tab anchor
+        // before the callback rebuilds the bar and selects its surviving neighbour.
+        closeBtn.focus({ preventScroll: true });
         callbacks.onCloseTab(fileName);
+        closing = false;
       };
       tab.appendChild(closeBtn);
       tab.onmouseenter = () => {
@@ -239,7 +249,14 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
     }
   };
 
-  const renderTabs = (groups: { tabs: string[]; active: string; dirty?: Set<string> }[]) => {
+  const renderTabs = (groups: { tabs: string[]; active: string; dirty?: Set<string>; paneIndex?: number }[]) => {
+    const focused = document.activeElement as HTMLElement | null;
+    const focusedTab = focused?.closest<HTMLElement>('[data-tab-idx]');
+    const restore = focusedTab && tabsContainer.contains(focusedTab) ? {
+      fileName: focusedTab.dataset.fileName, pane: focusedTab.dataset.paneIdx,
+      close: focused?.hasAttribute('data-tab-close'), index: switches().findIndex(button => focusedTab.contains(button)),
+    } : null;
+    cancelDrag?.();
     tabsContainer.innerHTML = '';
     if (splitDivider) { splitDivider.remove(); splitDivider = null; }
 
@@ -249,10 +266,20 @@ export function createTabBar(container: HTMLElement, callbacks: TabCallbacks) {
         div.style.cssText = `width:1px;align-self:stretch;margin:2px 4px;background:${V('--fg-accent','#5B8FF9')};opacity:0.4;flex-shrink:0;`;
         tabsContainer.appendChild(div);
       }
-      renderOne(groups[g].tabs, groups[g].active, groups[g].dirty, g);
+      renderOne(groups[g].tabs, groups[g].active, groups[g].dirty, groups[g].paneIndex ?? g);
+    }
+    if (restore) {
+      const tabs = Array.from(tabsContainer.querySelectorAll<HTMLElement>('[data-tab-idx]'));
+      const same = tabs.find(tab => tab.dataset.fileName === restore.fileName && tab.dataset.paneIdx === restore.pane);
+      const target = same?.querySelector<HTMLButtonElement>(restore.close ? '[data-tab-close]' : '[data-tab-switch]')
+        ?? switches()[Math.min(restore.index, switches().length - 1)];
+      if (target) target.focus({ preventScroll: true });
+      else { tabBar.tabIndex = -1; tabBar.focus({ preventScroll: true }); }
     }
     requestAnimationFrame(() => {
-      const activeTab = tabsContainer.querySelector<HTMLElement>('.fg-tab.is-active');
+      const activeTab = tabsContainer.contains(document.activeElement)
+        ? (document.activeElement as HTMLElement).closest<HTMLElement>('[data-tab-idx]')
+        : tabsContainer.querySelector<HTMLElement>('.fg-tab.is-active');
       if (!activeTab) return;
       const left = activeTab.offsetLeft;
       const right = left + activeTab.offsetWidth;

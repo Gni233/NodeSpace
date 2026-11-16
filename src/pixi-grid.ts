@@ -22,6 +22,7 @@ export function updateGrid(
     axisTicks: boolean;
     gridSp: number;
     gridWidth: number;
+    color?: number;
     nodes: any[];
     transform: Transform;
     /** 拖拽中的节点位置（用于点阵磁吸放大效果） */
@@ -31,6 +32,7 @@ export function updateGrid(
 ) {
   const cache = getCache(gridLayer);
   const { gridVis, gridMode = 'line', axisVis, axisTicks, gridSp, gridWidth, nodes, transform, dragX, dragY } = opts;
+  const gridColor = opts.color ?? 0x888888;
 
   const hasDrag = dragX != null && dragY != null;
   const gridLods = getGridLodLevels(transform.k);
@@ -47,8 +49,9 @@ export function updateGrid(
   const qy = Math.round(transform.y / snapQ) * snapQ;
   const qk = Math.round(transform.k * 100) / 100;
   const key = `${nodeHash}|${hasDrag ? `${Math.round(dragX! / 5) * 5}|${Math.round(dragY! / 5) * 5}|` : ''}${qx}|${qy}|${qk}|${gw}|${gh}|${gridVis}|${gridMode}|${axisVis}|${axisTicks}|${gridSp}|${gridWidth}`;
-  if (key === cache.lastKey && cache.gfx) return;
-  cache.lastKey = key;
+  const themedKey = `${key}|${gridColor}`;
+  if (themedKey === cache.lastKey && cache.gfx) return;
+  cache.lastKey = themedKey;
 
   // 复用 Graphics
   if (!cache.gfx) {
@@ -79,10 +82,10 @@ export function updateGrid(
 
   // 节点引力参数
   const NODE_RANGE = step * 3;     // 节点影响范围（3格距，默认90px）
-  const NODE_MAX_SCALE = 1.2;      // 最大基础放大
+  const NODE_MAX_SCALE = 0.24;     // 节点附近保留轻微的空间反馈
   // 拖拽磁吸参数（更大，覆盖在基础之上）
   const DRAG_RANGE = step * 4;
-  const DRAG_MAX_SCALE = 2.0;
+  const DRAG_MAX_SCALE = 0.8;
 
   const baseXStart = alignedGridStart(bounds.minX, step, 1);
   const baseXEnd = bounds.maxX + step * 2;
@@ -96,8 +99,8 @@ export function updateGrid(
   // 网格层始终锚定世界原点；缩小时各密度层只会单向淡出。
   if (gridVis && gridLods.length > 0) {
     if (gridMode === 'dot') {
-      const dotRadius = gridWorldSize(Math.max(1.2, gridWidth * 3), transform.k, 0.85);
-      const majorDotRadius = dotRadius * 2.2;
+      const dotRadius = gridWorldSize(Math.max(0.55, gridWidth * 1.3), transform.k, 0.55);
+      const majorDotRadius = dotRadius * 1.5;
 
       // 节点引力（只处理可见区域附近的节点，避免每帧遍历全部节点）
       const influence = new Map<string, { scale: number; alpha: number }>();
@@ -121,7 +124,7 @@ export function updateGrid(
             const k = cellKey(gx, gy);
             const prev = influence.get(k);
             if (!prev || v > prev.scale) {
-              influence.set(k, { scale: v, alpha: 0.15 * v });
+              influence.set(k, { scale: v, alpha: 0.025 * v });
             }
           }
         }
@@ -142,7 +145,7 @@ export function updateGrid(
             if (coarserSkips.some(skip => pointOnLattice(x, y, skip))) continue;
             const major = x % (step * 5) === 0 && y % (step * 5) === 0;
             let r = major ? majorDotRadius : dotRadius;
-            let a = (major ? 0.35 : 0.18) * lod.alpha;
+            let a = (major ? 0.24 : 0.12) * lod.alpha;
 
             // 节点基础引力
             const inf = influence.get(cellKey(x, y));
@@ -163,7 +166,7 @@ export function updateGrid(
                 a = Math.min(0.65 * lod.alpha, a + 0.3 * ease * lod.alpha);
               }
             }
-            cache.gfx.circle(x, y, r).fill({ color: 0x888888, alpha: a });
+            cache.gfx.circle(x, y, r).fill({ color: gridColor, alpha: a });
             if (covered) covered.add(cellKey(x, y));
           }
         }
@@ -178,7 +181,7 @@ export function updateGrid(
           const major = sx % (step * 5) === 0 && sy % (step * 5) === 0;
           let r = major ? majorDotRadius : dotRadius;
           r *= 1 + NODE_MAX_SCALE * inf.scale;
-          let a = ((major ? 0.35 : 0.18) + inf.alpha) * gridVisibility;
+          let a = ((major ? 0.24 : 0.12) + inf.alpha) * gridVisibility;
 
           if (hasDrag) {
             const ddx = sx - dragX!;
@@ -191,7 +194,7 @@ export function updateGrid(
               a = Math.min(0.65 * gridVisibility, a + 0.3 * ease * gridVisibility);
             }
           }
-          cache.gfx.circle(sx, sy, r).fill({ color: 0x888888, alpha: a });
+          cache.gfx.circle(sx, sy, r).fill({ color: gridColor, alpha: a });
         }
       }
     } else {
@@ -207,12 +210,12 @@ export function updateGrid(
         for (let x = xStart; x <= xEnd; x += effStep) {
           if (coarserSkips.some(skip => axisPointOnLattice(x, skip))) continue;
           const major = x % (step * 5) === 0;
-          cache.gfx.moveTo(x, bounds.minY).lineTo(x, bounds.maxY).stroke({ color: 0x888888, width: major ? lineWidth * 1.5 : lineWidth, alpha: (major ? 0.15 : 0.05) * lod.alpha });
+          cache.gfx.moveTo(x, bounds.minY).lineTo(x, bounds.maxY).stroke({ color: gridColor, width: major ? lineWidth * 1.5 : lineWidth, alpha: (major ? 0.15 : 0.05) * lod.alpha });
         }
         for (let y = yStart; y <= yEnd; y += effStep) {
           if (coarserSkips.some(skip => axisPointOnLattice(y, skip))) continue;
           const major = y % (step * 5) === 0;
-          cache.gfx.moveTo(bounds.minX, y).lineTo(bounds.maxX, y).stroke({ color: 0x888888, width: major ? lineWidth * 1.5 : lineWidth, alpha: (major ? 0.15 : 0.05) * lod.alpha });
+          cache.gfx.moveTo(bounds.minX, y).lineTo(bounds.maxX, y).stroke({ color: gridColor, width: major ? lineWidth * 1.5 : lineWidth, alpha: (major ? 0.15 : 0.05) * lod.alpha });
         }
       }
     }
@@ -223,7 +226,7 @@ export function updateGrid(
     if (gridMode === 'dot') {
       // 原点始终可见
       const axisDotR = Math.max(2.5, lineWidth * 5);
-      cache.gfx.circle(0, 0, axisDotR * 1.4).fill({ color: 0x888888, alpha: 0.65 });
+      cache.gfx.circle(0, 0, axisDotR * 1.4).fill({ color: gridColor, alpha: 0.65 });
       for (let lodIndex = 0; lodIndex < gridLods.length; lodIndex++) {
         const lod = gridLods[lodIndex];
         const coarserSkips = gridLods.slice(0, lodIndex).map(level => level.skip);
@@ -235,17 +238,17 @@ export function updateGrid(
         for (let x = xStart; x <= xEnd; x += effStep) {
           if (Math.abs(x) < 1) continue;
           if (coarserSkips.some(skip => axisPointOnLattice(x, skip))) continue;
-          cache.gfx.circle(x, 0, axisDotR).fill({ color: 0x888888, alpha: 0.5 * lod.alpha });
+          cache.gfx.circle(x, 0, axisDotR).fill({ color: gridColor, alpha: 0.5 * lod.alpha });
         }
         for (let y = yStart; y <= yEnd; y += effStep) {
           if (Math.abs(y) < 1) continue;
           if (coarserSkips.some(skip => axisPointOnLattice(y, skip))) continue;
-          cache.gfx.circle(0, y, axisDotR).fill({ color: 0x888888, alpha: 0.5 * lod.alpha });
+          cache.gfx.circle(0, y, axisDotR).fill({ color: gridColor, alpha: 0.5 * lod.alpha });
         }
       }
     } else {
-      cache.gfx.moveTo(0, bounds.minY).lineTo(0, bounds.maxY).stroke({ color: 0x666666, width: lineWidth, alpha: 0.4 });
-      cache.gfx.moveTo(bounds.minX, 0).lineTo(bounds.maxX, 0).stroke({ color: 0x666666, width: lineWidth, alpha: 0.4 });
+      cache.gfx.moveTo(0, bounds.minY).lineTo(0, bounds.maxY).stroke({ color: gridColor, width: lineWidth, alpha: 0.4 });
+      cache.gfx.moveTo(bounds.minX, 0).lineTo(bounds.maxX, 0).stroke({ color: gridColor, width: lineWidth, alpha: 0.4 });
     }
   }
 
@@ -263,15 +266,15 @@ export function updateGrid(
     const tickSize = 4 / transform.k;
     for (let x = Math.floor(bounds.minX / tickStep) * tickStep; x <= bounds.maxX; x += tickStep) {
       if (Math.abs(x) < 1) continue;
-      cache.gfx.moveTo(x, -tickSize).lineTo(x, tickSize).stroke({ color: 0x888888, width: lineWidth, alpha: 0.4 });
-      const label = new Text({ text: String(x), resolution: 2, style: { fontSize: 9, fill: 0x888888, fontFamily: 'monospace' } as any });
+      cache.gfx.moveTo(x, -tickSize).lineTo(x, tickSize).stroke({ color: gridColor, width: lineWidth, alpha: 0.4 });
+      const label = new Text({ text: String(x), resolution: 2, style: { fontSize: 9, fill: gridColor, fontFamily: 'monospace' } as any });
       label.anchor.set(0.5, 0); label.position.set(x, tickSize + 2 / transform.k);
       gridLayer.addChild(label);
     }
     for (let y = Math.floor(bounds.minY / tickStep) * tickStep; y <= bounds.maxY; y += tickStep) {
       if (Math.abs(y) < 1) continue;
-      cache.gfx.moveTo(-tickSize, y).lineTo(tickSize, y).stroke({ color: 0x888888, width: lineWidth, alpha: 0.4 });
-      const label = new Text({ text: String(y), resolution: 2, style: { fontSize: 9, fill: 0x888888, fontFamily: 'monospace' } as any });
+      cache.gfx.moveTo(-tickSize, y).lineTo(tickSize, y).stroke({ color: gridColor, width: lineWidth, alpha: 0.4 });
+      const label = new Text({ text: String(y), resolution: 2, style: { fontSize: 9, fill: gridColor, fontFamily: 'monospace' } as any });
       label.anchor.set(1, 0.5); label.position.set(-tickSize - 2 / transform.k, y);
       gridLayer.addChild(label);
     }

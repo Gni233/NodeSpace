@@ -67,7 +67,8 @@ test('canvas event disposer explicitly unregisters external listeners and pane l
   assert.match(eventsSource, /canvas\.removeEventListener\("pointerleave", onPointerLeave\)/);
   assert.match(eventsSource, /canvas\.removeEventListener\("contextmenu", onContextMenu\)/);
   assert.match(eventsSource, /ctx\.viewport\?\.off\?\.\('drag-start', onViewportDragStart\)/);
-  assert.match(eventsSource, /tooltip\.remove\(\)/);
+  assert.match(eventsSource, /hideNotePreview\(\);\s*notePreview\.destroy\(\)/);
+  assert.match(eventsSource, /canvas\.removeEventListener\('wheel', hideNotePreview\)/);
   assert.match(eventsSource, /for \(const timer of pendingTimers\) clearTimeout\(timer\)/);
   assert.match(eventsSource, /canvas\.releasePointerCapture\(activePointerId\)/);
   assert.match(eventsSource, /if \(ctx\.viewport && !ctx\.isCardGridMode\?\.\(\)\) ctx\.viewport\.pause = false/);

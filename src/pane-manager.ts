@@ -17,6 +17,7 @@ import { sharedState } from './shared-state';
 import { NodeSprite } from './pixi-nodes';
 import { GraphData } from './data/storage';
 import { nodeContainsPoint } from './geometry/hit';
+import { renderedNodeTitleHitBounds } from './node-title-hit';
 import { isNodeInGroup } from './group-membership';
 import { getStructureProjection } from './structure-nodes';
 
@@ -294,6 +295,7 @@ function createEventsContextForPane(
     getCanvas: () => px.app.canvas as any,
     captureMagnifierRegion: region => px.captureMagnifierRegion(region),
     getNodeExpand: () => pi.nodeExpand,
+    getNodeTitleBounds: (node, x, y) => renderedNodeTitleHitBounds(sprites.get(node.id), px.viewport, x, y),
     getLineExpand: () => pi.lineExpand,
     getSemanticEdgeRouting: () => pi.activeMode === 'auto',
     getDraggingNode: () => pi.draggingNode,
@@ -304,14 +306,6 @@ function createEventsContextForPane(
     draw: () => ext.onDraw(),
     onContextMenu: (type, id, x, y) => ext.onContextMenu(pi, type, id, x, y),
 
-    fixNode: (id: string) => {
-      const n = pi.graph.nodes.find(gn => gn.id === id);
-      if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; }
-      const sim = getSim();
-      if (sim) { const sn = sim.nodes().find((s: any) => s.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } }
-      ext.onScheduleSave(pi);
-      ext.onDraw();
-    },
     isFixedNode: (id: string) => {
       return pi.graph.nodes.find(gn => gn.id === id)?.fixed || false;
     },

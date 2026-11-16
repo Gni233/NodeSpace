@@ -1,0 +1,112 @@
+.ns-file-tree {
+  --ns-file-tree-paper: var(--ns-home-paper, var(--fg-surface, #faf9f5));
+  --ns-file-tree-ink: var(--ns-home-ink, var(--fg-text, #28261f));
+  --ns-file-tree-muted: var(--ns-home-muted, var(--fg-text-muted, #625e50));
+  --ns-file-tree-accent: var(--ns-home-accent, var(--fg-accent, #a44d35));
+  --ns-file-tree-rule: var(--ns-home-rule, color-mix(in srgb, var(--ns-file-tree-ink) 16%, transparent));
+  box-sizing: border-box;
+  position: relative;
+  flex: 0 0 auto;
+  color: var(--ns-file-tree-ink);
+  -webkit-app-region: no-drag;
+}
+
+.ns-file-tree summary {
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.ns-file-tree > summary {
+  padding: 7px 12px;
+  border: 1px solid var(--ns-file-tree-rule);
+  background: var(--ns-file-tree-paper);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ns-file-tree summary:hover,
+.ns-file-tree .ns-file-tree-panel button:hover {
+  background: color-mix(in srgb, var(--ns-file-tree-ink) 7%, var(--ns-file-tree-paper));
+}
+
+.ns-file-tree :is(summary, button):focus-visible {
+  outline: 2px solid var(--ns-file-tree-accent);
+  outline-offset: -2px;
+}
+
+.ns-file-tree-panel {
+  box-sizing: border-box;
+  position: absolute;
+  z-index: 10;
+  inset-block-start: calc(100% + 8px);
+  inset-inline-end: 0;
+  width: min(330px, calc(100vw - 36px));
+  max-height: min(55dvh, 420px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+  border: 1px solid var(--ns-file-tree-rule);
+  border-radius: 10px;
+  background: var(--ns-file-tree-paper);
+  box-shadow: 0 10px 25px color-mix(in srgb, var(--ns-file-tree-ink) 16%, transparent);
+  font: 400 13px/1.4 system-ui, sans-serif;
+}
+
+.ns-home-context-tree {
+  position: absolute;
+  z-index: 10;
+  inset-block-start: calc(var(--fg-shell-inset-block, 8px) + var(--ns-home-safe-top, 0px));
+  inset-inline-start: calc(var(--fg-shell-inset-inline, 12px) + var(--ns-home-safe-left, 0px));
+}
+
+.ns-home-context-tree .ns-file-tree-panel {
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inset-inline-end: auto;
+  width: min(330px, calc(100vw - 2 * var(--fg-shell-inset-inline, 12px) - var(--ns-home-safe-left, 0px) - var(--ns-home-safe-right, 0px)));
+  max-height: min(55dvh, 420px, calc(100dvh - 2 * var(--fg-shell-inset-block, 8px) - var(--ns-home-safe-top, 0px) - var(--ns-home-safe-bottom, 0px)));
+  border-color: var(--ns-stroke, var(--ns-file-tree-rule));
+  border-radius: var(--ns-radius-panel, 10px);
+  background: var(--ns-frosted-panel, var(--ns-file-tree-paper));
+  box-shadow: var(--ns-frosted-rim), var(--ns-shadow-panel);
+  backdrop-filter: var(--ns-frosted-filter);
+  -webkit-backdrop-filter: var(--ns-frosted-filter);
+  -webkit-touch-callout: none;
+}
+
+.ns-file-tree-panel ul { margin: 0; padding: 0; list-style: none; }
+.ns-file-tree-panel details > ul { margin-inline-start: 14px; padding-inline-start: 5px; border-inline-start: 1px solid var(--ns-file-tree-rule); }
+.ns-file-tree-panel details > summary { font-weight: 600; overflow-wrap: anywhere; }
+.ns-file-tree-panel p { margin: 7px 8px; color: var(--ns-file-tree-muted); }
+
+.ns-file-tree .ns-file-tree-panel button {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ns-file-tree .ns-file-tree-panel button[aria-current="page"] {
+  background: color-mix(in srgb, var(--ns-file-tree-accent) 12%, var(--ns-file-tree-paper));
+  font-weight: 650;
+}
+
+@media (pointer: coarse) {
+  .ns-file-tree .ns-file-tree-panel :is(summary, button) {
+    box-sizing: border-box;
+    min-height: 44px;
+    padding-block: 10px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}

@@ -1,0 +1,205 @@
+/* Editor-owned presentation. All color comes from the active theme. */
+.fg-inspector.fg-inspector-editor {
+  scroll-padding-top: 68px;
+  overscroll-behavior-y: contain;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-titlebar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  flex-shrink: 0;
+  background: var(--ns-frosted-panel, var(--fg-surface));
+  backdrop-filter: var(--ns-frosted-filter);
+  -webkit-backdrop-filter: var(--ns-frosted-filter);
+  min-height: 54px;
+  margin-bottom: 12px;
+  margin-inline: 0;
+  padding-inline: 0 !important;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-identity {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-title { font-size: 15px; font-weight: 650; }
+.fg-inspector.fg-inspector-editor .fg-inspector-eyebrow {
+  font-size: 11px;
+  letter-spacing: .03em;
+  font-weight: 400;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-section { gap: 14px; flex-shrink: 0; }
+.fg-inspector.fg-inspector-editor :is(.fg-inspector-section, .fg-inspector-field, .fg-inspector-media-row) { min-width: 0; }
+.fg-inspector.fg-inspector-editor :is(input, textarea, select) { box-sizing: border-box; max-width: 100%; }
+.fg-inspector.fg-inspector-editor .fg-inspector-members { border-color: var(--ns-stroke) !important; }
+.fg-inspector.fg-inspector-editor .fg-inspector-members > button {
+  display: block;
+  width: 100%;
+  text-align: start;
+  min-height: 36px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--fg-text);
+  background: transparent;
+  border: 0;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-section-header {
+  order: 20;
+  justify-content: flex-end !important;
+  border-top: 1px solid var(--ns-stroke);
+  padding-top: 12px;
+  margin-top: 4px !important;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-section-title { display: none; }
+.fg-inspector.fg-inspector-editor .fg-inspector-field { gap: 8px !important; }
+.fg-inspector.fg-inspector-editor .fg-inspector-field-label {
+  font-size: 11px !important;
+  letter-spacing: .02em;
+  font-weight: 500;
+}
+.fg-inspector.fg-inspector-editor input.fg-inspector-name-input {
+  font-size: 17px;
+  font-weight: 550;
+  min-height: 44px;
+  padding: 10px 11px;
+}
+.fg-inspector.fg-inspector-editor textarea.fg-inspector-note-input {
+  min-height: 142px;
+  font-size: 14px !important;
+  line-height: 1.85;
+  padding: 12px;
+  background: color-mix(in srgb, var(--fg-text) 2%, transparent) !important;
+}
+.fg-inspector.fg-inspector-editor textarea.fg-inspector-note-input:focus {
+  background: color-mix(in srgb, var(--fg-text) 4%, transparent) !important;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-note-hint {
+  color: var(--fg-text-muted);
+  margin-top: -10px;
+}
+.fg-inspector.fg-inspector-editor details {
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--ns-stroke);
+  border-radius: 0;
+  background: transparent;
+  margin-top: 0;
+  scroll-margin-top: 68px;
+}
+.fg-inspector.fg-inspector-editor details > summary {
+  min-height: 40px;
+  padding: 12px 1px 6px;
+  color: var(--fg-text-muted);
+  font-size: 12px !important;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+.fg-inspector.fg-inspector-editor details[open] > summary { color: var(--fg-text); }
+.fg-inspector.fg-inspector-editor .fg-inspector-node-details-body,
+.fg-inspector.fg-inspector-editor .fg-inspector-edge-details-body { gap: 16px; padding: 12px 0 4px; }
+.fg-inspector.fg-inspector-editor .fg-inspector-media-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ns-space-2, 8px) !important;
+  padding: 6px 0 4px;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-media-row > select {
+  min-height: 36px;
+  width: 100% !important;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-media-action {
+  width: auto;
+  padding: 5px 10px !important;
+  min-height: 36px !important;
+  border-color: var(--ns-stroke);
+  border-radius: var(--ns-radius-control, 8px);
+  background: transparent;
+  color: var(--fg-text-muted);
+  white-space: nowrap;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-media-action:hover:not(:disabled) {
+  border-color: var(--ns-accent-mid);
+  background: var(--ns-accent-soft);
+  color: var(--fg-accent);
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-media-action:disabled {
+  cursor: default;
+  opacity: .48;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-media-row > .fg-inspector-open-media {
+  grid-column: 1 / -1;
+  justify-self: start;
+  color: var(--fg-accent);
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-media-row > textarea {
+  grid-column: 1 / -1;
+  height: auto;
+  min-height: 36px !important;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-media-storage {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--fg-text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.fg-inspector.fg-inspector-editor .fg-edge-endpoints {
+  padding: 14px;
+  border-left: 2px solid var(--fg-accent);
+  background: color-mix(in srgb, var(--fg-accent) 5%, transparent);
+  color: var(--fg-text);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-danger {
+  min-height: 32px !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  font-size: 11px !important;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-danger:hover {
+  color: var(--fg-danger) !important;
+  background: color-mix(in srgb, var(--fg-danger) 10%, transparent) !important;
+  border-color: color-mix(in srgb, var(--fg-danger) 30%, transparent) !important;
+}
+.fg-inspector.fg-inspector-editor .fg-inspector-collapse { min-height: 36px !important; width: 36px; }
+.fg-inspector.fg-inspector-editor .fg-inspector-tags { gap: 6px !important; }
+.fg-inspector.fg-inspector-editor .fg-tag-pill {
+  border-color: var(--ns-stroke) !important;
+  padding: 0 3px 0 9px !important;
+  font-size: 12px !important;
+  color: var(--fg-text);
+}
+.fg-inspector.fg-inspector-editor .fg-tag-open,
+.fg-inspector.fg-inspector-editor .fg-tag-remove,
+.fg-inspector.fg-inspector-editor .fg-tag-add {
+  min-height: 30px !important;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 3px 5px !important;
+  box-shadow: none !important;
+  font-size: 12px !important;
+  color: var(--fg-text-muted) !important;
+}
+.fg-inspector.fg-inspector-editor .fg-tag-open { color: var(--fg-text) !important; }
+.fg-inspector.fg-inspector-editor .fg-tag-add { border: 1px dashed var(--ns-stroke-strong) !important; padding-inline: 10px !important; }
+.fg-inspector.fg-inspector-editor :is(button, summary, input, textarea, select):focus-visible {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 3px;
+}
+@media (pointer: coarse), (max-width: 600px) {
+  .fg-inspector.fg-inspector-editor .fg-inspector-titlebar { min-height: 50px; margin-bottom: 10px; }
+  .fg-inspector.fg-inspector-editor .fg-inspector-section { gap: 12px; }
+  .fg-inspector.fg-inspector-editor .fg-inspector-field { gap: 6px !important; }
+  .fg-inspector.fg-inspector-editor .fg-inspector-collapse,
+  .fg-inspector.fg-inspector-editor .fg-inspector-danger,
+  .fg-inspector.fg-inspector-editor .fg-tag-open,
+  .fg-inspector.fg-inspector-editor .fg-tag-remove,
+  .fg-inspector.fg-inspector-editor .fg-tag-add,
+  .fg-inspector.fg-inspector-editor .fg-inspector-media-action,
+  .fg-inspector.fg-inspector-editor .fg-inspector-media-row > select { min-height: 44px !important; }
+  .fg-inspector.fg-inspector-editor .fg-inspector-collapse { width: 44px; }
+  .fg-inspector.fg-inspector-editor details > summary { min-height: 44px; }
+  .fg-inspector.fg-inspector-editor textarea.fg-inspector-note-input { min-height: 112px; }
+}

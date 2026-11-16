@@ -1,24 +1,42 @@
-import { V } from "./layout-constants";
+import { isStoredAttachment, resolveBrowserAttachment } from './media-assets';
+import { bindMediaTextInput, type createMediaTextEditor } from './media-text-editor';
+import { renderMathInMarkdown } from './markdown-math';
 /**
  * 多媒体节点：在画布上方叠加 HTML 元素显示图片/音频/视频/MD
  */
 
 /** 简易 Markdown → HTML */
 function renderMarkdown(md: string): string {
+  return renderMathInMarkdown(md, renderMarkdownContent);
+}
+
+function renderMarkdownContent(md: string): string {
   const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const lines = md.split('\n');
+  const lines = md.split(/\r?\n/);
   let html = '';
   let inList = false;
+  let fence = '';
+  const code: string[] = [];
   for (const line of lines) {
-    if (/^### (.+)/.test(line)) {
+    const candidate = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (candidate && candidate[1][0] === fence[0] && candidate[1].length >= fence.length && !candidate[2].trim()) {
+        html += `<pre><code>${escape(code.join('\n'))}</code></pre>`;
+        code.length = 0;
+        fence = '';
+      } else code.push(line);
+      continue;
+    }
+    if (candidate) {
       if (inList) { html += '</ul>'; inList = false; }
-      html += `<h3 style="margin:8px 0 4px;font-size:1em;font-weight:700;">${escape(RegExp.$1)}</h3>`;
-    } else if (/^## (.+)/.test(line)) {
+      fence = candidate[1];
+      continue;
+    }
+    const heading = /^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$/.exec(line);
+    if (heading) {
       if (inList) { html += '</ul>'; inList = false; }
-      html += `<h2 style="margin:10px 0 4px;font-size:1.1em;font-weight:700;">${escape(RegExp.$1)}</h2>`;
-    } else if (/^# (.+)/.test(line)) {
-      if (inList) { html += '</ul>'; inList = false; }
-      html += `<h1 style="margin:12px 0 4px;font-size:1.2em;font-weight:700;">${escape(RegExp.$1)}</h1>`;
+      const level = heading[1].length;
+      html += `<h${level}>${inlineMarkdown(heading[2].replace(/[ \t]+#+$/, ''))}</h${level}>`;
     } else if (/^- (.+)/.test(line)) {
       if (!inList) { html += '<ul style="margin:2px 0;padding-left:16px;">'; inList = true; }
       html += `<li>${inlineMarkdown(RegExp.$1)}</li>`;
@@ -31,6 +49,7 @@ function renderMarkdown(md: string): string {
     }
   }
   if (inList) html += '</ul>';
+  if (fence) html += `<pre><code>${escape(code.join('\n'))}</code></pre>`;
   return html;
 }
 
@@ -40,8 +59,18 @@ function inlineMarkdown(text: string): string {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/`(.+?)`/g, '<code style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px;">$1</code>')
-    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank" style="color:var(--fg-accent,#5B8FF9)">$1</a>');
+    .replace(/`(.+?)`/g, '<code style="background:var(--fg-input-bg);padding:1px 4px;border-radius:3px;">$1</code>')
+    .replace(/\[(.+?)\]\((.+?)\)/g, (_match, label, escapedUrl) => {
+      const url = escapedUrl.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+      if (!isSafeMarkdownLink(url)) return label;
+      return `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer" style="color:var(--fg-accent)">${label}</a>`;
+    });
+}
+
+function isSafeMarkdownLink(url: string): boolean {
+  if (!/^(?:https?:\/\/|mailto:|\/|\.\.?\/|#)/i.test(url)) return false;
+  try { return ['http:', 'https:', 'mailto:'].includes(new URL(url, 'https://nodespace.invalid/').protocol); }
+  catch { return false; }
 }
 
 export type MediaType = 'image' | 'audio' | 'video' | 'pdf' | 'md';
@@ -56,10 +85,12 @@ export interface MediaOverlay {
   offsetX: number;
   offsetY: number;
   onClose?: () => void;
+  releaseAttachment?: () => void;
+  endTextEdit?: () => void;
 }
 
 const MEDIA_LABELS: Record<MediaType, string> = {
-  image: '图像', audio: '音频', video: '视频', pdf: 'PDF', md: 'Markdown',
+  image: '图像', audio: '音频', video: '视频', pdf: 'PDF', md: '文档',
 };
 
 function mediaIconSvg(type: MediaType): string {
@@ -116,15 +147,7 @@ window.addEventListener('pointermove', (e) => {
     }
     el.style.width = dw + 'px';
     el.style.height = dh + 'px';
-    el.querySelectorAll('img, video, iframe, .media-body, [contenteditable]').forEach((inner) => {
-      const iw = dw - 16, ih = dh - 30;
-      (inner as HTMLElement).style.maxWidth = iw + 'px';
-      (inner as HTMLElement).style.maxHeight = ih + 'px';
-      (inner as HTMLElement).style.width = iw + 'px';
-      (inner as HTMLElement).style.height = ih + 'px';
-    });
-    const audio = el.querySelector('audio');
-    if (audio) { (audio as HTMLElement).style.width = (dw - 16) + 'px'; }
+    el.style.setProperty('--media-preview-body-max', 'none');
   }
 });
 window.addEventListener('touchmove', (e) => {
@@ -177,7 +200,7 @@ const syncReaderPresence = () => {
 };
 
 window.addEventListener('keydown', event => {
-  if (event.key !== 'Escape') return;
+  if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
   const reader = [...overlays.values()].find(overlay => overlay.presentation === 'reader');
   if (!reader) return;
   event.preventDefault();
@@ -186,9 +209,46 @@ window.addEventListener('keydown', event => {
 }, { capture: true });
 
 /** 把本地路径转 file:// URL */
-function toFileUrl(p: string): string {
-  if (/^[A-Z]:[\\/]/.test(p)) return 'file:///' + p.replace(/\\/g, '/').replace(/^[A-Z]:/, (m: string) => m.toLowerCase());
+export function toFileUrl(p: string): string {
+  const encodePath = (value: string) => value.split('/').map(encodeURIComponent).join('/');
+  if (/^[a-z]:[\\/]/i.test(p)) return `file:///${p[0].toLowerCase()}:${encodePath(p.slice(2).replace(/\\/g, '/'))}`;
+  if (p.startsWith('\\\\')) {
+    const [host, ...segments] = p.slice(2).replace(/\\/g, '/').split('/');
+    try { return new URL(`file://${host}/${segments.map(encodeURIComponent).join('/')}`).href; }
+    catch { return p; }
+  }
+  if (p.startsWith('/') && !p.startsWith('//')) return 'file://' + encodePath(p);
   return p;
+}
+
+function setMediaStatus(body: HTMLElement, text: string) {
+  const status = document.createElement('p');
+  status.className = 'fg-media-status';
+  status.setAttribute('role', 'status');
+  status.textContent = text;
+  body.replaceChildren(status);
+}
+
+function fillPlayableMedia(body: HTMLElement, type: 'image' | 'audio' | 'video', source: string, label: string) {
+  const media = document.createElement(type === 'image' ? 'img' : type);
+  if (media instanceof HTMLImageElement) media.alt = label;
+  else {
+    media.controls = true;
+    media.preload = 'metadata';
+    media.setAttribute('aria-label', label);
+    if (media instanceof HTMLVideoElement) media.playsInline = true;
+  }
+  media.addEventListener('error', () => {
+    if (!body.contains(media)) return;
+    setMediaStatus(body, `无法加载${MEDIA_LABELS[type]}。`);
+  }, { once: true });
+  if (type === 'audio') {
+    const artwork = document.createElement('div');
+    artwork.className = 'fg-media-audio-art';
+    artwork.innerHTML = mediaIconSvg(type);
+    body.replaceChildren(artwork, media);
+  } else body.replaceChildren(media);
+  media.src = source;
 }
 
 export function showMedia(
@@ -205,7 +265,11 @@ export function showMedia(
   onClose?: () => void,
   presentation: MediaPresentation = 'reader',
   sourceAction?: MediaSourceAction,
+  textEditor?: ReturnType<typeof createMediaTextEditor> | null,
+  editSource?: MediaSourceAction,
 ) {
+  const sourceEditor = presentation === 'reader' && type === 'md' ? editSource : undefined;
+  let endTextEdit: (() => void) | undefined;
   if (presentation === 'reader') {
     for (const [openId, overlay] of overlays) {
       if (openId !== nodeId && overlay.presentation === 'reader') hideMedia(openId, true);
@@ -216,145 +280,164 @@ export function showMedia(
   el.setAttribute('data-media-id', nodeId);
   el.setAttribute('data-media-presentation', presentation);
   el.className = presentation === 'reader' ? 'fg-media-reader' : 'fg-media-preview';
-  el.style.setProperty('--media-accent', borderColor);
-  if (presentation === 'preview') {
-    el.style.cssText +=
-      'position:absolute;z-index:15;border:2px solid color-mix(in srgb, var(--media-accent) 68%, transparent);' +
-      `border-radius:${V('--fg-radius-md','10px')};` +
-      `overflow:visible;background:${V('--fg-surface-elevated','rgba(40,42,48,0.92)')};` +
-      `pointer-events:auto;touch-action:none;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};`;
+  if (presentation === 'reader') {
+    el.setAttribute('role', 'region');
+    el.setAttribute('aria-label', `${MEDIA_LABELS[type]} · ${label}`);
   }
-  const fileUrl = toFileUrl(url);
+  el.style.setProperty('--media-accent', borderColor);
+  const storedAttachment = type !== 'md' && isStoredAttachment(url);
+  const fileUrl = storedAttachment ? '' : toFileUrl(url);
 
   const handle = document.createElement('div');
-  let headerActions: HTMLElement | null = null;
+  handle.className = presentation === 'reader' ? 'fg-media-reader-header' : 'fg-media-preview-handle';
+  const identity = document.createElement('div');
+  identity.className = 'fg-media-reader-identity';
+  const icon = document.createElement('span');
+  icon.className = 'fg-media-reader-icon';
+  icon.innerHTML = mediaIconSvg(type);
+  const titles = document.createElement('span');
+  titles.className = 'fg-media-reader-titles';
   if (presentation === 'reader') {
-    handle.className = 'fg-media-reader-header';
-    const identity = document.createElement('div');
-    identity.className = 'fg-media-reader-identity';
-    const icon = document.createElement('span');
-    icon.className = 'fg-media-reader-icon';
-    icon.innerHTML = mediaIconSvg(type);
-    const titles = document.createElement('span');
-    titles.className = 'fg-media-reader-titles';
     const eyebrow = document.createElement('span');
     eyebrow.className = 'fg-media-reader-eyebrow';
-    eyebrow.textContent = `${MEDIA_LABELS[type]} · ${readOnly ? '来源视图' : '节点内容'}`;
-    const title = document.createElement('strong');
-    title.className = 'fg-media-reader-title';
-    title.textContent = label;
-    titles.append(eyebrow, title);
-    identity.append(icon, titles);
-    headerActions = document.createElement('div');
-    headerActions.className = 'fg-media-reader-actions';
-    if (sourceAction) {
-      const sourceButton = document.createElement('button');
-      sourceButton.type = 'button';
-      sourceButton.className = 'fg-media-reader-action';
-      sourceButton.textContent = sourceAction.label;
-      sourceButton.addEventListener('click', event => {
+    eyebrow.textContent = readOnly && !sourceEditor ? `${MEDIA_LABELS[type]} · 只读` : MEDIA_LABELS[type];
+    titles.appendChild(eyebrow);
+  }
+  const title = document.createElement('strong');
+  title.className = 'fg-media-reader-title';
+  title.textContent = label;
+  title.title = label;
+  titles.appendChild(title);
+  identity.append(icon, titles);
+  const headerActions = document.createElement('div');
+  headerActions.className = 'fg-media-reader-actions';
+  if (presentation === 'reader') {
+    for (const action of [sourceEditor, sourceAction]) {
+      if (!action) continue;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'fg-media-reader-action';
+      button.textContent = action.label;
+      button.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
-        sourceAction.onSelect();
+        action.onSelect();
       });
-      headerActions.appendChild(sourceButton);
+      headerActions.appendChild(button);
     }
-    handle.append(identity, headerActions);
-    el.appendChild(handle);
-  } else {
-    const nameTag = document.createElement('div');
-    nameTag.className = 'fg-media-preview-title';
-    nameTag.textContent = label;
-    el.appendChild(nameTag);
-    handle.className = 'fg-media-preview-handle';
-    const dot = document.createElement('div');
-    dot.className = 'fg-media-preview-grip';
-    handle.appendChild(dot);
-    el.appendChild(handle);
   }
+  handle.append(identity, headerActions);
+  el.appendChild(handle);
 
   // 内容
   const body = document.createElement('div');
   body.className = `media-body fg-media-body fg-media-body-${type}`;
-  if (type === 'image') {
-    const imgSrc = fileUrl;
-    if (!isSafeUrl(imgSrc)) return;
-    body.innerHTML = `<img src="${escapeAttr(imgSrc)}" alt="${escapeAttr(label)}" />`;
-  } else if (type === 'audio') {
-    const audioSrc = fileUrl;
-    if (!isSafeUrl(audioSrc)) return;
-    body.innerHTML = `<div class="fg-media-audio-art">${mediaIconSvg('audio')}</div><audio controls src="${escapeAttr(audioSrc)}"></audio>`;
-    if (presentation === 'preview') el.style.width = '300px';
-  } else if (type === 'video') {
-    // 白色半透明播放三角图标
-    const playIcon = document.createElement('div');
-    playIcon.style.cssText =
-      'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);' +
-      'width:0;height:0;border-left:18px solid rgba(255,255,255,0.25);' +
-      'border-top:11px solid transparent;border-bottom:11px solid transparent;' +
-      'pointer-events:none;z-index:1;';
-    body.style.position = 'relative';
-    body.appendChild(playIcon);
-    if (/bilibili\.com|b23\.tv/i.test(url)) {
-      const bv = url.match(/BV\w+/)?.[0] || '';
-      // B站嵌入播放器需要 autoplay=0 才能有声音（浏览器策略）
-      body.innerHTML = `<iframe src="//player.bilibili.com/player.html?bvid=${bv}&page=1&high_quality=1&autoplay=0"
-        allow="autoplay;encrypted-media" allowfullscreen></iframe>`;
-    } else if (/youtube\.com|youtu\.be/i.test(url)) {
-      const vid = url.match(/(?:v=|be\/)([\w-]+)/)?.[1] || '';
-      body.innerHTML = `<iframe src="//www.youtube.com/embed/${vid}" allowfullscreen></iframe>`;
-    } else {
-      const videoSrc = fileUrl;
-      if (!isSafeUrl(videoSrc)) return;
-      body.innerHTML = `<video controls src="${escapeAttr(videoSrc)}"></video>`;
+  const addPdfDownload = (source: string) => {
+    if (presentation !== 'reader') return;
+    const download = document.createElement('a');
+    download.className = 'fg-media-reader-action';
+    download.textContent = '下载 PDF';
+    download.href = source;
+    download.download = /\.pdf$/i.test(label) ? label : `${label}.pdf`;
+    headerActions.insertBefore(download, headerActions.firstChild);
+    if (navigator.pdfViewerEnabled !== false) {
+      const fallback = document.createElement('button');
+      fallback.type = 'button'; fallback.className = 'fg-media-reader-action';
+      fallback.textContent = '无法预览？';
+      fallback.onclick = () => { fillPdfBody(source, false); fallback.remove(); };
+      headerActions.insertBefore(fallback, download.nextSibling);
     }
+  };
+  const fillPdfBody = (source: string, inline = navigator.pdfViewerEnabled !== false) => {
+    if (inline) {
+      body.innerHTML = `<iframe src="${escapeAttr(source)}" title="${escapeAttr(label)}"></iframe>`;
+      return;
+    }
+    const fallback = document.createElement('div');
+    fallback.className = 'fg-media-pdf-fallback';
+    const icon = document.createElement('div');
+    icon.className = 'fg-media-pdf-icon'; icon.innerHTML = mediaIconSvg('pdf');
+    const title = document.createElement('strong'); title.textContent = '下载后阅读';
+    const description = document.createElement('p');
+    description.textContent = '当前环境不支持直接预览 PDF，可以下载后用阅读器打开。';
+    const download = document.createElement('a');
+    download.className = 'fg-media-reader-action'; download.textContent = '下载 PDF';
+    download.href = source; download.download = /\.pdf$/i.test(label) ? label : `${label}.pdf`;
+    fallback.append(icon, title, description, download);
+    body.replaceChildren(fallback);
+  };
+  if (storedAttachment) {
+    setMediaStatus(body, '正在读取附件…');
+    body.setAttribute('aria-busy', 'true');
+  } else if (type === 'video' && /bilibili\.com|b23\.tv/i.test(url)) {
+    const bv = url.match(/BV\w+/)?.[0] || '';
+    body.innerHTML = `<iframe src="//player.bilibili.com/player.html?bvid=${bv}&page=1&high_quality=1&autoplay=0"
+      title="${escapeAttr(label)}" allow="autoplay;encrypted-media" allowfullscreen></iframe>`;
+  } else if (type === 'video' && /youtube\.com|youtu\.be/i.test(url)) {
+    const vid = url.match(/(?:v=|be\/)([\w-]+)/)?.[1] || '';
+    body.innerHTML = `<iframe src="//www.youtube.com/embed/${vid}" title="${escapeAttr(label)}" allowfullscreen></iframe>`;
   } else if (type === 'pdf') {
     const pdfSrc = fileUrl;
     if (!isSafeUrl(pdfSrc)) return;
-    body.innerHTML = `<iframe src="${escapeAttr(pdfSrc)}" title="${escapeAttr(label)}"></iframe>`;
+    addPdfDownload(pdfSrc);
+    fillPdfBody(pdfSrc);
   } else if (type === 'md') {
-    const rawMd = url || '';
-    let isEditMode = false;
+    let rawMd = url || '';
     const mdDiv = document.createElement('div');
-    mdDiv.className = 'fg-media-markdown';
+    mdDiv.className = sourceEditor ? 'fg-media-markdown fg-media-markdown-editable' : 'fg-media-markdown';
     mdDiv.innerHTML = rawMd ? renderMarkdown(rawMd) : '<em style="color:#888">(空文档)</em>';
-    let mdSaveTimer: any;
-    if (!readOnly) {
-      mdDiv.addEventListener('input', () => {
-        clearTimeout(mdSaveTimer);
-        mdSaveTimer = setTimeout(() => {
-          const n = (window as any).__graphNodes?.find((n: any) => n.id === nodeId);
-          if (n) { n.mediaUrl = mdDiv.textContent; (window as any).__triggerSave?.(); }
-        }, 500);
+    body.appendChild(mdDiv);
+    if (sourceEditor) {
+      mdDiv.addEventListener('click', event => {
+        if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        if (event.target instanceof Element && event.target.closest('a')) return;
+        if (document.getSelection()?.isCollapsed === false) return;
+        event.stopPropagation();
+        sourceEditor.onSelect();
       });
     }
-    body.appendChild(mdDiv);
+    if (!readOnly && textEditor && !sourceEditor) {
+      let isEditMode = false;
+      const input = document.createElement('textarea');
+      input.className = 'fg-media-text-input';
+      input.setAttribute('aria-label', '编辑文档内容');
+      input.spellcheck = false;
+      const finishEdit = () => {
+        if (!isEditMode) return;
+        if (!input.readOnly && textEditor.update(input.value)) rawMd = input.value;
+        textEditor.end();
+      };
+      endTextEdit = finishEdit;
+      bindMediaTextInput(input, value => {
+        const saved = textEditor.update(value);
+        if (saved) rawMd = value;
+        return saved;
+      });
 
-    // 视图切换按钮（挂在 handle 同行左侧）
-    const toggleBtn = document.createElement('button');
-    toggleBtn.className = presentation === 'reader' ? 'fg-media-reader-action' : 'fg-media-preview-edit';
-    toggleBtn.type = 'button';
-    toggleBtn.textContent = '编辑';
-    toggleBtn.onclick = () => {
-      isEditMode = !isEditMode;
-      if (isEditMode) {
-        toggleBtn.textContent = '预览';
-        mdDiv.textContent = rawMd;
-        mdDiv.contentEditable = 'true';
-        mdDiv.style.whiteSpace = 'pre-wrap';
-      } else {
-        toggleBtn.textContent = '编辑';
-        const updated = mdDiv.textContent || '';
-        mdDiv.contentEditable = 'false';
-        mdDiv.style.whiteSpace = '';
-        mdDiv.innerHTML = updated ? renderMarkdown(updated) : '<em style="color:#888">(空文档)</em>';
-        // 回写原始内容
-        const n = (window as any).__graphNodes?.find((n: any) => n.id === nodeId);
-        if (n) { n.mediaUrl = updated; (window as any).__triggerSave?.(); }
-      }
-    };
-    if (!readOnly) (headerActions || el).appendChild(toggleBtn);
-  }
+      const toggleBtn = document.createElement('button');
+      toggleBtn.className = presentation === 'reader' ? 'fg-media-reader-action' : 'fg-media-preview-edit';
+      toggleBtn.type = 'button';
+      toggleBtn.textContent = '编辑';
+      toggleBtn.onclick = () => {
+        if (!isEditMode) {
+          const value = textEditor.begin();
+          if (value === null) { toggleBtn.textContent = '请重新打开'; toggleBtn.disabled = true; return; }
+          rawMd = value; input.value = value; input.readOnly = false;
+          isEditMode = true;
+          toggleBtn.textContent = '预览';
+          body.replaceChildren(input);
+          input.focus({ preventScroll: true });
+        } else {
+          finishEdit(); isEditMode = false;
+          toggleBtn.textContent = '编辑';
+          mdDiv.innerHTML = rawMd ? renderMarkdown(rawMd) : '<em style="color:#888">(空文档)</em>';
+          body.replaceChildren(mdDiv);
+        }
+      };
+      headerActions.appendChild(toggleBtn);
+    }
+  } else if (isSafeUrl(fileUrl)) fillPlayableMedia(body, type, fileUrl, label);
+  else return;
   el.appendChild(body);
 
   // 收起按钮
@@ -369,7 +452,7 @@ export function showMedia(
     event.stopPropagation();
     hideMedia(nodeId, true);
   };
-  (headerActions || el).appendChild(closeBtn);
+  headerActions.appendChild(closeBtn);
 
   // 存储 media type 到 DOM，resize 需要
   el.setAttribute('data-media-type', type);
@@ -379,6 +462,7 @@ export function showMedia(
   resizer.className = 'fg-media-preview-resizer';
   resizer.addEventListener('dblclick', () => {
     el.style.width = ''; el.style.height = '';
+    el.style.removeProperty('--media-preview-body-max');
   });
 
   const startResize = (pt: { clientX: number; clientY: number }) => {
@@ -396,24 +480,46 @@ export function showMedia(
 
   container.appendChild(el);
 
-  const ov: MediaOverlay = { el, nodeId, type, presentation, offsetX: 0, offsetY: 0, onClose };
+  const ov: MediaOverlay = { el, nodeId, type, presentation, offsetX: 0, offsetY: 0, onClose, endTextEdit };
   overlays.set(nodeId, ov);
   syncReaderPresence();
+  if (storedAttachment) {
+    void resolveBrowserAttachment(url).then(source => {
+      if (overlays.get(nodeId) !== ov) { source.release(); return; }
+      ov.releaseAttachment = source.release;
+      body.removeAttribute('aria-busy');
+      if (type === 'pdf') { addPdfDownload(source.value); fillPdfBody(source.value); }
+      else fillPlayableMedia(body, type, source.value, label);
+      if (presentation === 'preview') positionMedia(nodeId, getWorldPos);
+    }).catch(() => {
+      if (overlays.get(nodeId) !== ov) return;
+      body.removeAttribute('aria-busy');
+      setMediaStatus(body, '当前设备找不到这个附件，请在节点中重新选择文件。');
+      if (presentation === 'preview') positionMedia(nodeId, getWorldPos);
+    });
+  }
 
   // 拖拽逻辑 - 使用全局状态，不依赖 pointer capture
-  handle.addEventListener('dblclick', () => { ov.offsetX = 0; ov.offsetY = 0; });
+  const isHeaderAction = (event: Event) => event.target instanceof Node && headerActions.contains(event.target);
+  handle.addEventListener('dblclick', event => {
+    if (isHeaderAction(event)) return;
+    ov.offsetX = 0; ov.offsetY = 0;
+    if (presentation === 'preview') positionMedia(nodeId, getWorldPos);
+  });
 
   const startDrag = (pt: { clientX: number; clientY: number }) => {
     setGlobalDragState('move', el, pt.clientX, pt.clientY, ov, onDragStart, onDragEnd);
   };
   handle.addEventListener('pointerdown', (e) => {
-    if (presentation === 'reader') { e.stopPropagation(); return; }
-    e.preventDefault(); e.stopPropagation();
+    e.stopPropagation();
+    if (presentation === 'reader' || isHeaderAction(e)) return;
+    e.preventDefault();
     startDrag(e);
   });
   handle.addEventListener('touchstart', (e) => {
-    if (presentation === 'reader') { e.stopPropagation(); return; }
-    e.preventDefault(); e.stopPropagation();
+    e.stopPropagation();
+    if (presentation === 'reader' || isHeaderAction(e)) return;
+    e.preventDefault();
     if (e.touches[0]) startDrag(e.touches[0]);
   }, { passive: false });
 
@@ -433,7 +539,9 @@ export function positionMedia(nodeId: string, getWorldPos: () => { x: number; y:
 export function hideMedia(nodeId: string, notify = false) {
   const ov = overlays.get(nodeId);
   if (ov) {
+    ov.endTextEdit?.();
     ov.el.remove();
+    ov.releaseAttachment?.();
     overlays.delete(nodeId);
     syncReaderPresence();
     if (notify) ov.onClose?.();
@@ -455,5 +563,5 @@ export function clearAllMedia() {
 }
 
 function escapeAttr(s: string) {
-  return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

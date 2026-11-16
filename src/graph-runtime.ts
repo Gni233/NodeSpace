@@ -14,6 +14,8 @@ export class GraphRuntime {
   private saveChain: Promise<void> = Promise.resolve();
   private revision = 0;
   private operationGeneration = 0;
+  private pendingSaves = 0;
+  private disposed = false;
 
   constructor(
     fileName: string,
@@ -66,6 +68,10 @@ export class GraphRuntime {
     return ++this.revision;
   }
 
+  get changeRevision(): number { return this.revision; }
+  get saveGeneration(): number { return this.operationGeneration; }
+  get savePending(): boolean { return this.pendingSaves > 0; }
+
   markSaved(revision = this.revision): boolean {
     if (revision !== this.revision) return false;
     this.dirty = false;
@@ -80,16 +86,20 @@ export class GraphRuntime {
   enqueueSave(
     snapshot: string,
     write: (snapshot: string) => Promise<boolean>,
+    allowConflictOverwrite = false,
   ): Promise<{ saved: boolean; current: boolean; revision: number }> {
     const revision = this.revision;
     const generation = this.operationGeneration;
     let saved = false;
+    this.pendingSaves++;
     const run = this.saveChain.then(async () => {
-      if (generation !== this.operationGeneration) return;
+      if (this.disposed || generation !== this.operationGeneration
+        || (this.externalConflict && !allowConflictOverwrite)) return;
       saved = await write(snapshot);
     });
-    this.saveChain = run.then(() => undefined, () => undefined);
-    return run.then(() => ({
+    const settled = run.finally(() => { this.pendingSaves--; });
+    this.saveChain = settled.then(() => undefined, () => undefined);
+    return settled.then(() => ({
       saved,
       current: revision === this.revision && generation === this.operationGeneration,
       revision,
@@ -98,6 +108,7 @@ export class GraphRuntime {
 
   markExternalConflict(): void {
     this.cancelPendingSave();
+    this.operationGeneration++;
     this.externalConflict = true;
   }
 
@@ -113,6 +124,8 @@ export class GraphRuntime {
 
   dispose(): void {
     this.cancelPendingSave();
+    this.disposed = true;
+    this.operationGeneration++;
     this.externalConflict = false;
     this.textEditorOwner = null;
     this.simManager?.getSim?.()?.stop?.();
@@ -162,7 +175,7 @@ export class GraphRuntimeRegistry {
   }
 
   prune(runtime: GraphRuntime): void {
-    if (runtime.ownerCount > 0 || runtime.dirty) return;
+    if (runtime.ownerCount > 0 || runtime.dirty || runtime.externalConflict || runtime.savePending || runtime.fileOperationActive) return;
     if (this.runtimes.get(runtime.fileName) === runtime) this.runtimes.delete(runtime.fileName);
     runtime.dispose();
   }

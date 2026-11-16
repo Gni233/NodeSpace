@@ -12,6 +12,7 @@ export interface SemanticZoomProfile {
   zoom: number;
   band: SemanticZoomBand;
   titleAlpha: number;
+  nodeTitleScale: number;
   bodyAlpha: number;
   referenceBodyAlpha: number;
   bodyScale: number;
@@ -59,9 +60,9 @@ export function resolveSemanticZoomBand(
   return 'balanced';
 }
 
-const readableScale = (zoom: number, cap: number): number => {
+const readableScale = (zoom: number, cap: number, screenScale = 0.7): number => {
   const safeZoom = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
-  const scale = clamp(0.7 / safeZoom, 1, cap);
+  const scale = clamp(screenScale / safeZoom, 1, cap);
   // Avoid rebuilding Pixi text textures for every small wheel delta.
   return Math.round(scale * 10) / 10;
 };
@@ -75,6 +76,7 @@ export function semanticZoomProfile(
     zoom: scale,
     band: resolveSemanticZoomBand(scale, previousBand),
     titleAlpha: semanticSmoothstep(0.22, 0.36, scale),
+    nodeTitleScale: readableScale(scale, 1.5, 0.95),
     bodyAlpha: semanticSmoothstep(0.30, 0.48, scale),
     referenceBodyAlpha: semanticSmoothstep(0.24, 0.38, scale),
     bodyScale: readableScale(scale, 1.8),

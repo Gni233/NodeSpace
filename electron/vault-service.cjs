@@ -30,13 +30,13 @@ function countMarkdownHeadings(markdown) {
   return count;
 }
 
-function markdownTitle(relativePath, markdown) {
+function markdownDocumentTitle(markdown) {
   const frontmatter = String(markdown || '').match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   const frontmatterTitle = frontmatter?.[1]?.match(/^(?:title|name):\s*["']?([^\r\n"']+)/im);
   if (frontmatterTitle?.[1]?.trim()) return frontmatterTitle[1].trim();
   const heading = String(markdown || '').match(/^\s{0,3}#\s+(.+)$/m);
   if (heading?.[1]?.trim()) return heading[1].trim();
-  return path.basename(relativePath, path.extname(relativePath));
+  return undefined;
 }
 
 function decodeLinkPart(value) {
@@ -169,6 +169,7 @@ function scanVault(rootPath, graphFolderRelative) {
   const notes = [];
   const attachments = [];
   const graphs = [];
+  const directories = [];
   const graphLocation = resolveGraphDirectory(root, graphFolderRelative);
   const graphDirectory = graphLocation.graphRootPath;
 
@@ -176,6 +177,7 @@ function scanVault(rootPath, graphFolderRelative) {
     let entries = [];
     try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
     catch { return; }
+    if (directory !== root) directories.push(normalizeRelativePath(path.relative(root, directory)));
     entries.sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
@@ -193,10 +195,12 @@ function scanVault(rootPath, graphFolderRelative) {
       if (extension === '.md') {
         let markdown = '';
         try { markdown = fs.readFileSync(absolutePath, 'utf8'); } catch {}
+        const documentTitle = markdownDocumentTitle(markdown);
         notes.push({
           ...common,
           kind: 'markdown',
-          title: markdownTitle(relativePath, markdown),
+          title: path.basename(entry.name, path.extname(entry.name)),
+          ...(documentTitle ? { documentTitle } : {}),
           aliases: markdownAliases(markdown),
           excerpt: markdownExcerpt(markdown),
           links: extractObsidianLinks(markdown),
@@ -223,6 +227,7 @@ function scanVault(rootPath, graphFolderRelative) {
     notes,
     attachments,
     graphs,
+    directories,
     stats: {
       notes: notes.length,
       attachments: attachments.length,

@@ -4,13 +4,14 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { inlineNodeRadiusModule } from './helpers/node-radius-module.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 async function importTypeScriptModule(filePath) {
-  const source = await readFile(filePath, 'utf8');
+  const source = inlineNodeRadiusModule(await readFile(filePath, 'utf8'));
   const output = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -92,6 +93,62 @@ test('semantic layout packs components, respects explicit pins, and ignores manu
   ) > 40);
 });
 
+test('a pair of compact ideas stays close while expanded cards keep reading space', async () => {
+  const { computeSemanticLayout } = await importTypeScriptModule(
+    path.join(root, 'src', 'layouts', 'semantic.ts'),
+  );
+  const data = graph([
+    { id: 'a', label: '窗边的光', headingLevel: 6, createdOrder: 0 },
+    { id: 'b', label: '下午的雨', headingLevel: 6, createdOrder: 1 },
+  ], [{ source: 'a', target: 'b' }]);
+  const before = JSON.stringify(data);
+  const compact = computeSemanticLayout(data, { collapsedNodeIds: new Set(['a', 'b']) });
+  const reading = computeSemanticLayout(data);
+  const distance = result => Math.hypot(
+    result.positions.get('a').x - result.positions.get('b').x,
+    result.positions.get('a').y - result.positions.get('b').y,
+  );
+  assert.ok(distance(compact) >= 100 && distance(compact) <= 180);
+  assert.ok(distance(reading) >= 300);
+  assert.ok(distance(compact) < distance(reading) * 0.6);
+  assert.equal(JSON.stringify(data), before);
+});
+
+test('radial topology ranks occupy separate rings without label collisions', async () => {
+  const { computeSemanticLayout } = await importTypeScriptModule(
+    path.join(root, 'src', 'layouts', 'semantic.ts'),
+  );
+  const nodes = Array.from({ length: 5 }, (_, index) => ({
+    id: `n${index}`, label: `记录 ${index}`, headingLevel: 6, createdOrder: index,
+  }));
+  const data = graph(nodes, nodes.slice(1).map((node, index) => ({ source: `n${index}`, target: node.id })));
+  for (const collapsedNodeIds of [undefined, new Set(nodes.map(node => node.id))]) {
+    const options = { collapsedNodeIds, semanticThreshold: 2 };
+    const first = computeSemanticLayout(data, options);
+    const second = computeSemanticLayout(JSON.parse(JSON.stringify(data)), options);
+    assert.deepEqual(first, second);
+    const center = [...first.positions.values()].find(point => point.rank === 0);
+    const byRank = new Map();
+    for (const point of first.positions.values()) {
+      const radius = Math.hypot(point.x - center.x, point.y - center.y);
+      if (byRank.has(point.rank)) assert.ok(Math.abs(byRank.get(point.rank) - radius) < 0.01);
+      byRank.set(point.rank, radius);
+    }
+    const radii = [...byRank].sort((a, b) => a[0] - b[0]).map(([, radius]) => radius);
+    for (let index = 1; index < radii.length; index++) {
+      assert.ok(radii[index] > radii[index - 1] + 100);
+    }
+    const positions = [...first.positions.values()];
+    for (let left = 0; left < positions.length; left++) {
+      for (let right = left + 1; right < positions.length; right++) {
+        const a = positions[left], b = positions[right];
+        assert.ok(Math.abs(a.x - b.x) >= (a.card.width + b.card.width) / 2 + 11
+          || Math.abs(a.y - b.y) >= (a.card.height + b.card.height) / 2 + 11);
+      }
+    }
+  }
+});
+
 test('semantic signature ignores coordinates but reacts to content and structure', async () => {
   const { semanticGraphSignature, SemanticLayoutController } = await importTypeScriptModule(
     path.join(root, 'src', 'layouts', 'semantic.ts'),
@@ -144,6 +201,32 @@ test('resource cards compose from transient source previews instead of stored pa
   assert.notEqual(semanticGraphSignature(data), before);
 });
 
+test('explicit framing flushes the latest pending composition exactly once', async () => {
+  const { SemanticLayoutController } = await importTypeScriptModule(
+    path.join(root, 'src', 'layouts', 'semantic.ts'),
+  );
+  const data = graph([{ id: 'a', label: '窗边' }]);
+  const applied = [];
+  const controller = new SemanticLayoutController(() => data, () => applied.push(data.nodes[0].label), 20);
+  assert.equal(controller.flush(), false);
+  data.nodes[0].label = '窗边的光';
+  controller.onGraphChanged();
+  data.nodes[0].label = '窗边的光和影';
+  controller.onGraphChanged();
+  assert.equal(controller.flush(), true);
+  assert.deepEqual(applied, ['窗边的光和影']);
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.deepEqual(applied, ['窗边的光和影']);
+  assert.equal(controller.flush(), false);
+  data.nodes[0].note = '尚未经过通知的编辑';
+  assert.equal(controller.flush(), true);
+  assert.equal(applied.length, 2);
+  controller.deactivate();
+  data.nodes[0].label = '失活';
+  assert.equal(controller.flush(), false);
+  assert.equal(applied.length, 2);
+});
+
 test('semantic content creates useful regions without user tags or explicit edges', async () => {
   const { computeSemanticLayout } = await importTypeScriptModule(
     path.join(root, 'src', 'layouts', 'semantic.ts'),
@@ -162,7 +245,7 @@ test('semantic content creates useful regions without user tags or explicit edge
   assert.notEqual(result.positions.get('private').component, result.positions.get('bp').component);
   assert.equal(result.positions.get('todo').card.kind, 'task');
   assert.equal(result.positions.get('private').card.kind, 'private');
-  assert.equal(result.positions.get('private').card.excerpt, '敏感内容不参与语义分析');
+  assert.equal(result.positions.get('private').card.excerpt, '摘要已隐藏');
   assert.ok(result.regions.length >= 2);
   const learningEcho = result.echoes.find(echo => new Set([echo.source, echo.target]).has('bp')
     && new Set([echo.source, echo.target]).has('gd'));
@@ -259,21 +342,29 @@ test('semantic cards can collapse into compact nodes without overlap', async () 
     || Math.abs(a.y - b.y) >= (a.card.height + b.card.height) / 2);
 });
 
-test('optional dense vectors refine meaning while deterministic placement prevents card overlap', async () => {
+test('offline text layout is deterministic and prevents node label overlap', async () => {
   const { computeSemanticLayout } = await importTypeScriptModule(
     path.join(root, 'src', 'layouts', 'semantic.ts'),
   );
   const data = graph([
-    { id: 'a', label: '甲', note: '完全不同的字面内容一' },
-    { id: 'b', label: '乙', note: '另一段看似无关的文本二' },
-    { id: 'c', label: '丙', note: '第三种没有词汇交集的记录' },
-    { id: 'd', label: '丁', note: '第四种独立表达' },
+    { id: 'a', label: '春天的花园', note: '花园里种植玫瑰花与郁金香' },
+    { id: 'b', label: '花园的浇水计划', note: '给花园里的玫瑰花浇水' },
+    { id: 'c', label: '面包烘焙', note: '黄油面包的面团比例' },
+    { id: 'd', label: '面包发酵', note: '面包的面团需要发酵' },
   ]);
-  const semanticVectors = new Map([
-    ['a', [1, 0, 0]], ['b', [0.99, 0.02, 0]],
-    ['c', [0, 1, 0]], ['d', [0, 0.99, 0.02]],
-  ]);
-  const result = computeSemanticLayout(data, { semanticVectors });
+  const before = JSON.stringify(data);
+  const options = { collapsedNodeIds: new Set(data.nodes.map(node => node.id)) };
+  const originalFetch = globalThis.fetch;
+  let result;
+  globalThis.fetch = () => { throw new Error('Layout must not request a network service'); };
+  try {
+    result = computeSemanticLayout(data, options);
+    assert.deepEqual(computeSemanticLayout(data, options), result);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(JSON.stringify(data), before);
+  assert.ok([...result.positions.values()].every(position => position.card.form === 'node'));
   assert.equal(result.positions.get('a').component, result.positions.get('b').component);
   assert.equal(result.positions.get('c').component, result.positions.get('d').component);
   assert.notEqual(result.positions.get('a').component, result.positions.get('c').component);
@@ -352,23 +443,57 @@ test('semantic layout memory is inertial, local, and never learns manual drag co
   }
 });
 
-test('dense refinement can reposition provisional cards without a global reframe', async () => {
+test('extending a compact chain keeps the two established ideas in place', async () => {
   const { computeSemanticLayout, stabilizeSemanticLayout } = await importTypeScriptModule(
     path.join(root, 'src', 'layouts', 'semantic.ts'),
   );
   const data = graph([
-    { id: 'a', label: '窗台春风', note: '树叶轻轻摇晃', createdOrder: 0 },
+    { id: 'a', label: '阳光', headingLevel: 6, createdOrder: 0 },
+    { id: 'b', label: '雨声', headingLevel: 6, createdOrder: 1 },
+  ], [{ source: 'a', target: 'b' }]);
+  const options = { collapsedNodeIds: new Set(['a', 'b', 'c']) };
+  const first = stabilizeSemanticLayout(data, computeSemanticLayout(data, options), undefined);
+  data.nodes.push({ id: 'c', label: '晚风', headingLevel: 6, createdOrder: 2, x: 9000, y: -7000 });
+  data.edges.push({ source: 'b', target: 'c' });
+  const ideal = computeSemanticLayout(data, options);
+  assert.equal(ideal.positions.get('b').rank, 0); // The new hub becomes the ideal root.
+  const next = stabilizeSemanticLayout(data, ideal, first.memory);
+  assert.deepEqual(stabilizeSemanticLayout(data, ideal, first.memory), next);
+  for (const id of ['a', 'b']) {
+    const before = first.result.positions.get(id), after = next.result.positions.get(id);
+    assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < 0.01);
+  }
+  const a = next.result.positions.get('a'), b = next.result.positions.get('b'), c = next.result.positions.get('c');
+  const forward = { x: b.x - a.x, y: b.y - a.y };
+  const extension = { x: c.x - b.x, y: c.y - b.y };
+  assert.ok(forward.x * extension.x + forward.y * extension.y > 0);
+  assert.ok(Math.abs(forward.x * extension.y - forward.y * extension.x) < 0.01);
+  assert.ok(Math.hypot(extension.x, extension.y) < 180);
+  assert.deepEqual(next.newNodeIds, ['c']);
+  assert.deepEqual(next.movedNodeIds, []);
+});
+
+test('legacy model layout memory migrates locally without losing nodes, pins, or graph data', async () => {
+  const { computeSemanticLayout, stabilizeSemanticLayout } = await importTypeScriptModule(
+    path.join(root, 'src', 'layouts', 'semantic.ts'),
+  );
+  const data = graph([
+    { id: 'a', label: '窗台春风', note: '树叶轻轻摇晃', createdOrder: 0, fixed: true, x: 120, y: -40 },
     { id: 'b', label: '量子测量', note: '纠缠态发生坍缩', createdOrder: 1 },
     { id: 'c', label: '黄油烘焙', note: '控制面团含水比例', createdOrder: 2 },
   ]);
-  const lexical = stabilizeSemanticLayout(data, computeSemanticLayout(data), undefined, 'lexical');
-  const vectors = new Map([
-    ['a', [1, 0]], ['b', [0.99, 0.01]], ['c', [0, 1]],
-  ]);
-  const dense = stabilizeSemanticLayout(data, computeSemanticLayout(data, { semanticVectors: vectors }), lexical.memory, 'dense');
-  assert.equal(dense.memory.source, 'dense');
-  assert.equal(dense.globalReframe, false);
-  assert.ok(dense.movedNodeIds.length >= 1);
+  const initial = stabilizeSemanticLayout(data, computeSemanticLayout(data), undefined);
+  const legacyMemory = { ...initial.memory, source: 'dense' };
+  const before = JSON.stringify(data);
+  const previous = JSON.stringify(legacyMemory);
+  const migrated = stabilizeSemanticLayout(data, computeSemanticLayout(data), legacyMemory);
+  assert.equal(migrated.memory.source, 'lexical');
+  assert.deepEqual(Object.keys(migrated.memory.nodes), ['a', 'b', 'c']);
+  assert.deepEqual(migrated.newNodeIds, []);
+  assert.equal(migrated.globalReframe, false);
+  assert.deepEqual([migrated.result.positions.get('a').x, migrated.result.positions.get('a').y], [120, -40]);
+  assert.equal(JSON.stringify(data), before);
+  assert.equal(JSON.stringify(legacyMemory), previous);
 });
 
 test('semantic layout memory survives a clean graph snapshot', async () => {
@@ -392,19 +517,19 @@ test('semantic layout memory survives a clean graph snapshot', async () => {
   assert.equal(snapshot.nodes[0]._semanticCard, undefined);
 });
 
-test('application defaults to auto, opportunistically uses local Qwen, and keeps force optional', async () => {
+test('application keeps automatic layout local and force optional', async () => {
   const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
   const paneState = await readFile(path.join(root, 'src', 'pane-state.ts'), 'utf8');
   const mcp = await readFile(path.join(root, 'mcp-server', 'server.js'), 'utf8');
-  const embeddings = await readFile(path.join(root, 'src', 'semantic-embeddings.ts'), 'utf8');
+  const layout = await readFile(path.join(root, 'src', 'layouts', 'semantic.ts'), 'utf8');
   assert.match(main, /layoutMode: 'auto'/);
   assert.match(paneState, /layoutMode: 'auto'/);
-  assert.match(main, /mkPill\('自动整理', 'auto'/);
-  assert.match(main, /mkPill\('自由（力导向）', 'force'/);
-  assert.match(main, /computeSemanticLayout\(targetGraph, \{ semanticVectors, collapsedNodeIds \}\)/);
+  assert.match(main, /layoutButton\('自动整理', 'auto'/);
+  assert.match(main, /layoutButton\('自由（力导向）', 'force'/);
+  assert.match(main, /computeSemanticLayout\(targetGraph, \{ collapsedNodeIds \}\)/);
   assert.match(main, /stabilizeSemanticLayout/);
   assert.match(main, /semanticLayoutMemory/);
-  assert.match(main, /LocalSemanticEmbeddingProvider/);
+  assert.doesNotMatch(main + layout, /LocalSemanticEmbeddingProvider|semanticVectors|qwen-local|127\.0\.0\.1:1234|\/embeddings/);
   assert.match(main, /自动整理.*张展开/);
   assert.doesNotMatch(main, /pill\.textContent = .*Qwen/);
   assert.match(main, /semanticCardDensity/);
@@ -413,9 +538,6 @@ test('application defaults to auto, opportunistically uses local Qwen, and keeps
   assert.match(main, /refreshSemanticLensForPane/);
   assert.match(main, /收束为节点/);
   assert.match(main, /echoes: result\.echoes/);
-  assert.match(embeddings, /127\.0\.0\.1:1234\/v1/);
-  assert.match(embeddings, /qwen3\[-_ \]embedding/i);
-  assert.match(embeddings, /isSensitiveSemanticText\(text\)/);
   const semanticSection = main.slice(
     main.indexOf('const applySemanticPositions'),
     main.indexOf('activateSemanticLayoutForPane ='),
@@ -424,7 +546,6 @@ test('application defaults to auto, opportunistically uses local Qwen, and keeps
   assert.doesNotMatch(semanticSection, /targetSimManager\.initSim/);
   assert.match(semanticSection, /if \(fitAfter\)/);
   assert.doesNotMatch(semanticSection, /if \(!animate \|\| fitAfter\)/);
-  assert.match(main, /applySemanticPositions\(targetPane, true, vectors, false, false\)/);
   assert.match(main, /returnToSemanticPosition/);
   assert.match(main, /activateSemanticLayoutForPane\(pi, true\)/);
   assert.doesNotMatch(main, /graphNode\.layout\s*=/);

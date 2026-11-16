@@ -1,6 +1,6 @@
 {
   "name": "nodespace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -10,11 +10,12 @@
     "test": "node --test tests/*.test.mjs",
     "check": "npm run test && npm run build",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5174 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "vite build && electron-builder",
-    "android:sync": "npm run build && npx cap sync android",
-    "android:build": "npm run android:sync && android\\gradlew.bat -p android assembleDebug",
-    "release": "npm run android:build && git add -A && git commit -m \"release %npm_package_version%\" && git push origin main"
+    "electron:dev": "concurrently --kill-others --success first \"vite --strictPort\" \"wait-on --timeout 20000 http://localhost:5174 && cross-env NODE_ENV=development electron .\"",
+    "electron:build": "npm run build && npm run electron:package --",
+    "electron:package": "electron-builder --publish never",
+    "android:sync": "npm run build && cap sync android",
+    "android:build": "npm run android:sync && node scripts/build-android.mjs",
+    "release": "release.bat"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.4",
@@ -22,7 +23,12 @@
     "@capacitor/core": "^8.3.4",
     "@capacitor/filesystem": "^8.1.2",
     "@capawesome/capacitor-file-picker": "^8.0.2",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
     "d3": "^7.9.0",
+    "katex": "^0.19.1",
     "pixi-filters": "^6.1.5",
     "pixi-viewport": "^6.0.3",
     "pixi.js": "^8.18.1"
@@ -44,13 +50,15 @@
     "electronDist": "node_modules/electron/dist",
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "!node_modules/**/*"
     ],
     "directories": {
       "output": "release"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "public/icon.ico"
     },
     "mac": {
       "target": "dmg"

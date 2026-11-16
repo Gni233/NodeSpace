@@ -30,6 +30,22 @@ async function loadTextView() {
 
 const api = await loadTextView();
 
+test('explicit black and grey color markers survive text round trips and can be removed', () => {
+  const graph = { nodes: [{ id: 'a', label: '窗边', color: '#000000', colorMode: 'custom' }, { id: 'b', label: '晚风' }],
+    edges: [{ source: 'a', target: 'b', color: '#BFBFBF', colorMode: 'custom' }], groups: [] };
+  const printed = api.printTextGraph(graph);
+  const result = api.compileTextGraph(printed, graph);
+  assert.equal(result.ok, true);
+  assert.equal(result.graph.nodes[0].color, '#000000');
+  assert.equal(result.graph.nodes[0].colorMode, 'custom');
+  assert.equal(result.graph.edges[0].color, '#BFBFBF');
+  assert.equal(result.graph.edges[0].colorMode, 'custom');
+  const reset = api.compileTextGraph(printed.replace(/  colorMode="custom"/g, ''), graph);
+  assert.equal(reset.ok, true);
+  assert.equal(reset.graph.nodes[0].colorMode, undefined);
+  assert.equal(reset.graph.edges[0].colorMode, undefined);
+});
+
 test('scanner handles quotes, escapes, comments, and preserves spaces beyond the first separator pair', () => {
   const scanned = api.scanLine('名字    三级  "含  双空格 ## 与 \\"引号\\""  ## 注释', 7);
   assert.deepEqual(scanned.fields.map(field => field.value), ['名字', '  三级', '含  双空格 ## 与 "引号"']);

@@ -28,16 +28,13 @@ export const Z_SELECTION_BOX = 20; // 框选矩形
 export const Z_SETTINGS_PANEL = 25; // 设置/预设面板
 export const Z_TOOLTIP = 50; // 悬停提示
 export const Z_DROPDOWN = 50; // 下拉菜单（与 tooltip 同级）
-export const Z_STATS = 80; // 统计栏
+export const Z_STATS = 9; // 画布统计，低于工具与编辑面板
+export const Z_TOOLBAR_POPOVER = 95; // 工具栏菜单高于移动端检查面板
 export const Z_CONTEXT_MENU = 100; // 右键菜单
-export const Z_WINDOW_CONTROLS = 150; // 窗口控制按钮
+export const Z_WINDOW_CONTROLS = 180; // 窗口按钮，跨越主界面转场
 export const Z_TOAST = 300; // Toast 通知
 export const Z_MODAL_BACKDROP = 9990; // 模态遮罩
 export const Z_MODAL = 9991; // 模态弹窗
-
-// ---- 窗口控制按钮 ----
-/** 窗口控制按钮区域预估宽度（含间距） */
-export const WIN_CONTROLS_WIDTH = 140;
 
 // ---- 动画 ----
 export const LAYOUT_ANIM_DURATION = 900; // 布局切换动画时长 (ms)

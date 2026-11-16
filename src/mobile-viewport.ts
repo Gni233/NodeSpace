@@ -31,7 +31,9 @@ export function resolveMobileViewportMetrics(input: MobileViewportInput): Mobile
   return {
     visualHeight,
     visualTop,
-    bottomInset: keyboardOpen ? candidateInset : layoutOcclusion,
+    // A WebView that already resized its layout has moved the CSS bottom
+    // edge. Remembered height detects its keyboard without moving it twice.
+    bottomInset: layoutOcclusion,
     keyboardOpen,
   };
 }
@@ -44,15 +46,17 @@ export interface MobileViewportCoordinator {
 const isEditable = (value: Element | null): boolean => {
   if (!(value instanceof HTMLElement)) return false;
   if (value.isContentEditable) return true;
-  if (value instanceof HTMLTextAreaElement || value instanceof HTMLSelectElement) return true;
+  if (value instanceof HTMLTextAreaElement) return !value.readOnly && !value.disabled;
   if (!(value instanceof HTMLInputElement)) return false;
-  return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(value.type);
+  return !value.readOnly && !value.disabled
+    && !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(value.type);
 };
 
 export function createMobileViewportCoordinator(root: HTMLElement): MobileViewportCoordinator {
   let largestVisualHeight = window.visualViewport?.height || window.innerHeight;
   let previousWidth = window.visualViewport?.width || window.innerWidth;
   let pendingFrame: number | null = null;
+  let focusTimer: number | undefined;
 
   const apply = () => {
     pendingFrame = null;
@@ -84,7 +88,10 @@ export function createMobileViewportCoordinator(root: HTMLElement): MobileViewpo
     if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
     pendingFrame = requestAnimationFrame(apply);
   };
-  const onFocusOut = () => window.setTimeout(refresh, 80);
+  const onFocusOut = () => {
+    window.clearTimeout(focusTimer);
+    focusTimer = window.setTimeout(() => { focusTimer = undefined; refresh(); }, 80);
+  };
 
   window.addEventListener('resize', refresh);
   window.addEventListener('orientationchange', refresh);
@@ -98,6 +105,7 @@ export function createMobileViewportCoordinator(root: HTMLElement): MobileViewpo
     refresh,
     destroy() {
       if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
+      window.clearTimeout(focusTimer);
       window.removeEventListener('resize', refresh);
       window.removeEventListener('orientationchange', refresh);
       window.visualViewport?.removeEventListener('resize', refresh);

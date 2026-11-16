@@ -17,14 +17,36 @@ test('link exits clear cursor state, preview graphics, and redraw the active pan
   assert.match(main, /else if \(focusedLinkActive\(\)\) \{[\s\S]*?finishLinkMode\(fp\);/);
 });
 
-test('node name edits update graph and simulation live with one undo snapshot', async () => {
+test('inline node name edits update the owning graph and simulation with one undo snapshot', async () => {
   const edit = await readFile(path.join(root, 'src', 'ui-edit.ts'), 'utf8');
   const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
 
   assert.match(edit, /saveUndo\?: \(\) => void;/);
-  assert.match(edit, /const syncNodeName = \(\) => \{[\s\S]*?ctx\.saveUndo\?\.\(\);[\s\S]*?node\.label = label;[\s\S]*?simNode\.label = label;[\s\S]*?ctx\.triggerSave\(\);[\s\S]*?ctx\.draw\(\);/);
-  assert.match(edit, /nName\.addEventListener\('input', syncNodeName\);/);
-  assert.match(edit, /nName\.addEventListener\('blur', commitNameEdit\);/);
-  assert.match(edit, /const fillNode = \(id: string\) => \{\s*commitNameEdit\(\);/);
+  assert.match(edit, /const nodeTextEditor = createNodeTextEditor\([\s\S]*?saveUndo: ctx\.saveUndo,[\s\S]*?simNode\[field\] = node\[field\];[\s\S]*?ctx\.triggerSave\(\);/);
+  assert.match(edit, /bindNodeTextInput\(nName, 'label', nodeTextEditor\);\s*appendOnEntry\(nName\)/);
+  assert.match(main, /const createPaneNodeTextChange = [\s\S]*?saveUndo: \(\) => runtime\.undoManager\.pushSnapshot\(destination\)[\s\S]*?simulated\[field\] = node\[field\][\s\S]*?editor\.update\(field, value\)/);
+  assert.match(main, /const beginNodeTitleEditForPane = [\s\S]*?createPaneNodeTextChange\(pane, id, 'label'\)/);
+  assert.match(edit, /bindNodeTextInput\(nNote, 'note', nodeTextEditor\)/);
+  assert.match(edit, /const fillNode = \(id: string\) => \{\s*propertyEdit = null;\s*nodeTextEditor\.end\(\);/);
   assert.match(main, /clearLinkMode: \(\) => finishLinkMode\(\),\s*saveUndo,/);
+});
+
+test('history shortcuts handle uppercase Z produced by Shift or Caps Lock', async () => {
+  const main = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
+  const start = main.indexOf('if (ctrl && /^z$/i.test(e.key)');
+  const end = main.indexOf('} else if (ctrl && /^s$/i.test(e.key))', start);
+  assert.ok(start > 0 && end > start);
+  const handle = new Function('e', 'ctrl', 'runFocusedHistory', `${main.slice(start, end)}}`);
+  for (const key of ['z', 'Z']) {
+    for (const shiftKey of [false, true]) {
+      let prevented = false;
+      const actions = [];
+      handle({ key, shiftKey, preventDefault: () => { prevented = true; } }, true, action => actions.push(action));
+      assert.deepEqual(actions, [shiftKey ? 'redo' : 'undo']);
+      assert.equal(prevented, true);
+    }
+  }
+  const actions = [];
+  handle({ key: 'z', shiftKey: false, preventDefault() {} }, false, action => actions.push(action));
+  assert.deepEqual(actions, []);
 });

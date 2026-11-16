@@ -1,5 +1,7 @@
 package com.nodespace.app;
 
+import android.app.Activity;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -19,11 +21,15 @@ import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.regex.Pattern;
 
 @CapacitorPlugin(name = "SafPlugin")
 public class SafPlugin extends Plugin {
@@ -33,6 +39,7 @@ public class SafPlugin extends Plugin {
     private static final String PREFS_NAME = "saf_prefs";
     private static final String KEY_URI = "tree_uri";
     private static final String KEY_NAME = "folder_name";
+    private static final Pattern BACKUP_CACHE_NAME = Pattern.compile("nodespace-backup-[a-zA-Z0-9-]+\\.json");
 
     private void loadSavedUri() {
         SharedPreferences prefs = getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -109,6 +116,68 @@ public class SafPlugin extends Plugin {
         } else {
             call.reject("Directory picker cancelled");
         }
+    }
+
+    /** Save a staged backup to a document chosen by the user. */
+    @PluginMethod
+    public void saveBackup(PluginCall call) {
+        String fileName = call.getString("fileName");
+        File backup = getStagedBackup(call);
+        if (fileName == null || fileName.trim().isEmpty() || backup == null) {
+            call.reject("A file name and a valid backup cache name are required");
+            return;
+        }
+        if (!backup.isFile()) {
+            call.reject("The staged backup is missing");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        try {
+            startActivityForResult(call, intent, "saveBackupResult");
+        } catch (Exception e) {
+            call.reject("Could not open the document picker: " + e.getMessage());
+        }
+    }
+
+    private File getStagedBackup(PluginCall call) {
+        String cacheName = call.getString("cacheName");
+        if (cacheName == null || !BACKUP_CACHE_NAME.matcher(cacheName).matches()) return null;
+        return new File(getContext().getCacheDir(), cacheName);
+    }
+
+    @ActivityCallback
+    private void saveBackupResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() == Activity.RESULT_CANCELED) {
+            call.resolve(new JSObject().put("saved", false));
+            return;
+        }
+        Intent data = result.getData();
+        Uri destination = data == null ? null : data.getData();
+        File backup = getStagedBackup(call);
+        if (result.getResultCode() != Activity.RESULT_OK || destination == null
+                || !ContentResolver.SCHEME_CONTENT.equals(destination.getScheme()) || backup == null) {
+            call.reject("No backup destination was returned");
+            return;
+        }
+        execute(() -> {
+            try (InputStream input = new FileInputStream(backup);
+                 OutputStream output = getContext().getContentResolver().openOutputStream(destination, "wt")) {
+                if (output == null) throw new IOException("Could not open the destination document");
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, count);
+                }
+            } catch (Exception e) {
+                call.reject("Backup write failed: " + e.getMessage());
+                return;
+            }
+            call.resolve(new JSObject().put("saved", true));
+        });
     }
 
     /** Restore previously-picked directory */

@@ -1,11 +1,40 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = file => readFile(path.join(root, 'src', file), 'utf8');
+
+test('a prompt inside the workbench keeps keyboard focus inside its overlay', async () => {
+  const ts = createRequire(import.meta.url)('typescript');
+  const script = (await source('dialog.ts')).replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '');
+  const code = ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+  const dialog = {};
+  const fakeDocument = { body: {}, querySelector: () => dialog, activeElement: null };
+  const { activeDialogContainer, wrapDialogTab } = new Function('document',
+    `${code}\nreturn { activeDialogContainer, wrapDialogTab };`)(fakeDocument);
+  const control = () => ({ focus() { fakeDocument.activeElement = this; } });
+  const first = control(), last = control();
+  const overlay = { contains: element => element === first || element === last };
+  const tab = shiftKey => ({ key: 'Tab', shiftKey, preventDefault() { this.prevented = true; } });
+
+  assert.equal(activeDialogContainer(), dialog);
+  first.focus();
+  const backwards = tab(true);
+  wrapDialogTab(backwards, overlay, first, last);
+  assert.equal(fakeDocument.activeElement, last);
+  assert.equal(backwards.prevented, true);
+  const forwards = tab(false);
+  wrapDialogTab(forwards, overlay, first, last);
+  assert.equal(fakeDocument.activeElement, first);
+  assert.equal(forwards.prevented, true);
+  fakeDocument.activeElement = dialog;
+  wrapDialogTab(tab(false), overlay, first, last);
+  assert.equal(fakeDocument.activeElement, first);
+});
 
 test('dialogs and feedback share one DOM-native visual language', async () => {
   const [dialog, toast, updateDialog, styles] = await Promise.all([
@@ -23,12 +52,18 @@ test('dialogs and feedback share one DOM-native visual language', async () => {
 });
 
 test('menus, settings scopes, and mobile actions use the shared component grammar', async () => {
-  const [main, contextMenu, sidebar, tabs, settings, mobile, styles] = await Promise.all([
-    source('main.ts'), source('ui-contextmenu.ts'), source('ui-sidebar.ts'), source('ui-tabs.ts'),
-    source('settings-panel.ts'), source('ui-mobile-toolbar.ts'), source('workspace-ui.css'),
+  const [main, contextMenu, sidebar, events, home, settings, mobile, styles] = await Promise.all([
+    source('main.ts'), source('ui-contextmenu.ts'), source('ui-sidebar.ts'), source('ui-events.ts'),
+    source('workbench-home.ts'), source('settings-panel.ts'),
+    source('ui-mobile-toolbar.ts'), source('workspace-ui.css'),
   ]);
 
-  for (const menuSource of [main, contextMenu, sidebar, tabs]) assert.match(menuSource, /fg-context-menu/);
+  assert.match(contextMenu, /fg-context-menu/);
+  for (const menuSource of [main, sidebar, events, settings]) assert.match(menuSource, /showActionWheel\(/);
+  assert.match(events, /label: '批量颜色',[\s\S]*?children: PRESET_COLORS\.map/);
+  assert.match(home, /showContextWheel\(menuLayer,/);
+  assert.match(home, /bindContextMenuTrigger\(gallery\.element,[\s\S]*?label: '记录一个想法', action: actions\.onRecord/);
+  assert.doesNotMatch(home, /ns-home-header/);
   assert.match(sidebar, /应用与默认值/);
   assert.match(settings, /新空间默认值/);
   assert.match(settings, /当前空间在顶部“外观”中调整/);
@@ -51,6 +86,7 @@ test('native and custom dropdowns inherit the active light or dark theme', async
   assert.match(index, /html, body[\s\S]*?color: var\(--fg-text\)/);
   assert.match(styles, /\.fg-setting-select[\s\S]*?color: var\(--fg-input-text\) !important/);
   assert.match(styles, /\.fg-setting-select > option:disabled[\s\S]*?color: var\(--fg-text-muted\)/);
-  assert.match(main, /groupDropdown\.className = 'fg-group-dropdown'/);
+  assert.match(main, /groupDropdown\.className = 'fg-search-results fg-group-dropdown'/);
+  assert.match(styles, /\.fg-search-results[\s\S]*?border: 1px solid var\(--ns-stroke\)/);
   assert.match(settings, /cbSel\.className = 'fg-setting-select'/);
 });

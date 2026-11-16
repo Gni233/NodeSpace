@@ -3,9 +3,10 @@
  * 查询 GitHub Releases API，对比版本号，返回更新信息
  */
 
+import { version as CURRENT_VERSION } from '../package.json';
+
 const REPO_OWNER = 'Gni233';
 const REPO_NAME = 'nodespace';
-const CURRENT_VERSION = '0.1.0';
 
 export interface UpdateInfo {
   version: string;

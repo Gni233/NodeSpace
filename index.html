@@ -6,34 +6,25 @@
   <title>NodeSpace</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <style>
-    /* ---- Electron 无边框窗口拖动区域 ---- */
-    .fg-drag-region {
-      -webkit-app-region: drag;
-    }
-    .fg-drag-region button,
-    .fg-drag-region input,
-    .fg-drag-region select,
-    .fg-drag-region textarea,
-    .fg-drag-region details,
-    .fg-drag-region summary,
-    .fg-drag-region [draggable] {
-      -webkit-app-region: no-drag;
-    }
-
     /* ---- Reset ---- */
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
       --fg-font-family: system-ui, -apple-system, sans-serif;
-      --fg-color-scheme: dark;
+      --fg-ui-font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      --fg-color-scheme: light;
     }
     html { color-scheme: var(--fg-color-scheme); }
     html, body {
       width: 100%; height: 100%; overflow: hidden;
-      font-family: var(--fg-font-family);
+      font-family: var(--fg-ui-font-family);
       color: var(--fg-text);
+      background: var(--fg-canvas-bg);
       transition: background var(--fg-transition, 0.25s ease);
     }
+
+    button, input, select, textarea, summary { font-family: inherit; }
+    input[type="checkbox"] { accent-color: var(--fg-accent); }
 
     #app {
       width: 100vw; height: 100vh; height: 100dvh;
@@ -64,62 +55,63 @@
       -webkit-user-select: auto;
     }
 
-    /* ---- CSS Variable Defaults (generic-dark fallback) ---- */
+    /* ---- CSS Variable Defaults (paper-light startup; active graph overrides these) ---- */
     :root {
-      --fg-canvas-bg: #2a2a2a;
-      --fg-surface: #3f3f3f;
-      --fg-surface-glass: rgba(63,63,63,0.65);
-      --fg-surface-elevated: rgba(63,63,63,0.85);
-      --fg-text: #ffffff;
-      --fg-text-muted: #a0a0a0;
-      --fg-text-dim: #666666;
-      --fg-border: #7e7e7e;
-      --fg-border-light: rgba(255,255,255,0.08);
-      --fg-input-bg: #3f3f3f;
-      --fg-input-text: #ffffff;
-      --fg-input-border: #7e7e7e;
-      --fg-button-bg: #545454;
-      --fg-button-text: #ffffff;
-      --fg-button-hover: #5e5e5e;
-      --fg-accent: #5B8FF9;
-      --fg-accent-hover: #4a7ce0;
-      --fg-accent-text: #ffffff;
-      --fg-danger: #e03030;
-      --fg-danger-hover: #c52828;
-      --fg-success: #4CAF50;
-      --fg-warning: #FF9800;
-      --fg-shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
-      --fg-shadow-md: 0 4px 16px rgba(0,0,0,0.4);
-      --fg-shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
-      --fg-glass-blur: 14px;
-      --fg-glass-blur-sm: 6px;
-      --fg-glass-blur-md: 12px;
-      --fg-glass-blur-lg: 20px;
-      --fg-glass-border: rgba(255,255,255,0.08);
+      --fg-canvas-bg: #f6f0e1;
+      --fg-surface: #fbf8f0;
+      --fg-workspace-shelf: #f1ebda;
+      --fg-surface-glass: rgba(251,248,240,0.55);
+      --fg-surface-elevated: rgba(251,248,240,0.80);
+      --fg-text: #251e11;
+      --fg-text-muted: #4f4531;
+      --fg-text-dim: #6e6146;
+      --fg-border: #ded2b8;
+      --fg-border-light: rgba(0,0,0,0.08);
+      --fg-input-bg: #f6f0e1;
+      --fg-input-text: #251e11;
+      --fg-input-border: #ded2b8;
+      --fg-button-bg: #ede5d1;
+      --fg-button-text: #251e11;
+      --fg-button-hover: #dfd7c4;
+      --fg-accent: #a8563e;
+      --fg-accent-hover: #91452f;
+      --fg-accent-text: #fffdf8;
+      --fg-danger: #DC2626;
+      --fg-danger-hover: #B91C1C;
+      --fg-success: #16A34A;
+      --fg-warning: #D97706;
+      --fg-shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+      --fg-shadow-md: 0 4px 16px rgba(0,0,0,0.12);
+      --fg-shadow-lg: 0 8px 32px rgba(0,0,0,0.15);
+      --fg-glass-blur: 12px;
+      --fg-glass-blur-sm: 4px;
+      --fg-glass-blur-md: 10px;
+      --fg-glass-blur-lg: 16px;
+      --fg-glass-border: rgba(0,0,0,0.08);
       --fg-radius-sm: 6px;
       --fg-radius-md: 10px;
       --fg-radius-lg: 14px;
       --fg-label-width: 110px;
       --fg-input-number-width: 55px;
       --fg-line-height: 1.5;
-      --fg-font-xxs: 0.68em;
-      --fg-font-xs: 0.75em;
-      --fg-font-sm: 0.84em;
-      --fg-font-md: 0.88em;
-      --fg-font-lg: 0.95em;
-      --fg-font-xl: 1.15em;
+      --fg-font-xxs: 0.65em;
+      --fg-font-xs: 0.72em;
+      --fg-font-sm: 0.8em;
+      --fg-font-md: 0.85em;
+      --fg-font-lg: 0.92em;
+      --fg-font-xl: 1.1em;
       --fg-transition-fast: 0.15s ease;
       --fg-transition: 0.25s ease;
-      --fg-scrollbar-thumb: rgba(255,255,255,0.15);
-      --fg-scrollbar-thumb-hover: rgba(255,255,255,0.3);
-      --fg-sidebar-bg: #3f3f3f;
-      --fg-sidebar-border: #7e7e7e;
-      --fg-sidebar-header-text: #ffffff;
-      --fg-sidebar-item-hover: #4a4a4a;
-      --fg-sidebar-item-active: #505050;
-      --fg-tab-inactive: #a0a0a0;
-      --fg-tab-active-bg: #3f3f3f;
-      --fg-tab-active-border: #7e7e7e;
+      --fg-scrollbar-thumb: rgba(0,0,0,0.15);
+      --fg-scrollbar-thumb-hover: rgba(0,0,0,0.25);
+      --fg-sidebar-bg: #fbf8f0;
+      --fg-sidebar-border: #ded2b8;
+      --fg-sidebar-header-text: #251e11;
+      --fg-sidebar-item-hover: #ece9e2;
+      --fg-sidebar-item-active: #e2dfd8;
+      --fg-tab-inactive: #4f4531;
+      --fg-tab-active-bg: #f6f0e1;
+      --fg-tab-active-border: #ded2b8;
     }
 
     /* ---- Shared component styles ---- */
@@ -295,16 +287,6 @@
     .fg-tab.is-active {
       box-shadow: inset 0 -2px 0 var(--fg-accent);
     }
-    .fg-primary-actions {
-      display: flex !important;
-      align-items: center !important;
-      flex-wrap: nowrap !important;
-      gap: 6px !important;
-      min-width: 0;
-      overflow: visible;
-      scrollbar-width: none;
-    }
-    .fg-primary-actions::-webkit-scrollbar { display:none; }
     .fg-action { flex: 0 0 auto; white-space: nowrap; }
     .fg-action-primary {
       color: var(--fg-accent-text);
@@ -365,7 +347,7 @@
       display:flex;
       flex-direction:column;
       gap:8px;
-      width:min(640px, calc(100vw - 32px));
+      width:min(480px, calc(100vw - 16px));
     }
     .fg-layout-popover {
       width:min(760px, calc(100vw - 16px));
@@ -401,10 +383,6 @@
       border-color:color-mix(in srgb, var(--fg-accent) 36%, transparent) !important;
       background:color-mix(in srgb, var(--fg-accent) 14%, transparent) !important;
     }
-    .fg-view-toggle { border-style:dashed !important; }
-    .fg-search-row { flex-wrap:nowrap !important; gap:5px !important; }
-    .fg-search-row input { min-width:120px !important; }
-    .fg-secondary-actions { gap:5px !important; }
 
     /* Sidebar: quiet navigation, stronger active state, less wasted width. */
     .fg-sidebar {
@@ -524,24 +502,7 @@
     @media (max-width: 720px) {
       :root { --fg-control-h:34px; }
       .fg-command-center { right:6px !important; }
-      .fg-primary-actions {
-        gap:5px !important;
-        overflow-x:auto !important;
-        overflow-y:hidden;
-      }
-      .fg-toolbar-popover {
-        position:fixed;
-        left:6px;
-        right:6px;
-        top:96px;
-        width:auto;
-        min-width:0;
-        max-height:calc(100dvh - 108px);
-        overflow:auto;
-      }
       .fg-mode-switcher { flex-wrap:wrap; }
-      .fg-search-row { flex-wrap:wrap !important; }
-      .fg-search-row input { min-width:160px !important; flex:1; }
       .fg-inspector {
         right:6px !important;
         min-width:0 !important;

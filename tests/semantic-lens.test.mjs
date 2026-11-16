@@ -46,7 +46,7 @@ test('semantic lens zoom bands use hysteresis instead of flickering at one thres
 test('adaptive lens prioritizes focus, explicit neighbors, and semantic echoes within a budget', async () => {
   const { computeSemanticLens } = await loadLens();
   const edges = [{ source: 'n4', target: 'n5' }];
-  const echoes = [{ source: 'n4', target: 'n7', score: 0.82, kind: 'hybrid', reason: '共同线索', terms: [] }];
+  const echoes = [{ source: 'n4', target: 'n7', score: 0.82, kind: 'lexical', reason: '共同线索', terms: [] }];
   const decision = computeSemanticLens({
     nodes,
     edges,
@@ -93,4 +93,16 @@ test('previous cards get stability without overriding a new focus', async () => 
   assert.equal(second.band, first.band);
   assert.ok(second.expandedNodeIdsSet.has('n10'));
   assert.equal(second.expandedNodeIds.length, second.budget);
+});
+
+test('default node view stays compact across zoom and selection, with reading available explicitly', async () => {
+  const { computeSemanticLens, DEFAULT_SEMANTIC_CARD_DENSITY } = await loadLens();
+  assert.equal(DEFAULT_SEMANTIC_CARD_DENSITY, 'nodes');
+  for (const zoom of [0.2, 0.75, 1.5]) {
+    const decision = computeSemanticLens({ nodes, zoom, focusNodeId: 'n4', manualForms: { n4: 'card' } });
+    assert.deepEqual(decision.expandedNodeIds, []);
+    assert.equal(decision.collapsedNodeIds.size, nodes.length);
+  }
+  const reading = computeSemanticLens({ nodes, density: 'full' });
+  assert.equal(reading.expandedNodeIds.length, nodes.length);
 });

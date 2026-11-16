@@ -3,14 +3,98 @@ export interface ThemeConfig {
   nodeDefaultColor: string;
   labelColor: string;
   uiPanelBackground: string;
+  uiShelfBackground?: string;
   uiButtonBackground: string;
   uiButtonTextColor: string;
+  uiMutedTextColor?: string;
+  uiDimTextColor?: string;
   uiInputBackground: string;
   uiInputTextColor: string;
   uiInputBorder: string;
+  accentColor?: string;
+  accentHoverColor?: string;
+  accentTextColor?: string;
+  gridColor?: string;
+  edgeColors?: { explicit: string; structure: string; directional: string; reference: string };
+  /** Optional colors for node levels 1–6 in the hierarchical color mode. */
+  headingColors?: readonly [string, string, string, string, string, string];
 }
 
+export const DEFAULT_GRAPH_THEME = 'paper-light';
+export const DEFAULT_CANVAS_FONT = 'system-ui, -apple-system, sans-serif';
+
 export const THEMES: Record<string, ThemeConfig> = {
+  "paper-light": {
+    // Claude light's base, mantle, crust, and ink; raised panels use a lighter sheet of the same paper.
+    canvasBackground: "#f6f0e1",
+    nodeDefaultColor: "#a8563e",
+    labelColor: "#251e11",
+    uiPanelBackground: "#fbf8f0",
+    uiShelfBackground: "#f1ebda",
+    uiButtonBackground: "#ede5d1",
+    uiButtonTextColor: "#251e11",
+    uiMutedTextColor: "#4f4531",
+    uiDimTextColor: "#6e6146",
+    uiInputBackground: "#f6f0e1",
+    uiInputTextColor: "#251e11",
+    uiInputBorder: "#ded2b8",
+    accentColor: "#a8563e",
+    accentHoverColor: "#91452f",
+    accentTextColor: "#fffdf8",
+    gridColor: "#a89a7d",
+    edgeColors: { explicit: "#8b8170", structure: "#7e8767", directional: "#a46d52", reference: "#9a7c85" },
+    // Claude light H1–H6 from the Obsidian extended color schemes: peach, maroon, yellow, green, teal, mauve.
+    headingColors: ["#96442b", "#7c3620", "#a8751f", "#3e8153", "#3e6b58", "#8c5f72"],
+  },
+  "claude-dark": {
+    // Claude dark from the Obsidian extended color schemes.
+    canvasBackground: "#201d17",
+    nodeDefaultColor: "#d07b52",
+    labelColor: "#ede6d6",
+    uiPanelBackground: "#252119",
+    uiShelfBackground: "#1d1a15",
+    uiButtonBackground: "#2b271f",
+    uiButtonTextColor: "#ede6d6",
+    uiMutedTextColor: "#c5bba5",
+    uiDimTextColor: "#a79b83",
+    uiInputBackground: "#1a1813",
+    uiInputTextColor: "#ede6d6",
+    uiInputBorder: "#4c4433",
+    accentColor: "#de8f66",
+    accentHoverColor: "#e9a985",
+    accentTextColor: "#1a1813",
+    gridColor: "#756d5c",
+    edgeColors: { explicit: "#918777", structure: "#84b383", directional: "#d07b52", reference: "#c08ba0" },
+    headingColors: ["#d07b52", "#a85f3d", "#d3a34c", "#84b383", "#7dd3c7", "#c08ba0"],
+  },
+  "constellation-dark": {
+    canvasBackground: "#111923",
+    nodeDefaultColor: "#abd9d5",
+    labelColor: "#e3ebf2",
+    uiPanelBackground: "#1b2835",
+    uiButtonBackground: "#283c4c",
+    uiButtonTextColor: "#e3ebf2",
+    uiInputBackground: "#14212d",
+    uiInputTextColor: "#e3ebf2",
+    uiInputBorder: "#3a5062",
+    accentColor: "#a7dcd5",
+    accentHoverColor: "#c5ece7",
+    accentTextColor: "#102e30",
+  },
+  "constellation-light": {
+    canvasBackground: "#f5f4ef",
+    nodeDefaultColor: "#3b716b",
+    labelColor: "#263e48",
+    uiPanelBackground: "#fffefa",
+    uiButtonBackground: "#e6ece8",
+    uiButtonTextColor: "#263e48",
+    uiInputBackground: "#f5f6f1",
+    uiInputTextColor: "#263e48",
+    uiInputBorder: "#cad7d4",
+    accentColor: "#326d67",
+    accentHoverColor: "#255a55",
+    accentTextColor: "#ffffff",
+  },
   "atom-light": {
     canvasBackground: "#fafafa",
     nodeDefaultColor: "#383a42",
@@ -322,6 +406,10 @@ export const THEMES: Record<string, ThemeConfig> = {
 };
 
 export const THEME_LABELS: Record<string, string> = {
+  "paper-light": "纸白 · 暖陶",
+  "claude-dark": "Claude · 暖夜",
+  "constellation-dark": "星图 · 夜航",
+  "constellation-light": "星图 · 晨光",
   "amoled-dark": "AMOLED 暗色",
   "atom-dark": "Atom 暗色",
   "atom-light": "Atom 亮色",
@@ -440,7 +528,7 @@ export function deriveAccentColor(canvasBg: string, dark: boolean): { accent: st
   if (dark) {
     // 基于背景色调生成多样化的强调色
     const maxC = Math.max(r, g, b);
-    const hue360 = maxC === 0 ? 210 : ((maxC === r ? ((g - b) / (maxC - Math.min(r, g, b))) * 60 + (g < b ? 360 : 0) : maxC === g ? ((b - r) / (maxC - Math.min(r, g, b))) * 60 + 120 : ((r - g) / (maxC - Math.min(r, g, b))) * 60 + 240));
+    const hue360 = maxC === Math.min(r, g, b) ? 210 : ((maxC === r ? ((g - b) / (maxC - Math.min(r, g, b))) * 60 + (g < b ? 360 : 0) : maxC === g ? ((b - r) / (maxC - Math.min(r, g, b))) * 60 + 120 : ((r - g) / (maxC - Math.min(r, g, b))) * 60 + 240));
     // 将背景色相映射到强调色相（黄金角约 137.5° 偏移，科学美观）
     const accentHue = (hue360 + 137.5) % 360;
     // 高饱和 + 中高明度保证暗主题上可见
@@ -509,20 +597,35 @@ export function ensureGroupContrast(groupColor: string, canvasBg: string): { col
 export function deriveThemeVars(t: ThemeConfig): ThemeVars {
   const dark = isThemeDark(t);
   const [sr, sg, sb] = hexToRgbNum(t.uiPanelBackground);
+  const [tr, tg, tb] = hexToRgbNum(t.uiButtonTextColor);
+  const shelf = t.uiShelfBackground ?? rgbToHex(
+    Math.round(sr * .96 + tr * .04),
+    Math.round(sg * .96 + tg * .04),
+    Math.round(sb * .96 + tb * .04),
+  );
 
   const glassAlpha = dark ? "0.65" : "0.55";
   const elevatedAlpha = dark ? "0.85" : "0.80";
   const hoverAmount = dark ? 0.08 : -0.06;
 
-  let textMuted = adjustHex(t.uiButtonTextColor, dark ? -0.35 : 0.35);
-  const mutedContrast = wcagContrast(textMuted, t.uiPanelBackground);
-  if (mutedContrast < 3.5) {
-    textMuted = adjustHex(t.uiButtonTextColor, dark ? -0.20 : 0.20);
-  }
-  const textDim = adjustHex(t.uiButtonTextColor, dark ? -0.55 : 0.50);
+  const readableSecondary = (amount: number, preferred?: string): string => {
+    const readable = (color: string): boolean =>
+      [t.uiPanelBackground, shelf, t.canvasBackground].every(bg => wcagContrast(color, bg) >= 4.5);
+    const desired = preferred ?? adjustHex(t.uiButtonTextColor, amount);
+    if (readable(desired)) return desired;
+    for (let step = 1; step <= 20; step++) {
+      const candidate = adjustHex(desired, (dark ? 1 : -1) * step / 20);
+      if (readable(candidate)) return candidate;
+    }
+    return dark ? '#ffffff' : '#000000';
+  };
+  const textMuted = readableSecondary(dark ? -0.28 : 0.25, t.uiMutedTextColor);
+  const textDim = readableSecondary(dark ? -0.44 : 0.40, t.uiDimTextColor);
 
   // Per-theme accent/danger
-  const { accent, accentHover } = deriveAccentColor(t.canvasBackground, dark);
+  const generated = deriveAccentColor(t.canvasBackground, dark);
+  const accent = t.accentColor ?? generated.accent;
+  const accentHover = t.accentHoverColor ?? generated.accentHover;
   const { danger, dangerHover } = deriveDangerColor(t.canvasBackground, dark);
   const { success, warning } = deriveSemanticColors(dark);
 
@@ -535,6 +638,7 @@ export function deriveThemeVars(t: ThemeConfig): ThemeVars {
 
     // Surfaces
     "--fg-surface": t.uiPanelBackground,
+    "--fg-workspace-shelf": shelf,
     "--fg-surface-glass": `rgba(${sr},${sg},${sb},${glassAlpha})`,
     "--fg-surface-elevated": `rgba(${sr},${sg},${sb},${elevatedAlpha})`,
 
@@ -562,7 +666,8 @@ export function deriveThemeVars(t: ThemeConfig): ThemeVars {
     // Accent (per-theme generated)
     "--fg-accent": accent,
     "--fg-accent-hover": accentHover,
-    "--fg-accent-text": "#ffffff",
+    "--fg-accent-text": t.accentTextColor
+      ?? (wcagContrast('#ffffff', accent) >= 4.5 ? '#ffffff' : '#111923'),
 
     // Danger (per-theme generated)
     "--fg-danger": danger,
@@ -583,6 +688,12 @@ export function deriveThemeVars(t: ThemeConfig): ThemeVars {
     "--fg-shadow-lg": dark
       ? "0 8px 32px rgba(0,0,0,0.5)"
       : "0 8px 32px rgba(0,0,0,0.15)",
+    "--fg-workspace-shadow-panel": dark
+      ? "0 14px 42px rgba(0,0,0,.24), 0 2px 6px rgba(0,0,0,.14)"
+      : "0 14px 40px rgba(57,55,47,.07), 0 2px 6px rgba(57,55,47,.04)",
+    "--fg-workspace-shadow-float": dark
+      ? "0 4px 16px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.12)"
+      : "0 4px 16px rgba(57,55,47,.04), 0 1px 3px rgba(57,55,47,.035)",
 
     // Glass effect
     "--fg-glass-blur": "12px",
@@ -648,12 +759,12 @@ export function applyThemeVars(el: HTMLElement, t: ThemeConfig): void {
 /** 从主题名提取强调色数值（用于 renderPane 的节点高亮等） */
 export function getAccentColorsForTheme(themeName: string): { accent: number; accentAlt: number } {
   const t = THEMES[themeName] || THEMES["generic-dark"];
-  const dark = relativeLuminance(t.canvasBackground) < 0.5;
-  const { accent } = deriveAccentColor(t.canvasBackground, dark);
+  const dark = isThemeDark(t);
+  const accent = t.accentColor ?? deriveAccentColor(t.canvasBackground, dark).accent;
   return {
     accent: parseInt(accent.replace('#', ''), 16) || 0x5B8FF9,
     accentAlt: 0xF59E0B, // warning color is fixed per-theme
   };
 }
 
-export const CSS_VAR_DEFAULTS = deriveThemeVars(THEMES["generic-dark"]);
+export const CSS_VAR_DEFAULTS = deriveThemeVars(THEMES[DEFAULT_GRAPH_THEME]);

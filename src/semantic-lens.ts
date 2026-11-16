@@ -16,6 +16,7 @@ const semanticNodeBody = (node: any): string => node?.spaceRef
 
 export type SemanticLensBand = SemanticZoomBand;
 export type SemanticLensDensity = 'full' | 'mixed' | 'nodes';
+export const DEFAULT_SEMANTIC_CARD_DENSITY: SemanticLensDensity = 'nodes';
 
 export interface SemanticLensState {
   band: SemanticLensBand;
@@ -75,7 +76,7 @@ export function computeSemanticLens(options: SemanticLensOptions): SemanticLensD
   const nodes = options.nodes || [];
   const ids = nodes.map(node => String(node.id));
   const alive = new Set(ids);
-  const density = options.density ?? 'mixed';
+  const density = options.density ?? DEFAULT_SEMANTIC_CARD_DENSITY;
   const focusNodeId = options.focusNodeId && alive.has(String(options.focusNodeId))
     ? String(options.focusNodeId)
     : null;

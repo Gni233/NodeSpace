@@ -2,8 +2,9 @@
  * Capacitor/WebView 文件系统模块（兼容 HarmonyOS）
  * 使用 @capacitor/filesystem 存储，使用 HTML 文件选择器导入
  */
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { FilePicker } from '@capawesome/capacitor-file-picker';
+import { Capacitor } from '@capacitor/core';
 
 const WORK_DIR = 'graphs';
 
@@ -41,13 +42,14 @@ export async function pickDirectoryAndImport(): Promise<number> {
   await ensureWorkDir();
   for (const f of jsonFiles) {
     try {
-      const result = await Filesystem.readFile({ path: f.path });
+      const result = await Filesystem.readFile({ path: f.path, encoding: Encoding.UTF8 });
       const text = result.data as string;
       JSON.parse(text);
       await Filesystem.writeFile({
         path: `${WORK_DIR}/${f.name}`,
         data: text,
         directory: Directory.Data,
+        encoding: Encoding.UTF8,
       });
       imported++;
     } catch (e) {
@@ -73,6 +75,7 @@ export async function importFilesMobile(files: FileList): Promise<void> {
         path: `${WORK_DIR}/${name}`,
         data: text,
         directory: Directory.Data,
+        encoding: Encoding.UTF8,
       });
     } catch (e) {
       console.error('import failed:', name, e);
@@ -124,6 +127,7 @@ export function createFileImporter(onDone: () => void): { label: HTMLElement; in
           path: `${WORK_DIR}/${name}`,
           data: text,
           directory: Directory.Data,
+          encoding: Encoding.UTF8,
         });
       } catch (e) {
         console.error('import failed:', name, e);
@@ -154,6 +158,7 @@ export async function readFileMobile(fileName: string): Promise<any | null> {
     const result = await Filesystem.readFile({
       path: `${WORK_DIR}/${fileName}`,
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
     });
     return JSON.parse(result.data as string);
   } catch {
@@ -168,6 +173,7 @@ export async function writeFileMobile(fileName: string, data: any): Promise<bool
       path: `${WORK_DIR}/${fileName}`,
       data: JSON.stringify(data, null, 2),
       directory: Directory.Data,
+      encoding: Encoding.UTF8,
     });
     return true;
   } catch (e) {
@@ -268,11 +274,11 @@ export async function downloadReleaseApk(): Promise<void> {
 }
 
 export function isCapacitor(): boolean {
-  return !!(window as any).Capacitor?.isNative?.();
+  return Capacitor.isNativePlatform();
 }
 
 // ---- FileAdapter 工厂 ----
-import { FileAdapter, joinPath, ok, err, replacePathName } from './file-adapter';
+import { FileAdapter, isRelativeFilePath, joinPath, ok, err, replacePathName } from './file-adapter';
 
 export function createCapacitorAdapter(): FileAdapter {
   const dedup = async (baseName: string): Promise<string> => {
@@ -296,6 +302,17 @@ export function createCapacitorAdapter(): FileAdapter {
         const data = await readFileMobile(fileName);
         return ok(data ? JSON.stringify(data) : null);
       } catch (e: any) { return err(e.message); }
+    },
+    async statFile(fileName) {
+      if (!isRelativeFilePath(fileName)) return err('Invalid file path');
+      try {
+        const { type, size, mtime, ctime } = await Filesystem.stat({ path: `${WORK_DIR}/${fileName}`, directory: Directory.Data });
+        if (type !== 'file') return ok(null);
+        if (!Number.isFinite(size) || !Number.isFinite(mtime)) return err('File metadata unavailable');
+        return ok({ size, mtime, ...(Number.isFinite(ctime) ? { ctime } : {}) });
+      } catch (error) {
+        return (error as { code?: string })?.code === 'OS-PLUG-FILE-0008' ? ok(null) : err('Unable to inspect file');
+      }
     },
     async writeFile(fileName, data) {
       try { return ok(await writeFileMobile(fileName, JSON.parse(data))); }

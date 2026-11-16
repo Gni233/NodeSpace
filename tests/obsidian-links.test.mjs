@@ -77,17 +77,21 @@ test('resolution prefers explicit and same-folder canonical files without guessi
       note('课程/当前.md', '当前'),
       note('课程/注意力.md', '注意力机制', [], '',),
       note('随笔/注意力.md', '另一份注意力'),
-      { ...note('术语/Transformer.md', 'Transformer'), aliases: ['变换器'] },
+      { ...note('术语/Transformer.md', 'Transformer'), documentTitle: '第一章', aliases: ['变换器'] },
     ],
     attachments: [{ path: '附件/结构图.png', name: '结构图.png', kind: 'image', size: 12, mtime: 1 }],
     graphs: [],
   };
-  const occurrences = extractObsidianLinks('[[注意力]]\n[[随笔/注意力]]\n[[变换器]]\n[[结构图.png]]\n[[不存在]]');
+  const occurrences = extractObsidianLinks('[[注意力]]\n[[随笔/注意力]]\n[[变换器]]\n[[结构图.png]]\n[[不存在]]\n[[第一章]]\n[[第一章|自定义标签]]');
   assert.equal(resolveObsidianLink(index, '课程/当前.md', occurrences[0]).resource.path, '课程/注意力.md');
   assert.equal(resolveObsidianLink(index, '课程/当前.md', occurrences[1]).resource.path, '随笔/注意力.md');
   assert.equal(resolveObsidianLink(index, '课程/当前.md', occurrences[2]).resource.path, '术语/Transformer.md');
   assert.equal(resolveObsidianLink(index, '课程/当前.md', occurrences[3]).resource.path, '附件/结构图.png');
   assert.equal(resolveObsidianLink(index, '课程/当前.md', occurrences[4]).status, 'missing');
+  const metadata = resolveObsidianLink(index, '课程/当前.md', occurrences[5]);
+  assert.equal(metadata.resource.path, '术语/Transformer.md');
+  assert.equal(metadata.displayLabel, 'Transformer');
+  assert.equal(resolveObsidianLink(index, '课程/当前.md', occurrences[6]).displayLabel, '自定义标签');
 
   const ambiguous = { ...index, notes: index.notes.filter(item => item.path !== '课程/注意力.md') };
   ambiguous.notes.push(note('资料/注意力.md', '注意力资料'));
@@ -111,6 +115,21 @@ test('backlinks and addressable blocks retain source context', async () => {
     ['quote-id', '一段可引用的观察。', '片段'],
     ['list-id', '第一项 第二项', '片段'],
   ]);
+});
+
+test('rescanning the Vault updates backlinks when an alias moves to another file', async () => {
+  const { extractObsidianLinks, obsidianBacklinksForPath } = await loadLinks();
+  const source = note('来源.md', '来源', extractObsidianLinks('[[共有称呼]]'));
+  const first = note('资料/原位置.md', '原位置');
+  const second = note('资料/新位置.md', '新位置');
+  const initial = { notes: [source, { ...first, aliases: ['共有称呼'] }, second], attachments: [], graphs: [] };
+  const current = { ...initial, notes: [source, first, { ...second, aliases: ['共有称呼'] }] };
+  const backlinks = obsidianBacklinksForPath(initial, first.path);
+  assert.deepEqual(backlinks.map(link => link.source.path), [source.path]);
+  backlinks.pop();
+  assert.equal(obsidianBacklinksForPath(initial, first.path).length, 1);
+  assert.deepEqual(obsidianBacklinksForPath(current, first.path), []);
+  assert.deepEqual(obsidianBacklinksForPath(current, second.path).map(link => link.source.path), [source.path]);
 });
 
 test('Markdown projection creates previewable canonical outlinks, backlinks, embeds, and explicit failures', async () => {

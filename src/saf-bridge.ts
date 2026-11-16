@@ -4,6 +4,8 @@
  * 实现 Obsidian 式持久化目录读写
  */
 
+import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
+
 interface FileEntry {
   name: string;
   kind: 'file' | 'directory';
@@ -83,6 +85,30 @@ export function safIsAvailable(): boolean {
   return !!plugin();
 }
 
+export async function safSaveBackup(fileName: string, data: string): Promise<boolean> {
+  const p = plugin();
+  if (!p) throw new Error('系统文件选择器不可用');
+
+  const cacheName = `nodespace-backup-${crypto.randomUUID()}.json`;
+  const cache = { directory: Directory.Cache, path: cacheName, encoding: Encoding.UTF8 };
+  const chunkSize = 1024 * 1024;
+  try {
+    await Filesystem.writeFile({ ...cache, data: '' });
+    for (let start = 0; start < data.length;) {
+      let end = Math.min(start + chunkSize, data.length);
+      const tail = data.charCodeAt(end - 1);
+      // Keep surrogate pairs together when encoding each chunk as UTF-8.
+      if (end < data.length && tail >= 0xd800 && tail <= 0xdbff) end--;
+      await Filesystem.appendFile({ ...cache, data: data.slice(start, end) });
+      start = end;
+    }
+    const result = await p.saveBackup({ fileName, cacheName });
+    return result?.saved === true;
+  } finally {
+    await Filesystem.deleteFile(cache).catch(() => {});
+  }
+}
+
 // ---- FileAdapter 工厂 ----
 import { FileAdapter, joinPath, ok, err, replacePathName } from './file-adapter';
 
@@ -107,7 +133,11 @@ export function createSAFAdapter(): FileAdapter {
     async readFile(fileName) {
       if (!safIsAvailable()) return ok(null);
       try { return ok(await safReadFile(fileName)); }
-      catch (e: any) { return err(e.message); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : 'SAF readFile failed';
+        // The native plugin rejects missing files, while FileAdapter uses a null result.
+        return message === `File not found: ${fileName}` ? ok(null) : err(message);
+      }
     },
     async writeFile(fileName, data) {
       if (!safIsAvailable()) return err('SAF not available');

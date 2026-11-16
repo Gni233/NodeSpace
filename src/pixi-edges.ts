@@ -1,6 +1,9 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { GraphData } from './data/storage';
 import { WORLD_TEXT_SAMPLING } from './pixi-text-quality';
+import { getNodeVisualRadius } from './node-radius';
+import { getExplicitGraphColor } from './utils/color';
+export { getNodeVisualRadius } from './node-radius';
 import {
   buildSemanticEdgeRoute,
   inferSemanticEdgeGrammar,
@@ -56,7 +59,13 @@ function drawSolidRoute(g: Graphics, route: SemanticEdgeRoute, width: number, co
   g.stroke({ color, width, alpha, cap: 'round', join: 'round' });
 }
 
-function semanticDefaultColor(role: SemanticEdgeRole): string {
+function semanticDefaultColor(role: SemanticEdgeRole, dark: boolean): string {
+  if (dark) {
+    if (role === 'structure') return '#83B6A8';
+    if (role === 'directional') return '#C5A181';
+    if (role === 'reference') return '#B2A9D5';
+    return '#8DA5B8';
+  }
   if (role === 'structure') return '#4F8F7D';
   if (role === 'directional') return '#B97846';
   if (role === 'reference') return '#6F73B8';
@@ -71,24 +80,13 @@ function lerpColor(c1: number, c2: number, t: number): number {
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
 }
 
-const LEVEL_RADII = [22, 19, 16, 13, 10, 7]; // headingLevel 1~6
 const LEVEL_WIDTHS = [5, 4, 3, 2.5, 2, 1.5]; // headingLevel 1~6
 const GRADIENT_SEGMENTS = 3;
-
-export function getNodeVisualRadius(n: any): number {
-  const card = n?._semanticCard;
-  if (card && Number.isFinite(card.width) && Number.isFinite(card.height)) {
-    if (card.form === 'node') return Number(card.nodeRadius) || card.width / 2;
-    return Math.max(card.width, card.height) / 2;
-  }
-  if (n.radiusMode === 'custom' || (!n.radiusMode && n.radius)) return n.radius || 9;
-  return LEVEL_RADII[(n.headingLevel || 6) - 1] || 9;
-}
 
 function boundaryDistance(node: any, ux: number, uy: number): number {
   const card = node?._semanticCard;
   if (!card || !Number.isFinite(card.width) || !Number.isFinite(card.height)) return getNodeVisualRadius(node);
-  if (card.form === 'node') return Math.max(1, Number(card.nodeRadius) || card.width / 2);
+  if (card.form === 'node') return getNodeVisualRadius(node);
   const halfWidth = Math.max(1, card.width / 2);
   const halfHeight = Math.max(1, card.height / 2);
   const tx = Math.abs(ux) > 1e-6 ? halfWidth / Math.abs(ux) : Infinity;
@@ -117,6 +115,10 @@ export function updateEdges(
     semanticZoom?: number;
     semanticFocusNodeId?: string | null;
     semanticLabelBudget?: number;
+    darkTheme?: boolean;
+    labelColor?: string;
+    fontFamily?: string;
+    semanticColors?: Partial<Record<SemanticEdgeRole, string>>;
   }
 ) {
   const { hiddenNodes, focusNeighborIds, focusEdgeIndices, collapsedEdgeIndices, alpha = 0.6, selectedEdgeIndex, boxSelectedEdgeIndices, collapseEdgeFade, nodeColorMap, edgeColorGradient, edgeWidthByLevel, semanticMode = false, treeMode = false, semanticZoom = 1, semanticFocusNodeId = null, semanticLabelBudget } = opts;
@@ -168,7 +170,9 @@ export function updateEdges(
       : { alphaMultiplier: 1, widthMultiplier: 1, showLabel: true, labelAlpha: 1 };
 
     let edgeAlpha = alpha;
-    if (isFocusActive) edgeAlpha = focusEdgeIndices?.has(idx) ? 0.8 : 0.12;
+    if (isFocusActive) edgeAlpha = focusEdgeIndices?.has(idx) || isSelected || isBoxSelected ? 0.8 : 0.12;
+    // Selection remains legible even outside the current neighbourhood.
+    if (isSelected || isBoxSelected) edgeAlpha = Math.max(edgeAlpha, 0.88);
     edgeAlpha *= disclosure.alphaMultiplier;
     const fadeM = collapseEdgeFade?.get(idx);
     if (fadeM != null) { edgeAlpha *= fadeM; }
@@ -181,25 +185,24 @@ export function updateEdges(
 
     const conflict = e._conflict === true;
     const userDashed = (e.lineStyle || 'solid') !== 'solid';
-    const storedColor = String(e.color || '').toUpperCase();
-    const hasCustomColor = !!storedColor && storedColor !== '#BFBFBF' && storedColor !== '#BFBFBFFF';
+    const explicitColor = getExplicitGraphColor(e, 'edge');
     const baseColor = (conflict && !userDashed)
       ? '#DD7733'
-      : semanticMode && !hasCustomColor
-        ? semanticDefaultColor(grammar.role)
-        : (e.color || '#BFBFBF');
+      : explicitColor ?? opts.semanticColors?.[grammar.role]
+        ?? (semanticMode ? semanticDefaultColor(grammar.role, opts.darkTheme ?? false) : '#BFBFBF');
     const baseColorNum = parseInt(baseColor.replace('#', ''), 16);
     const style: string = conflict ? 'dot' : (userDashed ? e.lineStyle! : 'solid');
     const [dashLen, gapLen] = DASH_PATTERNS[style] || DASH_PATTERNS.solid;
 
     // 渐变颜色：从源节点色到目标节点色
-    const sColor = useGradient ? (nodeColorMap!.get(s.id) ?? baseColorNum) : baseColorNum;
-    const tColor = useGradient ? (nodeColorMap!.get(t.id) ?? baseColorNum) : baseColorNum;
+    const edgeGradient = Boolean(useGradient && !explicitColor);
+    const sColor = edgeGradient ? (nodeColorMap!.get(s.id) ?? baseColorNum) : baseColorNum;
+    const tColor = edgeGradient ? (nodeColorMap!.get(t.id) ?? baseColorNum) : baseColorNum;
 
     // 渐变粗细：根据端点等级
     const sw2 = useWidthLvl ? (LEVEL_WIDTHS[(s.headingLevel || 6) - 1] || 1.5) : 1.5;
     const tw2 = useWidthLvl ? (LEVEL_WIDTHS[(t.headingLevel || 6) - 1] || 1.5) : 1.5;
-    const needsGradient = useGradient || (useWidthLvl && Math.abs(sw2 - tw2) > 0.1);
+    const needsGradient = edgeGradient || (useWidthLvl && Math.abs(sw2 - tw2) > 0.1);
 
     const gradientSegments = needsGradient ? GRADIENT_SEGMENTS : 1;
 
@@ -232,7 +235,7 @@ export function updateEdges(
 
     // A very soft under-stroke gives semantic solid routes some visual depth
     // on both light and dark themes without turning them into neon ribbons.
-    if (semanticMode && dashLen === 0) {
+    if (semanticMode && dashLen === 0 && (focusedEdge || isSelected || isBoxSelected)) {
       drawSolidRoute(glowG, route, contentWidth + 2.8, baseColor, edgeAlpha * 0.12);
     }
 
@@ -257,11 +260,11 @@ export function updateEdges(
 
     // 发光保持单色（不做渐变）
     if (isSelected) {
-      drawTo(glowG, 3.5, baseColor, 0.28);
-      drawTo(glowG, 2, baseColor, 0.18);
+      drawTo(glowG, 6, baseColor, 0.13);
+      drawTo(g, Math.max(contentWidth, 2.1), baseColor, edgeAlpha);
     } else if (isBoxSelected) {
-      drawTo(glowG, 2.5, baseColor, 0.2);
-      drawTo(glowG, 1.5, baseColor, 0.12);
+      drawTo(glowG, 5, baseColor, 0.11);
+      drawTo(g, Math.max(contentWidth, 1.9), baseColor, edgeAlpha);
     }
 
     const tangent = semanticEdgeTangent(route, 1);
@@ -272,7 +275,7 @@ export function updateEdges(
       if (len2 < 1) return;
       const ax = route.end.x, ay = route.end.y;
       const size = 6;
-      const arrowColor = useGradient ? '#' + tColor.toString(16).padStart(6, '0') : baseColor;
+      const arrowColor = edgeGradient ? '#' + tColor.toString(16).padStart(6, '0') : baseColor;
       g.moveTo(ax, ay)
        .lineTo(ax - endUx * size + endUy * size * 0.5, ay - endUy * size - endUx * size * 0.5)
        .lineTo(ax - endUx * size - endUy * size * 0.5, ay - endUy * size + endUx * size * 0.5)
@@ -314,8 +317,12 @@ export function updateEdges(
   const labelCache: Map<number, Text> = (edgeLayer as any)._labelCache || new Map();
   (edgeLayer as any)._labelCache = labelCache;
   const labelStyle = (edgeLayer as any)._labelStyle as TextStyle
-    || new TextStyle({ fontSize: 11, fill: '#aaaaaa', fontFamily: 'var(--fg-font-family,"SiYuan Songti",serif)' });
+    || new TextStyle({ fontSize: 11, fill: '#77746e', fontFamily: 'system-ui, -apple-system, sans-serif' });
   (edgeLayer as any)._labelStyle = labelStyle;
+  // Canvas fonts cannot resolve CSS var(); use the same resolved family and
+  // theme ink as node titles, with disclosure alpha providing the hierarchy.
+  labelStyle.fontFamily = opts.fontFamily || 'system-ui, -apple-system, sans-serif';
+  labelStyle.fill = opts.labelColor || (opts.darkTheme ? '#c3beb5' : '#666159');
   const activeLabels = new Set<number>();
   const labelCandidates = graph.edges
     .map((edge, index) => ({ edge, index, rendered: renderedEdges.get(index) }))

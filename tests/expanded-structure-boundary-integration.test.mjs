@@ -4,6 +4,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { nodeRadiusModuleUrl } from './helpers/node-radius-module.mjs';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
@@ -80,7 +81,21 @@ test('renderPane gates root boundaries, hides expanded circles, filters membersh
 
   assert.match(text, /hiddenNodes\.has\(n\.id\) \|\| expandedBoundaryIds\.has\(n\.id\)/);
   assert.match(text, /expandedBoundaryIds\.has\(id\)/);
-  assert.match(text, /edge\._structureMembership && !cardModeActiveForEdges \? \[\] : \[\{ edge, projectionIndex \}\]/);
+  const projection = functionLike(render, 'renderEdgesWithIndexes')?.initializer;
+  assert.ok(projection);
+  const projectEdges = new Function('structureProjection', 'isCardMode', ts.transpileModule(
+    `return ${projection.getText(file)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText);
+  const direct = { source: 's', target: 'outside' };
+  const membership = { source: 's', target: 'member', _structureMembership: true };
+  const ordinary = { source: 'member', target: 'other' };
+  const edges = [direct, membership, ordinary];
+  assert.deepEqual(projectEdges({ edges }, false), [
+    { edge: direct, projectionIndex: 0 }, { edge: ordinary, projectionIndex: 2 },
+  ]);
+  assert.deepEqual(projectEdges({ edges }, true), edges.map((edge, projectionIndex) => ({ edge, projectionIndex })));
+  assert.match(text, /cardHiddenEdgeIndices\?\.has\(projectionIndex\) \|\| foldedBranch\) \{\s*collapsedEdgeIndices\.add\(renderIndex\)/);
+  assert.match(text, /collapseEdgeFade\.set\(renderIndex, alpha\)/);
   assert.match(text, /paneStructureBoundaryEndpoints\(st\)/);
   assert.match(text, /updateEdges\(pixi\.edgeLayer, edgeGraph, edgeRenderNodes/);
 });
@@ -92,6 +107,7 @@ test('ordinary edge hit testing ignores structure membership edges', async () =>
   }).outputText;
   const groupUrl = `data:text/javascript;base64,${Buffer.from(groupOutput).toString('base64')}`;
   const source = (await readFile(path.join(root, 'src', 'geometry', 'hit.ts'), 'utf8'))
+    .replace("from '../node-radius'", `from '${nodeRadiusModuleUrl}'`)
     .replace("from '../group-membership'", `from '${groupUrl}'`);
   const output = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },

@@ -3,6 +3,7 @@ NodeSpace.apk
 NodeSpace.exe
 dist/
 release/
+/src/local-fonts/stzhongsong.ttf
 *.exe
 *.dll
 *.pdb

@@ -33,7 +33,7 @@ test('vault scan uses ./NodeSpace for a new Obsidian Vault', async () => {
     await mkdir(path.join(directory, '.history'));
     await mkdir(path.join(directory, '课程'));
     await mkdir(path.join(directory, 'NodeSpace'));
-    await writeFile(path.join(directory, '课程', '概率论.md'), '# 概率论\n\n## 随机变量\n内容', 'utf8');
+    await writeFile(path.join(directory, '课程', '概率论.md'), '---\ntitle: 课程讲义\naliases: [概率笔记]\n---\n# 第一章\n\n## 随机变量\n内容', 'utf8');
     await writeFile(path.join(directory, '课程', '讲解.mp3'), 'audio');
     await writeFile(path.join(directory, 'NodeSpace', '课程图.json'), '{"nodes":[],"edges":[],"groups":[]}');
     await writeFile(path.join(directory, 'settings.json'), '{}');
@@ -48,6 +48,8 @@ test('vault scan uses ./NodeSpace for a new Obsidian Vault', async () => {
     assert.deepEqual(index.stats, { notes: 1, attachments: 1, graphs: 1, headings: 2 });
     assert.equal(index.notes[0].path, '课程/概率论.md');
     assert.equal(index.notes[0].title, '概率论');
+    assert.equal(index.notes[0].documentTitle, '课程讲义');
+    assert.deepEqual(index.notes[0].aliases, ['概率笔记']);
     assert.equal(index.attachments[0].kind, 'audio');
     assert.equal(index.graphs[0].path, 'NodeSpace/课程图.json');
   } finally {
@@ -113,9 +115,14 @@ test('long Markdown becomes a bounded heading hierarchy with source locations', 
   ].join('\n');
   const sections = parseMarkdownSections(markdown);
   assert.deepEqual(sections.map(section => section.title), ['人工智能', '机器学习', '优化', '计算机视觉']);
-  const graph = markdownToGraph('课程/人工智能.md', markdown);
+  const graph = markdownToGraph('课程/人工智能导读.md', markdown);
   assert.equal(graph.nodes.length, 5);
   assert.equal(graph.edges.length, 4);
+  assert.equal(graph.nodes[0].label, '人工智能导读');
+  assert.equal(graph.nodes[1].label, '人工智能');
+  assert.equal(graph.nodes[1].sourceRef.heading, '人工智能');
+  assert.equal(graph.edges[0].source, graph.nodes[0].id);
+  assert.equal(graph.edges[0].target, graph.nodes[1].id);
   const machineLearning = graph.nodes.find(node => node.label === '机器学习');
   const optimization = graph.nodes.find(node => node.label === '优化');
   const mlEdge = graph.edges.find(edge => edge.target === machineLearning.id);

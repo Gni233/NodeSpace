@@ -32,6 +32,7 @@ const structureNodes = await importTs(path.join(root, 'src', 'structure-nodes.ts
 });
 const geometry = await import(toUrl(geometrySource));
 const paneState = await importTs(path.join(root, 'src', 'pane-state.ts'), {
+  './theme': await transpile(path.join(root, 'src', 'theme.ts')),
   './undo-redo': 'export class UndoManager {}',
   './layout-controller': 'export class LayoutSlot { clear() {} onGraphChanged() {} }',
   './graph-runtime': 'export class GraphRuntime { constructor(fileName, graph, undoManager) { this.fileName = fileName; this.graph = graph; this.undoManager = undoManager; this.simManager = null; this.saveTimeout = null; } attach() {} }',

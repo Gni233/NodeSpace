@@ -10,6 +10,7 @@ const ts = require('typescript');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mainPath = path.join(root, 'src', 'main.ts');
 const indexPath = path.join(root, 'index.html');
+const workspacePath = path.join(root, 'src', 'workspace-ui.css');
 
 async function importToolbarHelper() {
   const source = await readFile(mainPath, 'utf8');
@@ -154,28 +155,65 @@ test('wide toolbar popovers clamp to both viewport edges', async () => {
   );
 });
 
-test('toolbar DOM construction keeps tools, view, and appearance in primaryRow', async () => {
+test('a dropdown uses its full width and opens below both rows of a narrow toolbar', async t => {
+  const { setupToolbarDropdowns } = await importToolbarHelper();
+  const eventRoot = new FakeEventRoot();
+  const frames = [];
+  const viewport = Object.assign(new FakeEventRoot(), { innerWidth: 360 });
+  const originalWindow = globalThis.window;
+  const originalFrame = globalThis.requestAnimationFrame;
+  globalThis.window = viewport;
+  globalThis.requestAnimationFrame = callback => frames.push(callback);
+  t.after(() => {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    if (originalFrame === undefined) delete globalThis.requestAnimationFrame;
+    else globalThis.requestAnimationFrame = originalFrame;
+  });
+  const panel = makePanel();
+  const properties = new Map();
+  panel.summary.getBoundingClientRect = () => ({ left: 278, right: 350, bottom: 58 });
+  panel.details.parentElement = { getBoundingClientRect: () => ({ bottom: 98 }) };
+  panel.popover = {
+    offsetWidth: 330,
+    getBoundingClientRect: () => ({ width: 320 }),
+    style: { setProperty: (name, value) => properties.set(name, value) },
+  };
+  const dispose = setupToolbarDropdowns([panel], eventRoot);
+  panel.details.toggle(true);
+  frames.shift()();
+  assert.equal(panel.popover.style.left, '22px');
+  assert.equal(properties.get('--fg-toolbar-popover-top'), '104px');
+  dispose();
+});
+
+test('all four canvas dropdowns use the same text-only chrome in the primary toolbar', async () => {
   const source = await readFile(mainPath, 'utf8');
 
-  assert.match(source, /controlsSum\.textContent = '工具';/);
-  assert.match(source, /layoutSum\.textContent = '视图';/);
-  assert.match(source, /settingsSum\.textContent = '外观';/);
-  assert.doesNotMatch(source, /(?:controlsSum|layoutSum|settingsSum)\.textContent\s*=\s*['"`][^'"`]*[⌄⌃‹›←→]/);
+  assert.match(source, /const toolbarSummaryClass = 'fg-toolbar-summary fg-action fg-shell-control';/);
+  for (const [summary, label] of [['controlsSum', '工具'], ['layoutSum', '视图'], ['settingsSum', '外观'], ['splitSummary', '分屏']]) {
+    assert.ok(source.includes(`${summary}.className = toolbarSummaryClass;`));
+    assert.ok(source.includes(`${summary}.textContent = '${label}';`));
+  }
+  assert.doesNotMatch(source, /splitSummary\.classList\.toggle\('is-active', splitActive\)/);
 
   assert.match(source, /primaryRow\.appendChild\(controlsDetails\);\s*primaryRow\.appendChild\(layoutDetails\);\s*primaryRow\.appendChild\(settingsDet\);/);
   assert.match(source, /popover: controlsDiv, align: 'start'/);
   assert.match(source, /popover: layoutPopover, align: 'end'/);
   assert.match(source, /popover: setDiv, align: 'end'/);
   assert.match(source, /layoutPopover\.appendChild\(modeRow\);/);
-  assert.match(source, /viewIntroHint\.textContent = '内容保持不变，只改变观察方式';/);
+  assert.doesNotMatch(source, /viewIntroStatus|viewIntroHint/);
   assert.match(source, /viewAlternativesSummary\.textContent = '其他观察方式';/);
-  assert.match(source, /alternateModeRow\.appendChild\(mkPill\('自由（力导向）'/);
-  assert.match(source, /viewToolsRow\.appendChild\(textViewPill\);/);
+  assert.match(source, /alternateModeRow\.append\(\s*layoutButton\('自由（力导向）', 'force'/);
+  assert.match(source, /const fitAction = viewButton\('全览'/);
+  assert.match(source, /viewToolsRow\.appendChild\(fitAction\);/);
   assert.match(source, /semanticLegendDetails\.appendChild\(semanticLegend\);/);
   assert.match(source, /addBtn\.textContent = '\+ 记录';/);
   assert.match(source, /linkBtn\.textContent = '关系';/);
-  assert.match(source, /setDiv\.appendChild\(colorStyleRow\);/);
-  assert.match(source, /setDiv\.appendChild\(fontStyleRow\);/);
+  assert.match(source, /buildSettings\(setDiv,/);
+  assert.match(source, /getNodeColorStyle:/);
+  assert.match(source, /getFontFamily:/);
+  assert.doesNotMatch(source, /setDiv\.appendChild\((?:colorStyleRow|fontStyleRow)\)/);
   assert.doesNotMatch(source, /rightRail|appearanceBtn|modeCollapsed|updateModeToggle/);
   assert.doesNotMatch(source, /floatingTop\.appendChild\(controlsDetails\)/);
 });
@@ -190,20 +228,25 @@ test('link mode uses the shared aria-pressed active style', async () => {
 
 test('toolbar CSS provides downward popovers without arrows or hidden mobile layout', async () => {
   const styles = await readFile(indexPath, 'utf8');
+  const workspace = await readFile(workspacePath, 'utf8');
+  const shell = await readFile(path.join(root, 'src', 'workbench-home.css'), 'utf8');
   const mobile = styles.slice(styles.indexOf('@media (max-width: 720px)'));
 
   assert.match(styles, /\.fg-toolbar-panel\s*\{/);
   assert.match(styles, /\.fg-toolbar-summary\s*\{[\s\S]*?-webkit-app-region:no-drag/);
   assert.match(styles, /\.fg-toolbar-summary\.is-active\s*\{/);
   assert.match(styles, /\.fg-toolbar-popover\s*\{[\s\S]*?position:fixed;[\s\S]*?max-width:calc\(100vw - 16px\)/);
-  assert.match(styles, /\.fg-tools-content\s*\{[\s\S]*?width:min\(640px,/);
+  assert.match(styles, /\.fg-tools-content\s*\{[\s\S]*?width:min\(480px,/);
   assert.match(styles, /\.fg-layout-popover\s*\{[\s\S]*?width:min\(760px, calc\(100vw - 16px\)\)/);
   assert.match(styles, /\.fg-appearance-content\s*\{[\s\S]*?width:min\(360px, calc\(100vw - 16px\)\);[\s\S]*?max-height:min\(70vh,[\s\S]*?overflow:auto/);
   assert.doesNotMatch(styles, /\.fg-toolbar-summary::(?:before|after)/);
   assert.doesNotMatch(styles, /\.fg-(?:tools|layout|appearance)[^\{]*::after/);
   assert.doesNotMatch(styles, /fg-right-rail|content:\s*['"][⌄⌃×]/);
 
-  assert.match(mobile, /\.fg-primary-actions\s*\{[\s\S]*?overflow-x:auto !important/);
-  assert.match(mobile, /\.fg-toolbar-popover\s*\{[\s\S]*?position:fixed;[\s\S]*?left:6px;[\s\S]*?right:6px/);
+  const shellRule = shell.match(/\.fg-shell-toolbar\s*\{([^}]*)\}/)[1];
+  assert.doesNotMatch(shellRule, /backdrop-filter:|overflow:\s*(?:hidden|auto)/);
+  assert.match(shell, /\.fg-shell-toolbar::before\s*\{[^}]*background: var\(--ns-panel,[^}]*backdrop-filter: var\(--ns-frosted-filter\);[^}]*pointer-events: none;/);
+  assert.match(workspace, /\.fg-editor-tools \.fg-toolbar-popover\s*\{[^}]*top: var\(--fg-toolbar-popover-top, 56px\)/);
+  assert.doesNotMatch(mobile, /\.fg-toolbar-popover\s*\{/);
   assert.doesNotMatch(mobile, /fg-(?:layout-panel|mode-switcher)[^\{]*\{[^}]*display\s*:\s*none/);
 });

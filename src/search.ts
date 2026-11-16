@@ -12,6 +12,18 @@ export interface GraphSearchResult {
   context: string;
 }
 
+/** Mount the visible results and a few rows beyond each scrolling edge. */
+export function searchResultViewport(count: number, scrollTop: number, height: number, rowHeight: number): { start: number; end: number } {
+  const top = Math.min(Math.max(0, scrollTop), Math.max(0, count * rowHeight - height));
+  const first = Math.floor(top / rowHeight);
+  const after = Math.ceil((top + height) / rowHeight);
+  const overscan = 3;
+  return {
+    start: Math.max(0, first - overscan),
+    end: Math.min(count, after + overscan),
+  };
+}
+
 const normalize = (value: unknown): string =>
   String(value ?? '').normalize('NFKC').toLocaleLowerCase().trim();
 

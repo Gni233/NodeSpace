@@ -50,6 +50,7 @@ async function importStructureView() {
 test('global pane helpers route and reindex a third pane without falling back to primary', async () => {
   const paneState = await importTranspiled('pane-state.ts', source => source
     .replace(/^import .*;\r?\n/gm, '')
+    .replace(/\/\*\* Shared defaults matching[\s\S]*$/m, '')
     .replace(/export interface PaneState[\s\S]*?^}\r?\n/m, '')
     .replace(/export function paneGraph[\s\S]*$/m, ''));
   const primary = { index: 0, name: 'primary' };
@@ -130,7 +131,8 @@ test('UI safety paths use callbacks and read-only checks before mutation or fill
   const body = setup.body.getText(file);
   assert.match(body, /if \(ctx\.isReadOnlyEdge\?\.\(index\)\) ctx\.onReadOnlySelection\?\.\('edge'\);\s*else ctx\.fillEdge\?\.\(index\)/);
   assert.match(body, /ctx\.deleteNodes\?\.\(\[\.\.\.ids\]\)/);
-  assert.match(body, /ctx\.deleteEdges\?\.\(selEdges\.map\(edge => edge\.idx\)\)/);
+  assert.match(body, /graph\.edges\.flatMap\(\(edge, index\) => selectedEdges\.has\(edge\) \? \[index\] : \[\]\)/);
+  assert.match(body, /if \(indices\.length !== selectedEdges\.size\) return;\s*void Promise\.resolve\(ctx\.deleteEdges\?\.\(indices\)\)/);
   assert.doesNotMatch(body, /detachNodeFromStructure\(/);
 });
 
@@ -164,18 +166,16 @@ test('hot replacement normalizes before refreshing structure views for primary a
   assert.ok(extraNormalize >= 0 && extraRefresh > extraNormalize);
 });
 
-test('legacy inspector delete buttons are intercepted by the unified pane deletion transactions', async () => {
+test('inspector deletion uses explicit callbacks with projected edge mapping', async () => {
   const source = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
   const file = parse(source, 'main.ts');
-  const listener = visit(file, node => ts.isCallExpression(node)
-    && ts.isPropertyAccessExpression(node.expression)
-    && node.expression.name.text === 'addEventListener'
-    && node.expression.expression.getText(file) === 'editCtx.editPanel'
-    && ts.isStringLiteral(node.arguments[0])
-    && node.arguments[0].text === 'click');
-  assert.ok(listener);
-  const text = listener.getText(file);
-  assert.match(text, /deleteNodesForPane\(pane, \[pane\.selNode\]\)/);
-  assert.match(text, /deleteEdgesForPane\(pane, \[pane\.selEdge\]\)/);
-  assert.match(text, /stopImmediatePropagation\(\)/);
+  const create = visit(file, node => ts.isCallExpression(node)
+    && ts.isIdentifier(node.expression) && node.expression.text === 'createEditPanel');
+  assert.ok(create);
+  const text = create.getText(file);
+  assert.match(text, /deleteNode: \(id: string\) => deleteNodesForPane\(focusedPaneState\(\), \[id\]\)/);
+  assert.match(text, /projectedEdgeIndexForPane\(pane, originalIndex\)/);
+  assert.match(text, /deleteEdgesForPane\(pane, \[projectedIndex\]\)/);
+  assert.match(text, /deleteGroup: \(id: string\) => deleteGroupForPane\(focusedPaneState\(\), id\)/);
+  assert.doesNotMatch(source, /section === '边'/);
 });

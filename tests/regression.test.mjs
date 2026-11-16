@@ -387,7 +387,7 @@ test('card grid uses bounded continuous motion and independent card gestures', a
   assert.match(source, /delete n\._pieColors/);
   assert.match(source, /onGraphChanged\(\): void/);
   assert.doesNotMatch(source, /if \(gsn\.fx != null \|\| gsn\.fy != null\)/);
-  assert.match(graphSim, /return \{ initSim, initStatic, updateCenter, getSim, setStaticMode, isStaticMode, setDragNode, getDragNode, dispose \}/);
+  assert.match(graphSim, /return \{ initSim, initStatic, updateCenter, getSim, refreshHierarchyNodes, setStaticMode, isStaticMode, setDragNode, getDragNode, dispose \}/);
   assert.match(source, /\{ \.\.\.e, source: s, target: t \}/);
   assert.doesNotMatch(source, /\['drag', 'wheel', 'pinch', 'decelerate'\]/);
   assert.match(interactions, /gesture: 'reorder' \| 'pan' \| 'pinch' \| null/);
@@ -401,8 +401,8 @@ test('card grid uses bounded continuous motion and independent card gestures', a
 test('save flow only clears dirty tabs after a successful frozen write', async () => {
   const source = await readFile(path.join(root, 'src', 'main.ts'), 'utf8');
   assert.match(source, /const snapshot = serializeGraphSnapshot\(runtime\.graph, settings\);[\s\S]*?runtime\.enqueueSave\(snapshot, savedSnapshot => writeGraphSnapshot/);
-  assert.match(source, /result\.saved && result\.current && runtime\.markSaved\(result\.revision\)/);
-  assert.match(source, /const result = await adapter\.writeFile\(fileName, snapshot\);[\s\S]*?recovery\.writeSnapshot\(snapshot\) && recovery\.markUnsynced\(\)/);
+  assert.match(source, /result\.saved && result\.current && generation === runtime\.saveGeneration && runtime\.markSaved\(result\.revision\)/);
+  assert.match(source, /const result = await targetAdapter\.writeFile\(fileName, snapshot\)[\s\S]*?recovery\.writeSnapshot\(snapshot\) && recovery\.markUnsynced\(\)/);
   assert.match(source, /clearTransientCategoryVisuals\(parsed\)/);
   assert.match(source, /clearBlobLayer\(pixi\)/);
   assert.match(source, /clearBlobLayer\(pixi1\)/);
@@ -427,14 +427,14 @@ test('save flow only clears dirty tabs after a successful frozen write', async (
   assert.match(source, /coordinateLayoutModes\.has\(mode\) && targetRuntime\.ownerCount > 1/);
   assert.match(source, /prepareRuntimeForSharing\(existing\)/);
   assert.match(source, /const collectRuntimeSettings = \(runtime: GraphRuntime\)/);
-  assert.match(source, /for \(const runtime of runtimeRegistry\.values\(\)\) \{\s*if \(!runtime\.dirty && !runtime\.externalConflict\) continue;\s*const saved = await saveRuntimeNow\(runtime, collectRuntimeSettings\(runtime\)\)/);
+  assert.match(source, /for \(const runtime of runtimeRegistry\.values\(\)\) \{\s*if \(!runtime\.dirty && !runtime\.externalConflict && !runtime\.savePending && !runtime\.fileOperationActive\) continue;\s*const saved = await saveRuntimeNow\(runtime, collectRuntimeSettings\(runtime\)\)/);
   assert.match(source, /runtimeRegistry\.rename\(oldPath, newPath\)/);
   assert.match(source, /for \(const pane of extraPanes\) \{[\s\S]*?pane\.openTabs = replaceTabPath/);
-  assert.match(source, /if \(runtime\) await runtime\.invalidateSaves\(\);[\s\S]*?await removeOpenFile\(path\);[\s\S]*?runtimeRegistry\.delete\(path\)/);
+  assert.match(source, /runtime\.fileOperationActive = true;\s*await runtime\.invalidateSaves\(\);[\s\S]*?await removeOpenFile\(path\);[\s\S]*?runtimeRegistry\.delete\(path\)/);
   assert.match(source, /migrateOpenFile\(src, dstPath/);
   assert.match(source, /runtime\.fileOperationActive = true;[\s\S]*?await runtime\.invalidateSaves\(\)/);
   assert.match(source, /const finishRuntimeOperation = \(\) => \{[\s\S]*?if \(!runtime\.dirty \|\| runtime\.externalConflict\) return;[\s\S]*?await saveRuntimeNow\(runtime\)/);
-  assert.match(source, /targetRuntime\.markExternalConflict\(\);\s*await targetRuntime\.invalidateSaves\(\)/);
+  assert.match(source, /targetRuntime\.markExternalConflict\(\);\s*const oldSaves = targetRuntime\.invalidateSaves\(\);[\s\S]*?await oldSaves/);
   assert.doesNotMatch(source, /g\.nodes\.length === 0\) return/);
 });
 
@@ -443,7 +443,8 @@ test('interface keeps low-frequency tools and appearance settings off the canvas
   const styles = await readFile(path.join(root, 'index.html'), 'utf8');
   assert.match(source, /primaryRow\.appendChild\(controlsDetails\)/);
   assert.match(source, /primaryRow\.appendChild\(settingsDet\)/);
-  assert.match(source, /controlsRow2\.appendChild\(refreshBtn\)/);
+  assert.match(source, /backupActions\.append\(importBtn, exportBackupButton, restoreBackupButton\)/);
+  assert.doesNotMatch(source, /(?:backupActions|controlsDiv)\.append(?:Child)?\((?:refreshBtn|rotBtn|fitBtn)\)/);
   assert.match(source, /const bottom = 4/);
   assert.match(styles, /\.fg-appearance-content \{[\s\S]*?width:min\(360px, calc\(100vw - 16px\)\)/);
   assert.match(styles, /\.fg-toolbar-popover \{\s*position:fixed/);
@@ -472,7 +473,7 @@ test('interface regressions keep panel controls usable and inactive tab close is
   assert.match(fileSystem, /const wrote = await writeGraphFile\(newPath, data, h\);\s*if \(!wrote\) return false;\s*\/\/ 删除旧文件/);
   assert.doesNotMatch(editPanel, /const \{ graph,/);
   assert.match(editPanel, /const fillNode = \(id: string\) => \{[\s\S]*?const n = ctx\.graph\.nodes\.find/);
-  assert.match(editPanel, /const fillNode = \(id: string\) => \{\s*commitNameEdit\(\);/);
+  assert.match(editPanel, /const fillNode = \(id: string\) => \{\s*propertyEdit = null;\s*nodeTextEditor\.end\(\);/);
 });
 
 test('mobile toolbar routes focused-pane commands and keeps touch state synchronized', async () => {
@@ -495,8 +496,8 @@ test('mobile toolbar routes focused-pane commands and keeps touch state synchron
   assert.match(toolbar, /window\.visualViewport\?\.addEventListener\('resize', updateViewport\)/);
   assert.match(toolbar, /window\.addEventListener\('orientationchange', updateViewport\)/);
   assert.match(toolbar, /const fromButton = !!\(e\.target as Element\)\.closest\('button'\)/);
-  assert.match(toolbar, /gesture\.begin\(e\.pointerId[\s\S]*?bar\.setPointerCapture\(e\.pointerId\);[\s\S]*?if \(!fromButton\)/);
-  assert.match(toolbar, /if \(move\.started && !bar\.hasPointerCapture\(e\.pointerId\)\)/);
+  assert.match(toolbar, /gesture\.begin\(e\.pointerId[\s\S]*?if \(!fromButton\) \{[\s\S]*?bar\.setPointerCapture\(e\.pointerId\);/);
+  assert.match(toolbar, /if \(move\.started\) \{\s*if \(!bar\.hasPointerCapture\(e\.pointerId\)\) bar\.setPointerCapture\(e\.pointerId\)/);
   assert.match(toolbar, /if \(!gesture\.consumeClickSuppression\(\)\) return/);
   assert.doesNotMatch(toolbar, /addEventListener\('touch(?:start|move|end|cancel)'/);
 
@@ -522,7 +523,7 @@ test('mobile toolbar routes focused-pane commands and keeps touch state synchron
   );
   assert.doesNotMatch(mobileCallbacks, /focusedPaneIndex === PANE_RIGHT/);
   assert.match(main, /const focusedUndoManager = \(\) => focusedExtraPane\(\)\?\.undoManager/);
-  assert.match(main, /const createNodeInFocusedPane = \(\) => \{[\s\S]*?const targetPane = focusedExtraPane\(\)/);
+  assert.match(main, /const createNodeInFocusedPane = \(initialLabel\?: string\) => \{[\s\S]*?const targetPane = focusedExtraPane\(\)/);
 
   assert.match(undo, /canUndo\(\): boolean \{\s*return this\.undoStack\.length > 0;/);
   assert.match(undo, /canRedo\(\): boolean \{\s*return this\.redoStack\.length > 0;/);

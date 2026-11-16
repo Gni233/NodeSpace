@@ -52,8 +52,6 @@ export const sharedState = {
   /** 禁止 Markdown 写回（独立版暂无用，保留兼容） */
   disableMdSync: null as (() => void) | null,
 
-  /** 框选中的边索引集合 */
-  boxSelectedEdgeIndices: null as Set<number> | null,
   /** 隐藏节点 ID 集合（折叠/搜索等） */
   hiddenNodeIds: null as (() => Set<string>) | null,
   /** 右键拖拽连线状态 */
@@ -66,10 +64,6 @@ export const sharedState = {
 
   /** 每帧重新检测鼠标下节点（防止节点移出后 hover 不更新） */
   reevaluateHover: null as (() => void) | null,
-
-  /** 选中节点 tooltip 回调（由 ui-events 注入） */
-  showNodeTooltip: null as ((note: string, canvasX: number, canvasY: number) => void) | null,
-  hideNodeTooltip: null as (() => void) | null,
 
   /** 节点剪贴板（跨图复制粘贴） */
   nodeClipboard: null as { nodes: any[]; edges: any[] } | null,

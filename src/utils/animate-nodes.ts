@@ -63,10 +63,13 @@ export function startNodeAnimation(opts: AnimateNodesOptions): () => void {
   let rafId: number | null = null;
   let cancelled = false;
   const startTime = performance.now();
+  const reduceMotion = typeof matchMedia === 'function'
+    && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const effectiveDuration = reduceMotion ? 0 : duration;
 
   const frame = (now: number) => {
     if (cancelled) return;
-    const t = Math.min(1, (now - startTime) / duration);
+    const t = effectiveDuration <= 0 ? 1 : Math.min(1, (now - startTime) / effectiveDuration);
     const e = easing(t);
 
     for (const n of nodes) {
@@ -104,7 +107,8 @@ export function startNodeAnimation(opts: AnimateNodesOptions): () => void {
     }
   };
 
-  rafId = requestAnimationFrame(frame);
+  if (effectiveDuration <= 0) frame(startTime);
+  else rafId = requestAnimationFrame(frame);
 
   return () => {
     cancelled = true;

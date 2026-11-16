@@ -23,6 +23,7 @@ export interface ObsidianLinkResource {
   size: number;
   mtime: number;
   title?: string;
+  documentTitle?: string;
   aliases?: string[];
   links?: ObsidianLinkOccurrence[];
 }
@@ -214,12 +215,45 @@ export function extractObsidianLinks(markdown: string): ObsidianLinkOccurrence[]
   return occurrences.sort((left, right) => left.line - right.line || (left.column || 0) - (right.column || 0));
 }
 
-function allResources(index: ObsidianLinkIndex): ObsidianLinkResource[] {
-  return [...(index.notes || []), ...(index.attachments || []), ...(index.graphs || [])];
-}
-
 function withoutMarkdownExtension(value: string): string {
   return value.replace(/\.md$/i, '');
+}
+
+interface ResourceLookup {
+  resources: ObsidianLinkResource[];
+  paths: Map<string, number[]>;
+  names: Map<string, number[]>;
+  terms: Map<string, number[]>;
+}
+
+// Vault scans publish a new snapshot, so a changed library has a fresh lookup.
+const resourceLookups = new WeakMap<ObsidianLinkIndex, ResourceLookup>();
+const backlinkLookups = new WeakMap<ObsidianLinkIndex, Map<string, ObsidianBacklink[]>>();
+const linkPathKey = (value: string) => normalizeObsidianPath(value).toLocaleLowerCase('zh-CN');
+
+function resourceLookup(index: ObsidianLinkIndex): ResourceLookup {
+  const cached = resourceLookups.get(index);
+  if (cached) return cached;
+  const resources = [...(index.notes || []), ...(index.attachments || []), ...(index.graphs || [])];
+  const paths = new Map<string, number[]>();
+  const names = new Map<string, number[]>();
+  const terms = new Map<string, number[]>();
+  const add = (lookup: Map<string, number[]>, key: string, position: number) => {
+    const positions = lookup.get(key);
+    if (positions) positions.push(position);
+    else lookup.set(key, [position]);
+  };
+  resources.forEach((resource, position) => {
+    add(paths, linkPathKey(resource.path), position);
+    const name = String(resource.name || resource.path.split('/').pop() || '').toLocaleLowerCase('zh-CN');
+    add(names, name, position);
+    const matches = new Set([withoutMarkdownExtension(name), resource.title, resource.documentTitle, ...(resource.aliases || [])]
+      .map(term => String(term || '').toLocaleLowerCase('zh-CN')));
+    for (const term of matches) add(terms, term, position);
+  });
+  const lookup = { resources, paths, names, terms };
+  resourceLookups.set(index, lookup);
+  return lookup;
 }
 
 function sameDirectory(sourcePath: string, targetPath: string): boolean {
@@ -230,6 +264,7 @@ function sameDirectory(sourcePath: string, targetPath: string): boolean {
 
 function resolvedLabel(resource: ObsidianLinkResource | undefined, occurrence: ObsidianLinkOccurrence): string {
   if (occurrence.alias?.trim()) return occurrence.alias.trim();
+  if (resource?.kind === 'markdown') return withoutMarkdownExtension(normalizeObsidianPath(resource.path).split('/').pop() || resource.name);
   if (resource?.title?.trim()) return resource.title.trim();
   const raw = resource?.name || occurrence.target.split('/').pop() || occurrence.heading || occurrence.block || '当前笔记';
   return raw.replace(/\.[^.]+$/, '');
@@ -248,10 +283,10 @@ export function resolveObsidianLink(
   if (EXTERNAL_TARGET.test(occurrence.target)) {
     return { status: 'external', occurrence, candidates: [], displayLabel: resolvedLabel(undefined, occurrence) };
   }
-  const resources = allResources(index);
+  const { resources, paths, names, terms } = resourceLookup(index);
   if (!occurrence.target.trim()) {
-    const current = resources.find(resource => normalizeObsidianPath(resource.path).toLocaleLowerCase('zh-CN')
-      === normalizeObsidianPath(sourcePath).toLocaleLowerCase('zh-CN'));
+    const position = paths.get(linkPathKey(sourcePath))?.[0];
+    const current = position === undefined ? undefined : resources[position];
     return current
       ? { status: 'resolved', occurrence, resource: current, candidates: [current], displayLabel: resolvedLabel(current, occurrence) }
       : { status: 'missing', occurrence, candidates: [], displayLabel: resolvedLabel(undefined, occurrence) };
@@ -267,21 +302,17 @@ export function resolveObsidianLink(
     ...(!/\.[^/]+$/.test(rootTarget) ? [`${rootTarget}.md`, ...(relativeTarget !== rootTarget ? [`${relativeTarget}.md`] : [])] : []),
   ].map(value => value.toLocaleLowerCase('zh-CN')))];
   for (const wanted of wantedPaths) {
-    const exact = resources.filter(resource => normalizeObsidianPath(resource.path).toLocaleLowerCase('zh-CN') === wanted);
-    if (exact.length === 1) {
-      return { status: 'resolved', occurrence, resource: exact[0], candidates: exact, displayLabel: resolvedLabel(exact[0], occurrence) };
+    const exact = paths.get(wanted);
+    if (exact?.length === 1) {
+      const resource = resources[exact[0]];
+      return { status: 'resolved', occurrence, resource, candidates: [resource], displayLabel: resolvedLabel(resource, occurrence) };
     }
   }
 
   const targetLeaf = (rootTarget.split('/').pop() || rootTarget).toLocaleLowerCase('zh-CN');
   const targetStem = withoutMarkdownExtension(targetLeaf);
-  const loose = resources.filter(resource => {
-    const name = String(resource.name || resource.path.split('/').pop() || '').toLocaleLowerCase('zh-CN');
-    const stem = withoutMarkdownExtension(name);
-    const title = String(resource.title || '').toLocaleLowerCase('zh-CN');
-    const aliases = (resource.aliases || []).map(alias => alias.toLocaleLowerCase('zh-CN'));
-    return name === targetLeaf || stem === targetStem || title === targetStem || aliases.includes(targetStem);
-  });
+  const matches = new Set([...(names.get(targetLeaf) ?? []), ...(terms.get(targetStem) ?? [])]);
+  const loose = [...matches].sort((left, right) => left - right).map(position => resources[position]);
   const nearby = loose.filter(resource => sameDirectory(sourcePath, resource.path));
   const candidates = nearby.length === 1 ? nearby : loose;
   if (candidates.length === 1) {
@@ -299,20 +330,29 @@ export function obsidianBacklinksForPath(
   index: ObsidianLinkIndex,
   targetPath: string,
 ): ObsidianBacklink[] {
-  const wanted = normalizeObsidianPath(targetPath).toLocaleLowerCase('zh-CN');
-  const backlinks: ObsidianBacklink[] = [];
-  for (const note of index.notes || []) {
-    if (normalizeObsidianPath(note.path).toLocaleLowerCase('zh-CN') === wanted) continue;
-    for (const occurrence of note.links || []) {
-      const resolution = resolveObsidianLink(index, note.path, occurrence);
-      if (resolution.status !== 'resolved' || !resolution.resource) continue;
-      if (normalizeObsidianPath(resolution.resource.path).toLocaleLowerCase('zh-CN') !== wanted) continue;
-      backlinks.push({ source: note, occurrence, resolution });
+  let lookup = backlinkLookups.get(index);
+  if (!lookup) {
+    lookup = new Map();
+    for (const note of index.notes || []) {
+      const source = linkPathKey(note.path);
+      for (const occurrence of note.links || []) {
+        const resolution = resolveObsidianLink(index, note.path, occurrence);
+        if (resolution.status !== 'resolved' || !resolution.resource) continue;
+        const target = linkPathKey(resolution.resource.path);
+        if (source === target) continue;
+        const backlink = { source: note, occurrence, resolution };
+        const entries = lookup.get(target);
+        if (entries) entries.push(backlink);
+        else lookup.set(target, [backlink]);
+      }
     }
+    for (const entries of lookup.values()) {
+      entries.sort((left, right) => normalizeObsidianPath(left.source.path).localeCompare(normalizeObsidianPath(right.source.path), 'zh-CN')
+        || left.occurrence.line - right.occurrence.line);
+    }
+    backlinkLookups.set(index, lookup);
   }
-  return backlinks.sort((left, right) =>
-    normalizeObsidianPath(left.source.path).localeCompare(normalizeObsidianPath(right.source.path), 'zh-CN')
-      || left.occurrence.line - right.occurrence.line);
+  return lookup.get(linkPathKey(targetPath))?.slice() ?? [];
 }
 
 function compactBlockText(value: string): string {

@@ -1,0 +1,112 @@
+.fg-shell-toolbar {
+  box-sizing: border-box;
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 3px !important;
+  min-height: var(--ns-toolbar-height);
+  padding: var(--ns-toolbar-inset);
+  border: 1px solid var(--ns-stroke, var(--fg-border-light));
+  border-radius: 11px;
+  box-shadow: var(--ns-shadow-float, var(--fg-workspace-shadow-panel));
+  -webkit-app-region: no-drag;
+}
+
+/* Keep the material on its own layer so menus can sample the backdrop and fixed menus stay viewport-relative. */
+.fg-shell-toolbar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--ns-panel, var(--fg-surface));
+  box-shadow: var(--ns-frosted-rim);
+  backdrop-filter: var(--ns-frosted-filter);
+  -webkit-backdrop-filter: var(--ns-frosted-filter);
+  pointer-events: none;
+}
+.fg-shell-navigation { min-width: 0; }
+.fg-shell-toolbar .fg-shell-control {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: var(--ns-toolbar-target-height);
+  white-space: nowrap;
+}
+.fg-shell-control > svg { flex: none; width: 15px; height: 15px; }
+.fg-shell-view-switch { font-weight: 650; }
+
+.ns-home {
+  --ns-home-paper: var(--fg-surface, #faf9f5);
+  --ns-home-field: var(--fg-canvas-bg, #f0eee6);
+  --ns-home-ink: var(--fg-text, #28261f);
+  --ns-home-muted: var(--fg-text-muted, #625e50);
+  --ns-home-rule: color-mix(in srgb, var(--ns-home-ink) 15%, transparent);
+  --ns-home-accent: var(--fg-accent, #a44d35);
+  --ns-home-accent-ink: color-mix(in srgb, var(--ns-home-accent) 80%, var(--ns-home-ink));
+  --ns-home-safe-top: env(safe-area-inset-top, 0px);
+  --ns-home-safe-right: env(safe-area-inset-right, 0px);
+  --ns-home-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --ns-home-safe-left: env(safe-area-inset-left, 0px);
+  --ns-home-mono: ui-monospace, 'Cascadia Code', monospace;
+  --ns-home-serif: 'Noto Serif CJK SC', 'Source Han Serif SC', 'Songti SC', STSong, SimSun, Georgia, serif;
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: var(--ns-home-field);
+  color: var(--ns-home-ink);
+  font: 400 14px/1.45 system-ui, sans-serif;
+  -webkit-app-region: no-drag;
+}
+
+.ns-home:not([open]):not(.is-departing), .ns-home [hidden] { display: none !important; }
+.ns-home[open] { animation: ns-home-arrive 210ms ease-out; }
+.ns-home.is-departing { display: block; z-index: 178; pointer-events: none; }
+.ns-home.is-departing .ns-gallery-viewport { overflow: hidden; }
+.ns-home::backdrop { background: transparent; }
+.ns-home > :is(.ns-home-content, .ns-home-menu-layer) {
+  position: absolute;
+  inset: var(--ns-home-safe-top) var(--ns-home-safe-right) var(--ns-home-safe-bottom) var(--ns-home-safe-left);
+  -webkit-touch-callout: none;
+}
+.ns-home-menu-layer { pointer-events: none; }
+.ns-home-menu-layer > [data-menu] { pointer-events: auto; }
+.ns-home :focus-visible { outline: 2px solid var(--ns-home-accent); outline-offset: 2px; }
+@keyframes ns-home-arrive { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ns-home[open] { animation: none; } }
+
+.fg-workbench-handoff {
+  position: fixed;
+  z-index: 179;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.fg-workbench-handoff-cover { position: absolute; overflow: hidden; }
+.fg-workbench-handoff-cover > div { position: absolute; inset: 0; display: grid; place-items: center; }
+.fg-workbench-handoff-cover svg { display: block; width: 100%; height: 100%; min-height: 0; }
+.fg-workbench-handoff-cover .ns-home-cover-mark { width: 110px; height: 110px; opacity: .65; }
+.fg-workbench-handoff-cover .ns-home-location-mark { width: clamp(43px, 6.5vw, 76px); height: 55%; opacity: .75; }
+.fg-workbench-handoff-map { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; }
+.fg-workbench-handoff-status {
+  position: absolute;
+  bottom: max(27px, env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.fg-workbench-handoff-status:empty { padding: 0; }

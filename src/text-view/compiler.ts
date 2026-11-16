@@ -11,10 +11,10 @@ import type {
 } from './types';
 
 const NODE_SEMANTIC_KEYS = [
-  'note', 'content', 'headingLevel', 'tags', 'mediaUrl', 'mediaType', 'color',
+  'note', 'content', 'headingLevel', 'tags', 'mediaUrl', 'mediaType', 'color', 'colorMode',
   'radius', 'radiusMode', 'fixed', 'collapsed', 'hyperlink',
 ] as const;
-const EDGE_SEMANTIC_KEYS = ['label', 'color', 'arrow', 'lineStyle'] as const;
+const EDGE_SEMANTIC_KEYS = ['label', 'color', 'colorMode', 'arrow', 'lineStyle'] as const;
 const GROUP_SEMANTIC_KEYS = [
   'displayMode', 'color', 'borderColor', 'opacity', 'nodeColorMode', 'nodeColor',
   'fluidRadius', 'fluidOpacity',

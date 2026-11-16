@@ -3,6 +3,36 @@ export interface OrderedNode {
   [key: string]: unknown;
 }
 
+/** Identity is independent of display order; rapid actions may share a timestamp. */
+export function createNodeId(nodes: readonly { id?: unknown }[]): string {
+  return createEntityIds('n', nodes, 1)[0];
+}
+
+export function createGroupId(groups: readonly { id?: unknown }[]): string {
+  return createEntityIds('g', groups, 1)[0];
+}
+
+/** Reserve a whole batch with one scan of the live graph. */
+export function createNodeIds(nodes: readonly { id?: unknown }[], count: number): string[] {
+  return createEntityIds('n', nodes, count);
+}
+
+function createEntityIds(prefix: string, nodes: readonly { id?: unknown }[], count: number): string[] {
+  if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('Identity count must be a nonnegative integer');
+  if (count === 0) return [];
+  const base = `${prefix}_${Date.now()}`;
+  const used = new Set(nodes.map(node => String(node.id)));
+  const ids: string[] = [];
+  let suffix = 0;
+  while (ids.length < count) {
+    const id = suffix === 0 ? base : `${base}_${suffix}`;
+    suffix++;
+    if (used.has(id)) continue;
+    used.add(id); ids.push(id);
+  }
+  return ids;
+}
+
 function isValidCreatedOrder(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }

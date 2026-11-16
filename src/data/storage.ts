@@ -49,7 +49,7 @@ export interface GraphSettings {
   expandedMedia?: string[];
   /** Derived automatic-layout state. User-dragged coordinates are never copied into it. */
   semanticLayoutMemory?: SemanticLayoutMemory;
-  /** Overall density for the automatic semantic composition. */
+  /** Automatic layout defaults to nodes; reading and adaptive cards are optional. */
   semanticCardDensity?: 'full' | 'mixed' | 'nodes';
   /** Per-node overrides layered over semanticCardDensity. */
   semanticCardForms?: Record<string, 'card' | 'node'>;
@@ -62,8 +62,9 @@ export interface GraphSettings {
 }
 
 /** 图数据：节点+边+集合+设置
- *  Node fields: id, label, x, y, headingLevel(1-6), tags[], note, mediaUrl, mediaType, resourceRef, color, radius, radiusMode, fixed, fx, fy, collapsed, hyperlink
- *  Edge fields: source, target, label, color, arrow, lineStyle, kind/relationType
+ *  Node fields: id, label, x, y, headingLevel(1-6), tags[], note, mediaUrl, mediaType, resourceRef, color, colorMode, radius, radiusMode, fixed, fx, fy, collapsed, hyperlink
+ *  Edge fields: source, target, label, color, colorMode, arrow, lineStyle, kind/relationType
+ *  colorMode='custom' marks explicit colors, including legacy black/grey placeholder values.
  *  Group fields: id, label, displayMode, color, borderColor, opacity, nodeColorMode, nodeColor, fluidRadius, fluidOpacity
  */
 export interface GraphData {

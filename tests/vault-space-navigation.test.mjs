@@ -69,6 +69,9 @@ test('Vault folders are deterministic read-only projections of direct children',
   assert.equal(course.nodes[1].sourceRef.kind, 'markdown');
   assert.equal(course.settings.sourceMode, 'vault-readonly');
   assert.equal(course.settings.vaultSpacePath, '课程');
+  const notes = vault.vaultFolderToGraph(index, '课程/人工智能', index.rootPath);
+  assert.equal(notes.nodes[0].label, '注意力');
+  assert.equal(notes.nodes[0].sourceRef.displayLabel, '注意力');
 });
 
 test('Vault location ids and breadcrumbs move between root, folders, and source files', async () => {
@@ -81,7 +84,7 @@ test('Vault location ids and breadcrumbs move between root, folders, and source 
   assert.equal(vault.vaultGraphFileName(index, 'Graph233/课程图.json'), '课程图.json');
 
   assert.deepEqual(navigation.vaultLocationCrumbs(index, noteTab).map(crumb => [crumb.label, crumb.current]), [
-    ['Gni233_vault', false], ['课程', false], ['人工智能', false], ['注意力机制', true],
+    ['Gni233_vault', false], ['课程', false], ['人工智能', false], ['注意力', true],
   ]);
   assert.deepEqual(navigation.vaultLocationCrumbs(index, folderTab).map(crumb => crumb.label), [
     'Gni233_vault', '课程', '人工智能',

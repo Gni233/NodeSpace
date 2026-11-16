@@ -1,18 +1,27 @@
 import { canvasPoint, hitTestNode, hitTestEdge, hitTestGroup } from "./geometry/hit";
-import { closeContextMenu, showContextMenu } from "./ui-contextmenu";
+import type { NodeTitleHitBounds } from './geometry/hit';
+import { closeContextMenu, hasOpenContextMenu, showActionWheel, type ContextMenuItem } from "./ui-contextmenu";
 import { GraphData } from "./data/storage";
 import { sharedState } from "./shared-state";
-import { Z_TOOLTIP, V } from "./layout-constants";
-import { PRESET_COLORS } from "./utils/color";
+import { PRESET_COLORS, setGraphColorOverride } from "./utils/color";
 import { CanvasGestureState, NodeMembershipDragState } from "./canvas-gesture-state";
 import { isStructureNode } from './structure-nodes';
 import { semanticEdgePolyline } from './semantic-edge-grammar';
 import { createCanvasMagnifier } from './canvas-magnifier';
 import type { MagnifierCaptureRegion } from './canvas-magnifier';
+import { createNodeNotePreview, type NodeNoteEdit } from './node-note-preview';
+import { getNodeVisualRadius } from './node-radius';
 
 const DRAG_THRESHOLD = 3;
 const TOUCH_DRAG_THRESHOLD = 10;
 const LONG_PRESS_DURATION = 500;
+const BRANCH_DRAG_THRESHOLD = 28;
+const NOTE_PREVIEW_DELAY = 320;
+
+export interface CanvasBoxSelection {
+  nodeIds: readonly string[];
+  edges: ReadonlySet<GraphData['edges'][number]> | null;
+}
 
 export interface EventsContext {
   graph: GraphData;
@@ -24,6 +33,8 @@ export interface EventsContext {
   getSimulation: () => any;
   /** Exact node objects used by the current renderer when they differ from the simulation. */
   getVisibleNodes?: () => any[];
+  /** Pane-local live title rectangles in world coordinates, including text scale. */
+  getNodeTitleBounds?: (node: any, worldX?: number, worldY?: number) => NodeTitleHitBounds | null | undefined;
   getTransform: () => any;
   getCanvas: () => HTMLCanvasElement;
   captureMagnifierRegion?: (region: MagnifierCaptureRegion) => CanvasImageSource | null;
@@ -37,11 +48,11 @@ export interface EventsContext {
   onContextMenu?: (type: 'blank'|'node'|'edge'|'group', id: string|null, x: number, y: number) => void;
   onTap?: (x: number, y: number, nodeId?: string) => void;
   canDoubleClickReadOnlyNode?: (id: string) => boolean;
-  fixNode?: (id: string) => void;
   isFixedNode?: (id: string) => boolean;
   selectionBox?: HTMLDivElement;
-  fixNodes?: (ids: string[]) => void;
-  unfixNodes?: (ids: string[]) => void;
+  registerBoxSelectionReader?: (read: () => CanvasBoxSelection) => void;
+  fixNodes?: (ids: string[]) => boolean | void;
+  unfixNodes?: (ids: string[]) => boolean | void;
   triggerSave?: () => void;
   onDragStart?: (id: string) => void;
   onDragEnd?: () => void;
@@ -66,6 +77,8 @@ export interface EventsContext {
   onMediaHover?: (nodeId: string | null) => void;
   // 右键拖拽连线
   onCreateEdge?: (sourceId: string, targetId: string, shiftKey?: boolean) => void;
+  /** A deliberate link drag ending on empty canvas grows a new linked thought. */
+  onCreateLinkedNode?: (sourceId: string, x: number, y: number, shiftKey?: boolean) => void;
   // 格点吸附（框选矩形对齐网格）
   getGridSnapEnabled?: () => boolean;
   getGridSp?: () => number;
@@ -93,6 +106,9 @@ export interface EventsContext {
   onStructureBoundaryTap?: (id: string) => void;
   /** 桌面端双击节点或边界，由调用方决定是否进入结构视图。 */
   onNodeDoubleClick?: (id: string) => void;
+  onNodeTitleTap?: (id: string) => boolean;
+  onNodeTitleDoubleClick?: (id: string) => boolean;
+  beginNodeNoteEdit?: (id: string) => NodeNoteEdit | null;
   /** Pane-private proxies may be selected but cannot be mutated or linked. */
   isReadOnlyNode?: (id: string) => boolean;
   isReadOnlyEdge?: (index: number) => boolean;
@@ -112,7 +128,7 @@ export function setupCanvasEvents(
     getSimulation, getTransform,
     getNodeExpand, getLineExpand,
     getDraggingNode, setDraggingNode, getWasDragged, setWasDragged,
-    draw, onContextMenu: onAppContextMenu, fixNode, isFixedNode
+    draw, onContextMenu: onAppContextMenu, isFixedNode
   } = ctx;
   // 坐标转换：统一用 canvas 偏移校正
   // 过滤隐藏节点（折叠/搜索），返回可见节点列表
@@ -128,6 +144,7 @@ export function setupCanvasEvents(
     return all.filter((n: any) => !hidden?.has(n.id) && !ctx.isStructureBoundaryNode?.(n.id));
   };
   const edgeNodes = () => visibleNodes().concat(ctx.getStructureBoundaryEndpoints?.() ?? []);
+  const nodeHitOptions = { titleBounds: (node: any, x: number, y: number) => ctx.getNodeTitleBounds?.(node, x, y) };
   const edgeHitOptions = () => ctx.getSemanticEdgeRouting?.()
     ? { routePoints: semanticEdgePolyline }
     : undefined;
@@ -153,32 +170,72 @@ export function setupCanvasEvents(
     return [wx * t.k + t.x + rect.left, wy * t.k + t.y + rect.top];
   };
 
-  // 创建 tooltip
-  const tooltip = document.createElement("div");
-  tooltip.style.cssText = `position:absolute;z-index:${Z_TOOLTIP};background:rgba(0,0,0,0.8);color:#fff;padding:4px 8px;border-radius:${V('--fg-radius-sm', '6px')};font-size:12px;max-width:200px;pointer-events:none;display:none;white-space:pre-wrap;word-break:break-word;`;
-  ctx.appShell!.appendChild(tooltip);
-  let hoveredNodeNote: string | null = null;
-  const hideTooltip = () => { tooltip.style.display = 'none'; hoveredNodeNote = null; };
+  const notePreview = createNodeNotePreview(ctx.appShell ?? document.body);
+  let hoveredNoteId: string | null = null;
+  let noteTimer: ReturnType<typeof setTimeout> | undefined;
+  const resetNoteHover = () => {
+    clearTimeout(noteTimer);
+    noteTimer = undefined;
+    hoveredNoteId = null;
+  };
+  const hideNotePreview = () => {
+    resetNoteHover();
+    notePreview.hide();
+  };
+  const leaveNotePreview = () => {
+    resetNoteHover();
+    notePreview.hideSoon();
+  };
   const magnifier = createCanvasMagnifier(
     canvas,
     () => Number(getTransform()?.k ?? 1),
     ctx.captureMagnifierRegion,
-    hideTooltip,
+    hideNotePreview,
   );
-  const updateTooltip = (content: string, x: number, y: number) => {
-    tooltip.textContent = content;
-    tooltip.style.display = 'block';
-    const canvasRect = canvas.getBoundingClientRect();
-    const parentRect = ctx.appShell!.getBoundingClientRect();
-    tooltip.style.left = (canvasRect.left - parentRect.left + x + 15) + 'px';
-    tooltip.style.top = (canvasRect.top - parentRect.top + y + 15) + 'px';
+  const queueNotePreview = (id: string) => {
+    if (hoveredNoteId === id) { notePreview.keep(); return; }
+    leaveNotePreview();
+    hoveredNoteId = id;
+    noteTimer = setTimeout(() => {
+      noteTimer = undefined;
+      const live = hitTestNode(sharedState.mouseWorldX, sharedState.mouseWorldY, visibleNodes(), getNodeExpand(), nodeHitOptions);
+      if (hasOpenContextMenu() || live?.id !== id || typeof live.note !== 'string' || !live.note.trim()) {
+        hideNotePreview();
+        return;
+      }
+      const radius = live._semanticCard?.form === 'card' ? live._semanticCard.width / 2 : getNodeVisualRadius(live);
+      const [x, y] = worldToScreen(live.x, live.y);
+      const [right] = worldToScreen(live.x + radius, live.y);
+      const edit = ctx.beginNodeNoteEdit && !ctx.isReadOnlyNode?.(id) ? () => ctx.beginNodeNoteEdit!(id) : undefined;
+      notePreview.show(live.label ?? '', live.note, x, y, Math.abs(right - x), canvas.getBoundingClientRect(), edit);
+    }, NOTE_PREVIEW_DELAY);
   };
+  canvas.addEventListener('wheel', hideNotePreview, { passive: true });
+  window.addEventListener('blur', hideNotePreview);
 
   let downPoint: [number, number] | null = null;
   const pointerGesture = new CanvasGestureState();
   const membershipDrag = new NodeMembershipDragState();
-  // This tracks only a drag that crossed the node threshold; pending-node and other
-  // gestures must never cause the runtime drag cleanup callback.
+  const nodeDragKind = (node: { id: string }) => {
+    if (!ctx.isReadOnlyNode?.(node.id)) return 'editable';
+    return graph.settings?.sourceMode === 'vault-readonly' ? 'projection' : null;
+  };
+  let projectionDrag: { node: any; x: number; y: number } | null = null;
+  const restoreProjectionDrag = () => {
+    if (!projectionDrag) return false;
+    const { node, x, y } = projectionDrag;
+    node.x = x;
+    node.y = y;
+    projectionDrag = null;
+    return true;
+  };
+  const cancelDraggedPosition = (node: any) => {
+    if (restoreProjectionDrag()) return;
+    node.fx = null;
+    node.fy = null;
+    getSimulation()?.alphaTarget(0);
+  };
+  // Only editable drags start the graph mutation lifecycle.
   let nodeDragStarted = false;
   const endMembershipDrag = (cancelled: boolean, event?: { clientX: number; clientY: number }) => {
     const result = event
@@ -202,6 +259,33 @@ export function setupCanvasEvents(
   let rightDragSource: string | null = null;
   let rightDragged = false;
   let suppressContextMenu = false; // 拖拽连线期间 + 松手后下一帧抑制右键菜单
+  const canGrowBranchAt = (x: number, y: number, clientX: number, clientY: number): boolean => {
+    if (!downPoint || !ctx.onCreateLinkedNode) return false;
+    const rect = canvas.getBoundingClientRect();
+    const distance = Math.hypot(x - downPoint[0], y - downPoint[1]) * Number(getTransform()?.k ?? 1);
+    return distance >= BRANCH_DRAG_THRESHOLD
+      && clientX >= rect.left && clientX <= rect.right
+      && clientY >= rect.top && clientY <= rect.bottom
+      && !ctx.hitStructureBoundary?.(x, y);
+  };
+  const cancelRightDragLink = () => {
+    rightDragSource = null;
+    rightDragged = false;
+    sharedState.rightDragLink = null;
+    suppressContextMenu = true;
+    lastBoxUpTime = Date.now();
+    downPoint = null;
+    if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
+    canvas.style.cursor = 'grab';
+    draw();
+  };
+  const onCancelLinkKey = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || !rightDragSource) return;
+    cancelRightDragLink();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  document.addEventListener('keydown', onCancelLinkKey);
 
   // --- 框选状态 ---
   const BOX_MIN_SIZE = 5;
@@ -210,6 +294,22 @@ export function setupCanvasEvents(
   let boxStart: [number, number] | null = null;
   let lastBoxUpTime = 0;
   let selectedNodeIds: string[] = [];
+  let boxSelectionNodes: GraphData['nodes'] | null = null;
+  let boxSelectionEdges: GraphData['edges'] | null = null;
+  let boxSelectedEdges: CanvasBoxSelection['edges'] = null;
+  ctx.registerBoxSelectionReader?.(() => ({
+    nodeIds: boxSelectionNodes === graph.nodes ? selectedNodeIds : [],
+    edges: boxSelectionEdges === graph.edges ? boxSelectedEdges : null,
+  }));
+
+  const clearBoxSelection = () => {
+    const changed = selectedNodeIds.length > 0 || boxSelectedEdges !== null;
+    selectedNodeIds = [];
+    boxSelectionNodes = null;
+    boxSelectionEdges = null;
+    boxSelectedEdges = null;
+    return changed;
+  };
   // 移动端 Pointer 框选
   let pointerBoxStart: [number, number] | null = null;
   // 框选：节点 + 边的命中测试
@@ -256,6 +356,7 @@ export function setupCanvasEvents(
   };
 
   const showBoxMenu = (selNodes: any[], selEdges: { edge: any; idx: number }[], clientX: number, clientY: number) => {
+    clearBoxSelection();
     // 仅选中一根边、无节点 → 直接进编辑栏
     if (selNodes.length === 0 && selEdges.length === 1) {
       const index = selEdges[0].idx;
@@ -267,25 +368,35 @@ export function setupCanvasEvents(
     // 无节点且无边不弹菜单
     if (selNodes.length === 0 && selEdges.length === 0) return;
     const ids = selNodes.map((n: any) => n.id);
+    const selectedIds = new Set(ids);
+    const selectedGraphNodes = graph.nodes;
+    boxSelectionNodes = selectedGraphNodes;
     selectedNodeIds = ids;
-    sharedState.boxSelectedEdgeIndices = new Set(selEdges.map(e => e.idx));
+    boxSelectionEdges = graph.edges;
+    const selectedEdges = new Set(selEdges.map(({ edge }) => edge));
+    if (selectedEdges.size) boxSelectedEdges = selectedEdges;
     draw();
-    const fixedCount = selNodes.filter((n: any) => n.fixed).length;
+    const fixedCount = ids.filter(id => ctx.isFixedNode?.(id)).length;
     const unfixedCount = selNodes.length - fixedCount;
-    const items: { label: string; action: () => void }[] = [];
+    const items: ContextMenuItem[] = [];
     if (selNodes.length > 0) {
       const mutableIds = ids.filter(id => !ctx.isReadOnlyNode?.(id));
       const hasReadOnlyNodes = mutableIds.length !== ids.length;
       const structureEligible = !hasReadOnlyNodes && ids.length >= 2 && selNodes.every((node: any) => !isStructureNode(node) && !node.structureParentId);
       if (structureEligible && ctx.createStructure) {
-        items.push({ label: `收束为结构 (${ids.length})`, action: () => { void ctx.createStructure?.([...ids]); } });
+        items.push({ label: `收束为结构 (${ids.length})`, icon: 'fold', action: () => { void ctx.createStructure?.([...ids]); } });
       }
-      if (!hasReadOnlyNodes) items.push({ label: `固定 (${unfixedCount})`, action: () => { ctx.fixNodes?.(ids); selectedNodeIds = []; draw(); } });
-      if (!hasReadOnlyNodes) items.push({ label: `解除固定 (${fixedCount})`, action: () => { ctx.unfixNodes?.(ids); selectedNodeIds = []; draw(); } });
-      if (!hasReadOnlyNodes && ctx.deleteNodes) items.push({ label: `删除节点 (${ids.length})`, action: () => {
+      const changeFixed = (pin: boolean) => {
+        if (graph.nodes !== selectedGraphNodes) return;
+        const changed = pin ? ctx.fixNodes?.(ids) : ctx.unfixNodes?.(ids);
+        if (changed !== false && clearBoxSelection()) draw();
+      };
+      if (!hasReadOnlyNodes && unfixedCount > 0) items.push({ label: `固定 (${unfixedCount})`, icon: 'pin', action: () => changeFixed(true) });
+      if (!hasReadOnlyNodes && fixedCount > 0) items.push({ label: `解除固定 (${fixedCount})`, icon: 'pin', action: () => changeFixed(false) });
+      if (!hasReadOnlyNodes && ctx.deleteNodes) items.push({ label: `删除节点 (${ids.length})`, icon: 'delete', destructive: true, action: () => {
         void Promise.resolve(ctx.deleteNodes?.([...ids])).then(deleted => {
           if (!deleted) return;
-          selectedNodeIds = [];
+          clearBoxSelection();
           ctx.clearEd?.();
           draw();
         });
@@ -293,13 +404,13 @@ export function setupCanvasEvents(
       // 复制所选
       if (!hasReadOnlyNodes) items.push({
         label: `复制所选 (${ids.length})`,
+        icon: 'duplicate',
         action: () => {
-          const selIds = new Set(ids);
-          const selNs = ctx.graph.nodes.filter((n: any) => selIds.has(n.id));
+          const selNs = ctx.graph.nodes.filter((n: any) => selectedIds.has(n.id));
           const selEs = ctx.graph.edges.filter((e: any) => {
             const s = typeof e.source === 'object' ? e.source.id : e.source;
             const t = typeof e.target === 'object' ? e.target.id : e.target;
-            return selIds.has(s) && selIds.has(t);
+            return selectedIds.has(s) && selectedIds.has(t);
           });
           sharedState.nodeClipboard = {
             nodes: JSON.parse(JSON.stringify(selNs)),
@@ -309,10 +420,10 @@ export function setupCanvasEvents(
           if (sharedState.clearSelection) sharedState.clearSelection();
         },
       });
-      if (!hasReadOnlyNodes) items.push({ label: '批量标签', action: async () => {
+      if (!hasReadOnlyNodes) items.push({ label: '批量标签', icon: 'tag', action: async () => {
         const { safePrompt } = await import('./dialog');
         const tag = await safePrompt('标签名：');
-        if (!tag) return;
+        if (!tag || graph.nodes !== selectedGraphNodes) return;
         for (const id of ids) {
           const n = ctx.graph.nodes.find((n: any) => n.id === id);
           if (n) {
@@ -324,63 +435,53 @@ export function setupCanvasEvents(
             }
           }
         }
-        selectedNodeIds = [];
+        clearBoxSelection();
         ctx.triggerSave?.();
         draw();
       }});
-      const batchColorItem: any = { label: '批量颜色', keepOpen: true, action: () => {
-        const menuEl = (ctx.appShell!).querySelector('[data-menu="context"]') as HTMLElement;
-        if (!menuEl) return;
-        menuEl.innerHTML = '';
-        menuEl.style.padding = '4px';
-        const colorSub = document.createElement('div');
-        colorSub.style.cssText = 'display:flex;gap:3px;flex-wrap:wrap;max-width:168px;';
-        PRESET_COLORS.forEach(c => {
-          const sw = document.createElement('div');
-          sw.style.cssText = `width:20px;height:20px;background:${c};border-radius:${V('--fg-radius-sm', '6px')};cursor:pointer;border:1px solid rgba(255,255,255,0.2);`;
-          sw.onclick = () => {
-            for (const id of ids) {
-              const n = ctx.graph.nodes.find((n: any) => n.id === id);
-              if (n) n.color = c;
-            }
-            selectedNodeIds = [];
+      if (!hasReadOnlyNodes) items.push({
+        label: '批量颜色',
+        icon: 'color',
+        children: PRESET_COLORS.map(color => ({
+          label: color,
+          swatch: color,
+          action: () => {
+            if (graph.nodes !== selectedGraphNodes) return;
+            for (const node of ctx.graph.nodes) if (selectedIds.has(node.id)) setGraphColorOverride(node, color);
             ctx.triggerSave?.();
-            draw();
-            closeContextMenu();
-            if (sharedState.clearSelection) sharedState.clearSelection();
-          };
-          colorSub.appendChild(sw);
-        });
-        menuEl.appendChild(colorSub);
-      }} as any;
-      if (!hasReadOnlyNodes) items.push(batchColorItem);
+          },
+        })),
+      });
     }
     if (selEdges.length > 0 && selEdges.every(edge => !ctx.isReadOnlyEdge?.(edge.idx)) && ctx.deleteEdges) {
-      items.push({ label: `删除连线 (${selEdges.length})`, action: () => {
-        void Promise.resolve(ctx.deleteEdges?.(selEdges.map(edge => edge.idx))).then(deleted => {
+      items.push({ label: `删除连线 (${selEdges.length})`, icon: 'delete', destructive: true, action: () => {
+        const indices = graph.edges.flatMap((edge, index) => selectedEdges.has(edge) ? [index] : []);
+        if (indices.length !== selectedEdges.size) return;
+        void Promise.resolve(ctx.deleteEdges?.(indices)).then(deleted => {
           if (!deleted) return;
-          selectedNodeIds = [];
+          clearBoxSelection();
           ctx.clearEd?.();
           draw();
         });
       }});
     }
-    const appShellRect = ctx.appShell!.getBoundingClientRect();
-    showContextMenu(ctx.appShell!, clientX - appShellRect.left, clientY - appShellRect.top, items);
+    const host = ctx.appShell ?? document.body;
+    const { left, top } = host.getBoundingClientRect();
+    showActionWheel(host, clientX - left, clientY - top, items, { label: '选区操作' });
   };
 
   // 连接到 sharedState
   const disposeSelectionHandlers = sharedState.registerSelectionHandlers(
     () => selectedNodeIds,
-    () => { selectedNodeIds = []; sharedState.boxSelectedEdgeIndices = null; draw(); },
-    (ids: string[]) => { selectedNodeIds = ids; draw(); },
+    () => { if (clearBoxSelection()) draw(); },
+    (ids: string[]) => { clearBoxSelection(); boxSelectionNodes = graph.nodes; selectedNodeIds = ids; draw(); },
   );
 
   const triggerContextMenu = (screenX: number, screenY: number) => {
-    selectedNodeIds = [];
+    if (clearBoxSelection()) draw();
     const [cx, cy] = toWorldPos({ clientX: screenX, clientY: screenY });
     const nodes = visibleNodes() || [];
-    const n = hitTestNode(cx, cy, nodes, getNodeExpand());
+    const n = hitTestNode(cx, cy, nodes, getNodeExpand(), nodeHitOptions);
     if (n) { onAppContextMenu?.('node', n.id, screenX, screenY); return; }
     const structureId = ctx.hitStructureBoundary?.(cx, cy);
     if (structureId) { onAppContextMenu?.('node', structureId, screenX, screenY); return; }
@@ -394,20 +495,21 @@ export function setupCanvasEvents(
   const onDoubleClick = (e: MouseEvent) => {
     // Touch interactions intentionally use the long-press menu rather than dblclick.
     const [x, y] = toWorldPos(e);
-    const node = hitTestNode(x, y, [...visibleNodes()].reverse(), getNodeExpand());
+    const node = hitTestNode(x, y, [...visibleNodes()].reverse(), getNodeExpand(), nodeHitOptions);
     const structureId = node ? null : ctx.hitStructureBoundary?.(x, y);
     const targetId = node?.id ?? structureId;
     if (!targetId || (ctx.isReadOnlyNode?.(targetId) && !ctx.canDoubleClickReadOnlyNode?.(targetId))) return;
     e.preventDefault();
     e.stopPropagation();
+    if (node && ctx.getNodeTitleBounds?.(node, x, y) && ctx.onNodeTitleDoubleClick?.(targetId)) return;
     ctx.onNodeDoubleClick?.(targetId);
   };
   canvas.addEventListener("dblclick", onDoubleClick);
 
   const handleTap = (x: number, y: number, nodeId?: string) => {
-    selectedNodeIds = [];
+    clearBoxSelection();
     const nodes = visibleNodes() || [];
-    const n = nodeId ? nodes.find((candidate: any) => candidate.id === nodeId) ?? null : hitTestNode(x, y, nodes, getNodeExpand());
+    const n = nodeId ? nodes.find((candidate: any) => candidate.id === nodeId) ?? null : hitTestNode(x, y, nodes, getNodeExpand(), nodeHitOptions);
     const structureId = n ? null : ctx.hitStructureBoundary?.(x, y);
     if (structureId) {
       ctx.onStructureBoundaryTap?.(structureId);
@@ -428,7 +530,7 @@ export function setupCanvasEvents(
 
   // 视口拖拽时取消长按（修复在集合光晕区域左键拖动触发右键菜单的问题）
   let viewportDragging = false;
-  const onViewportDragStart = () => { viewportDragging = true; clearLongPress(); };
+  const onViewportDragStart = () => { viewportDragging = true; clearLongPress(); hideNotePreview(); };
   const onViewportDragEnd = () => { viewportDragging = false; };
   if (ctx.viewport) {
     ctx.viewport.on('drag-start', onViewportDragStart);
@@ -442,14 +544,15 @@ export function setupCanvasEvents(
       ctx.onInteractionBlocked?.();
       return;
     }
-    closeContextMenu(); hideTooltip();
+    closeContextMenu(); hideNotePreview();
+    if (clearBoxSelection()) draw();
     const [x, y] = toWorldPos(e);
     downPoint = [x, y];
     if (e.button === 2) {
       e.preventDefault(); e.stopImmediatePropagation();
       // 右键点到节点 → 开始拖拽连线
       const nodes = visibleNodes();
-      const hit = hitTestNode(x, y, nodes, getNodeExpand());
+      const hit = hitTestNode(x, y, nodes, getNodeExpand(), nodeHitOptions);
       if (hit && !ctx.isReadOnlyNode?.(hit.id)) {
         rightDragSource = hit.id;
         rightDragged = false;
@@ -483,12 +586,13 @@ export function setupCanvasEvents(
       if (getDraggingNode()) {
         const draggingNode = getDraggingNode();
         ctx.setDragScale?.(draggingNode.id, 1.0);
-        draggingNode.fx = null; draggingNode.fy = null;
+        cancelDraggedPosition(draggingNode);
         setDraggingNode(null);
-        getSimulation()?.alphaTarget(0);
         endMembershipDrag(true);
-        ctx.onDragEnd?.();
-        nodeDragStarted = false;
+        if (nodeDragStarted) {
+          ctx.onDragEnd?.();
+          nodeDragStarted = false;
+        }
         setWasDragged(false);
         draw();
       }
@@ -497,7 +601,7 @@ export function setupCanvasEvents(
     }
 
     const nodes = visibleNodes();
-    const node = hitTestNode(x, y, nodes, getNodeExpand());
+    const node = hitTestNode(x, y, nodes, getNodeExpand(), nodeHitOptions);
     const boxSelect = !!ctx.getBoxSelectMode?.();
     if (!node) sharedState.focusHoverNodeId = null;
     // 卡片模式的非节点区域由 capture 阶段的 CardGrid 手势独占。
@@ -506,7 +610,8 @@ export function setupCanvasEvents(
       return;
     }
     const threshold = e.pointerType === 'touch' ? TOUCH_DRAG_THRESHOLD : DRAG_THRESHOLD;
-    pointerGesture.begin(e.pointerId, e.clientX, e.clientY, node?.id ?? null, boxSelect, threshold);
+    const draggable = node && nodeDragKind(node) !== null;
+    pointerGesture.begin(e.pointerId, e.clientX, e.clientY, node?.id ?? null, boxSelect, threshold, Boolean(draggable));
     setWasDragged(false);
     clearLongPress();
 
@@ -526,7 +631,7 @@ export function setupCanvasEvents(
       clearLongPress();
     }, LONG_PRESS_DURATION);
 
-    if (node && !ctx.isReadOnlyNode?.(node.id)) {
+    if (draggable) {
       if (ctx.viewport) ctx.viewport.pause = true;
       e.preventDefault();
       try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
@@ -538,7 +643,7 @@ export function setupCanvasEvents(
     const [mx, my] = toWorldPos(e);
     sharedState.mouseWorldX = mx; sharedState.mouseWorldY = my;
     const nodes = visibleNodes();
-    const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
+    const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand(), nodeHitOptions) : null;
     const hoverStructureId = hoverNode ? null : ctx.hitStructureBoundary?.(mx, my) ?? null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
     ctx.onStructureBoundaryHover?.(hoverStructureId);
@@ -580,17 +685,22 @@ export function setupCanvasEvents(
     }
     if (gestureMove?.startedNodeDrag) {
       const node = visibleNodes().find((candidate: any) => candidate.id === pointerGesture.targetNodeId);
-      if (node) {
+      const kind = node && nodeDragKind(node);
+      if (kind) {
         setDraggingNode(node);
-        node.fx = node.x; node.fy = node.y;
         setWasDragged(true);
         ctx.setDragScale?.(node.id, 1.1);
-        if (!ctx.isCardGridMode?.()) getSimulation()?.alphaTarget(0.3).restart();
-        ctx.onDragStart?.(node.id);
-        const membershipStart = membershipDrag.start(node.id, mx, my);
-        if (membershipStart) {
-          nodeDragStarted = true;
-          ctx.onNodeMembershipDragStart?.(membershipStart.nodeId, membershipStart.x, membershipStart.y);
+        if (kind === 'projection') {
+          projectionDrag = { node, x: node.x, y: node.y };
+        } else {
+          node.fx = node.x; node.fy = node.y;
+          if (!ctx.isCardGridMode?.()) getSimulation()?.alphaTarget(0.3).restart();
+          ctx.onDragStart?.(node.id);
+          const membershipStart = membershipDrag.start(node.id, mx, my);
+          if (membershipStart) {
+            nodeDragStarted = true;
+            ctx.onNodeMembershipDragStart?.(membershipStart.nodeId, membershipStart.x, membershipStart.y);
+          }
         }
       }
     }
@@ -603,7 +713,7 @@ export function setupCanvasEvents(
     else if (inLinkMode) { canvas.style.cursor = "crosshair"; }
     else if (hoverNode || hoverStructureId) { canvas.style.cursor = "pointer"; }
     else { canvas.style.cursor = "grab"; }
-    if (getDraggingNode()) {
+    if (gestureMove?.mode === 'node-drag' && getDraggingNode()) {
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
       const draggedNode = getDraggingNode();
       const clamped = ctx.clampNodeDrag ? ctx.clampNodeDrag(draggedNode.id, mx, my) : [mx, my];
@@ -612,19 +722,24 @@ export function setupCanvasEvents(
       // layouts use a small local simulation node; relying on that copy leaves
       // the visible node behind while an invisible collider follows the mouse.
       draggedNode.x = clamped[0]; draggedNode.y = clamped[1];
-      draggedNode.fx = clamped[0]; draggedNode.fy = clamped[1];
-      if (!ctx.isCardGridMode?.()) getSimulation()?.alpha(0.3).restart();
-      const membershipMove = membershipDrag.move(draggedNode.id, mx, my);
-      if (membershipMove) ctx.onNodeMembershipDragMove?.(membershipMove.nodeId, membershipMove.x, membershipMove.y);
+      if (projectionDrag) {
+        draw();
+      } else {
+        draggedNode.fx = clamped[0]; draggedNode.fy = clamped[1];
+        if (!ctx.isCardGridMode?.()) getSimulation()?.alpha(0.3).restart();
+        const membershipMove = membershipDrag.move(draggedNode.id, mx, my);
+        if (membershipMove) ctx.onNodeMembershipDragMove?.(membershipMove.nodeId, membershipMove.x, membershipMove.y);
+      }
     }
     // 空白区域拖动由 viewport 处理；这里只取消候选长按。
     if (gestureMove?.mode === 'viewport-pan' && gestureMove.moved) clearLongPress();
     if (ctx.onLinkCursorMove && ctx.getLinkMode?.() && ctx.getLinkSrc?.()) {
       ctx.onLinkCursorMove(mx, my);
     }
-    if (!e.ctrlKey && !getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
-      if (hoveredNodeNote !== hoverNode.note) { hoveredNodeNote = hoverNode.note; updateTooltip(hoverNode.note, e.offsetX, e.offsetY); }
-    } else hideTooltip();
+    if (e.pointerType !== 'touch' && !e.buttons && !e.ctrlKey && !e.metaKey && !inLinkMode && !viewportDragging && !hasOpenContextMenu()
+      && !getDraggingNode() && typeof hoverNode?.note === 'string' && hoverNode.note.trim()) {
+      queueNotePreview(hoverNode.id);
+    } else if (hoveredNoteId !== null) leaveNotePreview();
 
     // --- 右键框选 ---
     // 格点吸附：鼠标端也对齐网格
@@ -660,7 +775,7 @@ export function setupCanvasEvents(
     if (rightDragSource) {
       const [mx, my] = toWorldPos(e);
       const nodes = visibleNodes();
-      const target = hitTestNode(mx, my, nodes, getNodeExpand());
+      const target = hitTestNode(mx, my, nodes, getNodeExpand(), nodeHitOptions);
       if (rightDragged && target && target.id !== rightDragSource && !ctx.isReadOnlyNode?.(target.id)) {
         const exists = graph.edges.some((ed: any) => {
           const src = typeof ed.source === 'object' ? ed.source.id : ed.source;
@@ -668,6 +783,8 @@ export function setupCanvasEvents(
           return (src === rightDragSource && tgt === target.id) || (src === target.id && tgt === rightDragSource);
         });
         if (!exists) ctx.onCreateEdge?.(rightDragSource, target.id, e.shiftKey);
+      } else if (rightDragged && !target && canGrowBranchAt(mx, my, e.clientX, e.clientY)) {
+        ctx.onCreateLinkedNode?.(rightDragSource, mx, my, e.shiftKey);
       } else if (!rightDragged) {
         triggerContextMenu(e.clientX, e.clientY);
       }
@@ -714,9 +831,6 @@ export function setupCanvasEvents(
       if (pointerBoxStart && gestureEnd.moved) {
         const [mx, my] = toWorldPos(e);
         const sel = getSelectionInRect(pointerBoxStart[0], pointerBoxStart[1], mx, my);
-        selectedNodeIds = sel.nodes.map((node: any) => node.id);
-        sharedState.boxSelectedEdgeIndices = new Set(sel.edges.map(edge => edge.idx));
-        draw();
         showBoxMenu(sel.nodes, sel.edges, e.clientX, e.clientY);
       }
       pointerBoxStart = null;
@@ -730,37 +844,43 @@ export function setupCanvasEvents(
     if (getDraggingNode()) {
       const node = getDraggingNode();
       ctx.setDragScale?.(node.id, 1.0);
-      if (getWasDragged() && isFixedNode && isFixedNode(node.id)) {
-        const graphNode = ctx.graph.nodes.find((candidate: any) => candidate.id === node.id);
-        if (graphNode) { graphNode.fx = node.fx; graphNode.fy = node.fy; graphNode.x = node.x; graphNode.y = node.y; }
-        ctx.triggerSave?.();
-      } else if (ctx.isCardGridMode?.()) {
-        node.fx = null; node.fy = null;
-        const graphNode = ctx.graph.nodes.find((candidate: any) => candidate.id === node.id);
-        if (graphNode) { graphNode.x = node.x; graphNode.y = node.y; graphNode.fx = null; graphNode.fy = null; }
-        ctx.triggerSave?.();
-      } else {
-        node.fx = null; node.fy = null;
+      if (!restoreProjectionDrag()) {
+        if (getWasDragged() && isFixedNode && isFixedNode(node.id)) {
+          const graphNode = ctx.graph.nodes.find((candidate: any) => candidate.id === node.id);
+          if (graphNode) { graphNode.fx = node.fx; graphNode.fy = node.fy; graphNode.x = node.x; graphNode.y = node.y; }
+          ctx.triggerSave?.();
+        } else if (ctx.isCardGridMode?.()) {
+          node.fx = null; node.fy = null;
+          const graphNode = ctx.graph.nodes.find((candidate: any) => candidate.id === node.id);
+          if (graphNode) { graphNode.x = node.x; graphNode.y = node.y; graphNode.fx = null; graphNode.fy = null; }
+          ctx.triggerSave?.();
+        } else {
+          node.fx = null; node.fy = null;
+        }
+        getSimulation()?.alphaTarget(0);
       }
       setDraggingNode(null);
-      getSimulation()?.alphaTarget(0);
       canvas.style.cursor = "grab";
       endMembershipDrag(false, e);
-      ctx.onDragEnd?.();
-      nodeDragStarted = false;
+      if (nodeDragStarted) {
+        ctx.onDragEnd?.();
+        nodeDragStarted = false;
+      }
       draw();
     } else if (gestureEnd.tap) {
       // 卡片局部 simulation 在按下和松开之间仍可能移动节点；优先使用按下时锁定的节点。
       const lockedNode = gestureEnd.targetNodeId
         ? visibleNodes().find((candidate: any) => candidate.id === gestureEnd.targetNodeId)
         : null;
-      const [x, y] = lockedNode ? [lockedNode.x, lockedNode.y] : toWorldPos(e);
+      const [tapX, tapY] = toWorldPos(e);
+      const [x, y] = lockedNode ? [lockedNode.x, lockedNode.y] : [tapX, tapY];
       if (e.ctrlKey || e.metaKey) {
-        const node = lockedNode ?? hitTestNode(x, y, visibleNodes(), getNodeExpand());
+        const node = lockedNode ?? hitTestNode(x, y, visibleNodes(), getNodeExpand(), nodeHitOptions);
         const graphNode = node && ctx.graph.nodes.find((candidate: any) => candidate.id === node.id);
         if (graphNode?.hyperlink) window.open(graphNode.hyperlink, '_blank');
         else handleTap(x, y, lockedNode?.id);
-      } else {
+      } else if (!lockedNode || lockedNode.id !== getSelNode() || ctx.getLinkMode?.()
+        || !ctx.getNodeTitleBounds?.(lockedNode, tapX, tapY) || !ctx.onNodeTitleTap?.(lockedNode.id)) {
         handleTap(x, y, lockedNode?.id);
       }
     }
@@ -773,6 +893,7 @@ export function setupCanvasEvents(
   window.addEventListener("pointerup", onPointerUp, { capture: true });
 
   const onPointerCancel = (e: PointerEvent) => {
+    if (rightDragSource) { cancelRightDragLink(); return; }
     if (!pointerGesture.cancel(e.pointerId)) return;
     clearLongPress();
     pointerBoxStart = null;
@@ -780,12 +901,13 @@ export function setupCanvasEvents(
     if (getDraggingNode()) {
       const node = getDraggingNode();
       ctx.setDragScale?.(node.id, 1.0);
-      node.fx = null; node.fy = null;
+      cancelDraggedPosition(node);
       setDraggingNode(null);
-      getSimulation()?.alphaTarget(0);
       endMembershipDrag(true, e);
-      ctx.onDragEnd?.();
-      nodeDragStarted = false;
+      if (nodeDragStarted) {
+        ctx.onDragEnd?.();
+        nodeDragStarted = false;
+      }
     }
     setWasDragged(false);
     if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
@@ -795,6 +917,7 @@ export function setupCanvasEvents(
   canvas.addEventListener("pointercancel", onPointerCancel);
 
   const onPointerLeave = () => {
+    leaveNotePreview();
     sharedState.hoverNodeId = null;
     ctx.onStructureBoundaryHover?.(null);
     ctx.onMediaHover?.(null);
@@ -807,7 +930,8 @@ export function setupCanvasEvents(
     const mx = sharedState.mouseWorldX, my = sharedState.mouseWorldY;
     const nodes = visibleNodes();
     if (nodes) {
-      const hn = hitTestNode(mx, my, nodes, getNodeExpand());
+      const hn = hitTestNode(mx, my, nodes, getNodeExpand(), nodeHitOptions);
+      if (hoveredNoteId !== null && hn?.id !== hoveredNoteId) leaveNotePreview();
       const structureId = hn ? null : ctx.hitStructureBoundary?.(mx, my) ?? null;
       sharedState.hoverNodeId = hn ? hn.id : null;
       ctx.onStructureBoundaryHover?.(structureId);
@@ -817,27 +941,14 @@ export function setupCanvasEvents(
   };
   sharedState.reevaluateHover = reevaluateHover;
 
-  // 对外暴露 tooltip（坐标已是 appShell 相对坐标，无需 canvas offset）
-  const showNodeTooltip = (note: string, ax: number, ay: number) => {
-    tooltip.textContent = note;
-    tooltip.style.display = 'block';
-    tooltip.style.left = ax + 'px';
-    tooltip.style.top = ay + 'px';
-  };
-  const hideNodeTooltip = () => {
-    hideTooltip();
-  };
-  sharedState.showNodeTooltip = showNodeTooltip;
-  sharedState.hideNodeTooltip = hideNodeTooltip;
-
   const onContextMenu = (e: MouseEvent) => {
-    e.preventDefault(); hideTooltip();
+    e.preventDefault(); hideNotePreview();
     // 右键拖拽连线释放（pointerup 可能不触发，以此兜底）
     if (rightDragSource) {
       try {
         const [mx, my] = toWorldPos(e);
         const nodes2 = visibleNodes();
-        const target2 = hitTestNode(mx, my, nodes2, getNodeExpand());
+        const target2 = hitTestNode(mx, my, nodes2, getNodeExpand(), nodeHitOptions);
         // contextmenu 触发时直接尝试连线：有目标节点且不是源节点 → 连线；否则弹菜单
         if (target2 && target2.id !== rightDragSource && !ctx.isReadOnlyNode?.(target2.id)) {
           const exists2 = graph.edges.some((ed: any) => {
@@ -850,6 +961,8 @@ export function setupCanvasEvents(
           } else {
             console.log('[edge] already exists', rightDragSource, target2.id);
           }
+        } else if (rightDragged && !target2 && canGrowBranchAt(mx, my, e.clientX, e.clientY)) {
+          ctx.onCreateLinkedNode?.(rightDragSource, mx, my, e.shiftKey);
         } else {
           console.log('[edge] target missing or same', !!target2, rightDragSource, target2?.id);
           triggerContextMenu(e.clientX, e.clientY);
@@ -880,6 +993,7 @@ export function setupCanvasEvents(
     clearLongPress();
     for (const timer of pendingTimers) clearTimeout(timer);
     pendingTimers.clear();
+    clearBoxSelection();
     disposeSelectionHandlers();
     const activePointerId = pointerGesture.pointerId;
     pointerGesture.cancel();
@@ -898,9 +1012,8 @@ export function setupCanvasEvents(
     if (getDraggingNode()) {
       const node = getDraggingNode();
       ctx.setDragScale?.(node.id, 1.0);
-      node.fx = null; node.fy = null;
+      cancelDraggedPosition(node);
       setDraggingNode(null);
-      getSimulation()?.alphaTarget(0);
     }
     endMembershipDrag(true);
     if (nodeDragStarted) {
@@ -911,22 +1024,23 @@ export function setupCanvasEvents(
     if (ctx.viewport && !ctx.isCardGridMode?.()) ctx.viewport.pause = false;
     canvas.style.cursor = 'grab';
     if (ctx.selectionBox) ctx.selectionBox.style.display = 'none';
-    hideTooltip();
-    tooltip.remove();
+    hideNotePreview();
+    notePreview.destroy();
     magnifier.destroy();
 
     canvas.removeEventListener("pointerdown", onPointerDown, { capture: true });
     canvas.removeEventListener("pointermove", onPointerMove);
     canvas.removeEventListener("pointercancel", onPointerCancel);
     canvas.removeEventListener("pointerleave", onPointerLeave);
+    canvas.removeEventListener('wheel', hideNotePreview);
     canvas.removeEventListener("dblclick", onDoubleClick);
     canvas.removeEventListener("contextmenu", onContextMenu);
+    document.removeEventListener('keydown', onCancelLinkKey);
     window.removeEventListener("pointerup", onPointerUp, { capture: true });
+    window.removeEventListener('blur', hideNotePreview);
     ctx.viewport?.off?.('drag-start', onViewportDragStart);
     ctx.viewport?.off?.('drag-end', onViewportDragEnd);
 
     if (sharedState.reevaluateHover === reevaluateHover) sharedState.reevaluateHover = null;
-    if (sharedState.showNodeTooltip === showNodeTooltip) sharedState.showNodeTooltip = null;
-    if (sharedState.hideNodeTooltip === hideNodeTooltip) sharedState.hideNodeTooltip = null;
   };
 }

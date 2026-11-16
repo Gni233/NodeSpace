@@ -20,3 +20,18 @@ export function filterUserFacingGraphEntries(entries: readonly FileEntry[]): Fil
     return children.length > 0 ? [{ ...entry, children }] : [];
   });
 }
+
+/** Adapter inventories may use nested basenames or already-qualified relative IDs. */
+export function userFacingGraphPaths(entries: readonly FileEntry[]): string[] {
+  const paths = new Set<string>();
+  const collect = (nodes: readonly FileEntry[], parent: string) => {
+    for (const entry of nodes) {
+      if (!entry.name) continue;
+      const path = !parent || entry.name.startsWith(`${parent}/`) ? entry.name : `${parent}/${entry.name}`;
+      if (entry.kind === 'directory') collect(entry.children || [], path);
+      else if (!INTERNAL_PREVIEW_GRAPH.test(entryBaseName(path))) paths.add(path);
+    }
+  };
+  collect(entries, '');
+  return [...paths];
+}
